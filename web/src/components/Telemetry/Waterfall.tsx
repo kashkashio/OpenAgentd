@@ -4,7 +4,7 @@
  * ``@/utils/traceTree``; this module only renders.
  */
 
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import type { SpanDetail } from '@/api/client'
 import {
   buildSpanTree,
@@ -59,7 +59,7 @@ export function Waterfall({
                 node={node}
                 bounds={bounds}
                 selected={selectedSpanId === node.span.span_id}
-                onSelect={() => onSelectSpan(node.span.span_id)}
+                onSelect={onSelectSpan}
               />
             ))}
           </div>
@@ -69,7 +69,8 @@ export function Waterfall({
   )
 }
 
-function WaterfallRow({
+/** Memoized with a shared ``onSelect``: a selection change re-renders two rows. */
+const WaterfallRow = memo(function WaterfallRow({
   node,
   bounds,
   selected,
@@ -78,7 +79,7 @@ function WaterfallRow({
   node: SpanNode
   bounds: { start_ms: number; end_ms: number; duration_ms: number }
   selected: boolean
-  onSelect: () => void
+  onSelect: (spanId: string) => void
 }) {
   const { leftPct, widthPct } = spanBarPosition(node.span, bounds)
   const category = categorizeSpan(node.span.name)
@@ -87,7 +88,7 @@ function WaterfallRow({
   return (
     <button
       type="button"
-      onClick={onSelect}
+      onClick={() => onSelect(node.span.span_id)}
       aria-label={`${node.span.name}, ${category}, ${isError ? 'error' : 'ok'}, duration ${formatMs(node.span.duration_ms)}`}
       className={`flex min-h-10 w-full items-center px-3 py-2 text-left text-xs transition-colors hover:bg-(--bg-key)/30 focus:bg-(--bg-key)/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--focus-ring)/40 md:min-h-0 ${
         selected ? 'bg-(--bg-key)/50' : ''
@@ -130,4 +131,4 @@ function WaterfallRow({
       </div>
     </button>
   )
-}
+})
