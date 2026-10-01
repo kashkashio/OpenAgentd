@@ -30,7 +30,10 @@ export function readSSE(response: Response, callbacks: SSECallbacks): void {
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
-  let buf = ''
+  // Pieces of the line still waiting for its "\n". Kept as pieces so a long
+  // `data:` line (a big tool result) arriving over many reads is scanned once,
+  // not re-split from its start on every read.
+  let partial: string[] = []
 
   // Current event fields being accumulated
   let currentEvent = ''
@@ -78,22 +81,29 @@ export function readSSE(response: Response, callbacks: SSECallbacks): void {
 
         if (done) {
           // Flush any remaining buffer
-          const remaining = buf.trim()
+          const remaining = partial.join('').trim()
+          partial = []
           if (remaining) processLine(remaining)
           dispatchEvent()
           callbacks.onDone?.()
           return
         }
 
-        buf += decoder.decode(value, { stream: true })
-
-        // Process all complete lines (split on \n, keep last incomplete chunk)
-        const lines = buf.split('\n')
-        buf = lines.pop() ?? ''          // last element may be incomplete
-
-        for (const raw of lines) {
-          processLine(raw.trimEnd())     // strip \r
+        const text = decoder.decode(value, { stream: true })
+        let start = 0
+        let newline = text.indexOf('\n')
+        while (newline !== -1) {
+          let line = text.slice(start, newline)
+          if (partial.length > 0) {
+            partial.push(line)
+            line = partial.join('')
+            partial = []
+          }
+          processLine(line.trimEnd())    // strip \r
+          start = newline + 1
+          newline = text.indexOf('\n', start)
         }
+        if (start < text.length) partial.push(text.slice(start))
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return
