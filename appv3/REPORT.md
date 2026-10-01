@@ -182,6 +182,18 @@ No v2 feature is left unported. Each item below is a deliberate, documented
 deviation. The harnesses in §1 either did not reach it or normalised it
 explicitly.
 
+- **Performance changes to the wire format** (v3 only; v2 parity is no
+  longer a goal):
+  - *History pages* (`GET /api/agent/{sid}/history`,
+    `api/src/routes/agent/chat.rs`). Member rows and the session-wide
+    `estimated_cost_usd` / `completion_tokens` totals come only on the
+    newest page and on `since` deltas. Older (`before`) pages return
+    `members: []` and omit the lead's totals. v2 paged each member with
+    the lead's `(seq, id)` cursor, but `seq` is per session, so every
+    older page re-sent each member's newest rows, which the web client
+    then prepended twice. Member pages run concurrently, and the totals
+    for the lead and all members come from one grouped scan. Covered by
+    `history_paging_flow` in `api/tests/http_api.rs`.
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and

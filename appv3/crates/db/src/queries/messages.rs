@@ -284,6 +284,33 @@ pub async fn session_usage_totals(pool: &DbPool, session_id: &str) -> Result<(f6
     Ok((appv3_core::pymath::py_round(cost, 8), out as i64))
 }
 
+/// [`session_usage_totals`] for several sessions in one scan, keyed by the
+/// caller's id. A session with no rows maps to `(0.0, 0)`.
+pub async fn session_usage_totals_many(pool: &DbPool, session_ids: &[&str]) -> Result<std::collections::HashMap<String, (f64, i64)>> {
+    let mut out: std::collections::HashMap<String, (f64, i64)> = session_ids.iter().map(|id| (id.to_string(), (0.0, 0))).collect();
+    if session_ids.is_empty() {
+        return Ok(out);
+    }
+    let by_db: std::collections::HashMap<String, &str> = session_ids.iter().map(|id| (db_id(id), *id)).collect();
+    let marks = vec!["?"; by_db.len()].join(", ");
+    let sql = format!(
+        "SELECT session_id, \
+                CAST(COALESCE(SUM(json_extract(extra, '$.usage.cost.estimated_usd')), 0) AS REAL), \
+                CAST(COALESCE(SUM(json_extract(extra, '$.usage.output')), 0) AS REAL) \
+         FROM session_messages WHERE session_id IN ({marks}) AND {USER_VISIBLE} GROUP BY session_id"
+    );
+    let mut q = sqlx::query_as::<_, (String, f64, f64)>(&sql);
+    for id in by_db.keys() {
+        q = q.bind(id);
+    }
+    for (sid, cost, completion) in q.fetch_all(pool).await? {
+        if let Some(caller) = by_db.get(&sid) {
+            out.insert(caller.to_string(), (appv3_core::pymath::py_round(cost, 8), completion as i64));
+        }
+    }
+    Ok(out)
+}
+
 /// Newest row cursor `(seq, id)` of a session.
 pub async fn get_history_cursor(pool: &DbPool, session_id: &str) -> Result<Option<(i64, String)>> {
     Ok(sqlx::query_as::<_, (i64, String)>("SELECT seq, id FROM session_messages WHERE session_id = ? ORDER BY seq DESC, id DESC LIMIT 1")

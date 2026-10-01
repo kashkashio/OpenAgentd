@@ -795,37 +795,48 @@ async fn ensure_agent_ready(root: &db::ChatSession) -> ApiResult<()> {
     Ok(())
 }
 
-async fn member_json(pool: &DbPool, root_id: &str, sub: &db::ChatSession, msgs: &[db::SessionMessage]) -> ApiResult<Value> {
-    let statuses = store().get_agent_statuses(root_id);
+/// Session-wide `(estimated_cost_usd, completion_tokens)` per session id.
+type UsageTotals = std::collections::HashMap<String, (f64, i64)>;
+
+fn member_json(statuses: &[(String, String)], sub: &db::ChatSession, msgs: &[db::SessionMessage], totals: &UsageTotals) -> Value {
     let name = sub.agent_name.clone().unwrap_or_else(|| db::codec::api_uuid(&sub.id));
-    let (cost, completion) = db::session_usage_totals(pool, &sub.id).await?;
+    let (cost, completion) = totals.get(&sub.id).copied().unwrap_or((0.0, 0));
     let running = statuses.iter().any(|(n, s)| *n == name && s == "working");
-    Ok(json!({
+    json!({
         "name": name,
         "session_id": db::codec::api_uuid(&sub.id),
         "messages": msgs.iter().map(message_response).collect::<Vec<_>>(),
         "running": running,
         "estimated_cost_usd": cost,
         "completion_tokens": completion,
-    }))
+    })
 }
 
-async fn lead_json(pool: &DbPool, root: &db::ChatSession, msgs: &[db::SessionMessage]) -> ApiResult<Value> {
+/// The lead's part of a history response. `totals` is `None` on older pages:
+/// the totals cover the whole session, and only the newest page and the
+/// delta carry them (the client ignores them anywhere else).
+fn lead_json(root: &db::ChatSession, msgs: &[db::SessionMessage], totals: Option<&UsageTotals>) -> Value {
     let effective = root.agent_name.clone().unwrap_or_else(|| if root.parent_session_id.is_none() { "code".into() } else { "member".into() });
-    let (cost, completion) = db::session_usage_totals(pool, &root.id).await?;
+    let usage = totals.map(|t| t.get(&root.id).copied().unwrap_or((0.0, 0)));
     let rid = db::codec::api_uuid(&root.id);
     let mut m = session_response(
         root,
         &SessionOverlay {
             agent_name: Some(effective),
             running: store().is_running(&rid),
-            estimated_cost_usd: Some(cost),
-            completion_tokens: Some(completion),
+            estimated_cost_usd: usage.map(|(cost, _)| cost),
+            completion_tokens: usage.map(|(_, completion)| completion),
             ..Default::default()
         },
     );
     m.insert("messages".into(), Value::Array(msgs.iter().map(message_response).collect()));
-    Ok(Value::Object(m))
+    Value::Object(m)
+}
+
+/// Usage totals for the lead and its members in one scan.
+async fn usage_totals(pool: &DbPool, root: &db::ChatSession, subs: &[db::ChatSession]) -> ApiResult<UsageTotals> {
+    let ids: Vec<&str> = std::iter::once(root.id.as_str()).chain(subs.iter().map(|s| s.id.as_str())).collect();
+    Ok(db::session_usage_totals_many(pool, &ids).await?)
 }
 
 async fn agent_history(State(st): State<AppState>, AxPath(raw): AxPath<String>, q: Qs) -> ApiResult<Response> {
@@ -850,14 +861,16 @@ async fn agent_history(State(st): State<AppState>, AxPath(raw): AxPath<String>, 
         let (lead_rows, mut truncated) = db::history_since(pool, &sid, &since_id, LIMIT).await?;
         let subs = db::list_child_sessions(pool, std::slice::from_ref(&sid)).await?;
         ensure_agent_ready(&root).await?;
-        let lead = lead_json(pool, &root, &lead_rows).await?;
-        let mut members = vec![];
-        for sub in &subs {
-            let (rows, _) = db::history_since(pool, &sub.id, &since_id, LIMIT).await?;
+        let member_rows = futures::future::try_join_all(subs.iter().map(|sub| db::history_since(pool, &sub.id, &since_id, LIMIT))).await?;
+        let totals = usage_totals(pool, &root, &subs).await?;
+        let statuses = store().get_agent_statuses(&sid);
+        let lead = lead_json(&root, &lead_rows, Some(&totals));
+        let mut members = Vec::with_capacity(subs.len());
+        for (sub, (rows, _)) in subs.iter().zip(&member_rows) {
             if rows.len() as i64 >= LIMIT {
                 truncated = true;
             }
-            members.push(member_json(pool, &sid, sub, &rows).await?);
+            members.push(member_json(&statuses, sub, rows, &totals));
         }
         return Ok(json(json!({"lead": lead, "members": members, "has_more": false, "next_cursor": null, "truncated": truncated, "pending_question": null})));
     }
@@ -886,14 +899,20 @@ async fn agent_history(State(st): State<AppState>, AxPath(raw): AxPath<String>, 
     }
     let Some(root) = db::get_session(pool, &sid).await? else { return Err(ApiError::not_found("Lead session not found.")) };
     let (lead_rows, has_more, boundary) = db::history_page(pool, &sid, cursor.clone()).await?;
-    let subs = db::list_child_sessions(pool, std::slice::from_ref(&sid)).await?;
     ensure_agent_ready(&root).await?;
-    let lead = lead_json(pool, &root, &lead_rows).await?;
-    let mut members = vec![];
-    for sub in &subs {
-        let (rows, _, _) = db::history_page(pool, &sub.id, cursor.clone()).await?;
-        members.push(member_json(pool, &sid, sub, &rows).await?);
-    }
+    // Members ride on the newest page only. The client shows member rows from
+    // that page alone, and a member's `seq` is its own — paging it with the
+    // lead's cursor re-sent (and duplicated) its newest rows on every older page.
+    let (lead, members) = if first_page {
+        let subs = db::list_child_sessions(pool, std::slice::from_ref(&sid)).await?;
+        let member_rows = futures::future::try_join_all(subs.iter().map(|sub| db::history_page(pool, &sub.id, None))).await?;
+        let totals = usage_totals(pool, &root, &subs).await?;
+        let statuses = store().get_agent_statuses(&sid);
+        let members: Vec<Value> = subs.iter().zip(&member_rows).map(|(sub, (rows, _, _))| member_json(&statuses, sub, rows, &totals)).collect();
+        (lead_json(&root, &lead_rows, Some(&totals)), members)
+    } else {
+        (lead_json(&root, &lead_rows, None), vec![])
+    };
     let next_cursor = boundary.map(|b| format!("{}|{}", b.seq, db::codec::api_uuid(&b.id)));
     let pending = if first_page { db::get_pending_question(pool, &sid).await?.map(|q| db::api::pending_question_response(&q)) } else { None };
     Ok(json(json!({
