@@ -347,10 +347,12 @@ impl Tool for GrepTool {
         let directory = a.str_or(&["directory", "dir", "path"], ".");
         let include = a.str_or(&["include", "glob", "file_pattern"], "*");
         let max_results = a.opt_int(&["max_results"], Some(1), None).unwrap_or(100) as usize;
-        if let Err(ToolError::Execution(e)) = compile_pattern(&pattern) {
+        let compiled = compile_pattern(&pattern);
+        if let Err(ToolError::Execution(e)) = &compiled {
             a.err("pattern", &format!("Value error, {e}"));
         }
         a.finish()?;
+        let m = compiled?;
         let denied = ctx.denied.clone();
         let resolved = denied.validate_read_path(&directory)?;
         if !resolved.exists() {
@@ -358,7 +360,6 @@ impl Tool for GrepTool {
         }
         let no_match = format!("No matches for pattern '{pattern}' in {} (include={include})", denied.display_path(&resolved));
         let task = tokio::task::spawn_blocking(move || -> Result<(Vec<String>, bool), ToolError> {
-            let m = compile_pattern(&pattern)?;
             if resolved.is_file() {
                 return Ok((scan_file(&m, &resolved, &denied.display_path(&resolved), max_results), false));
             }
