@@ -68,9 +68,11 @@ pub(crate) fn fmt_thousands(n: usize) -> String {
     out
 }
 
-pub fn cap_long_lines(text: &str) -> String {
-    if text.is_empty() || py_len(text) <= MAX_LINE_CHARS {
-        return text.to_string();
+pub fn cap_long_lines(text: &str) -> std::borrow::Cow<'_, str> {
+    // A line within MAX_LINE_CHARS bytes is within it in chars too, so only
+    // longer lines are counted; most files have none and are not copied.
+    if text.split('\n').all(|l| l.len() <= MAX_LINE_CHARS || py_len(l) <= MAX_LINE_CHARS) {
+        return std::borrow::Cow::Borrowed(text);
     }
     let trailing = text.ends_with('\n');
     let body = if trailing { &text[..text.len() - 1] } else { text };
@@ -84,7 +86,7 @@ pub fn cap_long_lines(text: &str) -> String {
             }
         })
         .collect();
-    capped.join("\n") + if trailing { "\n" } else { "" }
+    std::borrow::Cow::Owned(capped.join("\n") + if trailing { "\n" } else { "" })
 }
 
 fn cap_for_context(text: &str, rel: &str) -> String {
@@ -113,21 +115,17 @@ pub fn decode_text(raw: &[u8]) -> String {
 pub fn splitlines_keepends(text: &str) -> Vec<&str> {
     let mut out = vec![];
     let mut start = 0;
-    let bytes: Vec<(usize, char)> = text.char_indices().collect();
-    let mut i = 0;
-    while i < bytes.len() {
-        let (idx, c) = bytes[i];
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
         let is_break = matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}');
         if is_break {
             let mut end = idx + c.len_utf8();
-            if c == '\r' && i + 1 < bytes.len() && bytes[i + 1].1 == '\n' {
+            if c == '\r' && chars.next_if(|&(_, n)| n == '\n').is_some() {
                 end += 1;
-                i += 1;
             }
             out.push(&text[start..end]);
             start = end;
         }
-        i += 1;
     }
     if start < text.len() {
         out.push(&text[start..]);
@@ -163,7 +161,8 @@ pub fn read_text(resolved: &Path, rel: &str, offset: i64, limit: Option<i64>) ->
         Some(l) => total.min(start + l as usize),
     };
     let header = format!("[{}-{}/{}]\n", start + 1, end, total);
-    let body = cap_long_lines(&lines[start..end].concat());
+    let selected = lines[start..end].concat();
+    let body = cap_long_lines(&selected);
     Ok(cap_for_context(&(header + &body), rel))
 }
 
@@ -379,6 +378,31 @@ mod tests {
         let (t, raw) = doc("payroll.pdf", &minimal_pdf("secret", true));
         assert!(t.contains("The document is encrypted or password-protected"), "{t}");
         assert!(!raw);
+    }
+
+    #[test]
+    fn splitlines_follows_python() {
+        assert_eq!(splitlines_keepends("a\nb\r\nc\rd\x0be\u{2028}f\u{85}g"), ["a\n", "b\r\n", "c\r", "d\x0b", "e\u{2028}", "f\u{85}", "g"]);
+        assert_eq!(splitlines_keepends("x\n\n"), ["x\n", "\n"]);
+        assert_eq!(splitlines_keepends("\r"), ["\r"]);
+        assert!(splitlines_keepends("").is_empty());
+    }
+
+    #[test]
+    fn long_lines_and_large_files_are_capped() {
+        assert_eq!(cap_long_lines("short\nlines\n"), "short\nlines\n");
+        let long = "é".repeat(MAX_LINE_CHARS + 5);
+        let input = format!("ok\n{long}\nend");
+        let capped = cap_long_lines(&input);
+        assert_eq!(capped, format!("ok\n{}… (line truncated to {MAX_LINE_CHARS} chars)\nend", "é".repeat(MAX_LINE_CHARS)));
+        // Exactly at the limit (in chars, though over it in bytes): kept.
+        let edge = "é".repeat(MAX_LINE_CHARS);
+        assert_eq!(cap_long_lines(&format!("{edge}\n{edge}\n")), format!("{edge}\n{edge}\n"));
+        let big = "abcdefghi\n".repeat(MAX_CONTEXT_CHARS / 5);
+        let out = cap_for_context(&big, "big.txt");
+        assert!(out.starts_with("abcdefghi\n"), "{}", &out[..20]);
+        assert!(out.ends_with(&format!("[read output truncated for LLM context: big.txt is {} characters; shown first 50,000. Use offset and limit to read a smaller line range, or shell tools such as grep/sed/head/tail for targeted inspection.]", fmt_thousands(MAX_CONTEXT_CHARS * 2))));
+        assert_eq!(cap_for_context("small", "s"), "small");
     }
 
     #[test]
