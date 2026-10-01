@@ -1125,18 +1125,17 @@ html[data-app-hidden="true"] *::after {
   }
 }
 
-/* Transcript find: highlight the matched substring only. */
-mark[data-transcript-find] {
-  background: var(--accent-orange-soft);
-  color: inherit;
-  border-radius: 2px;
-  padding: 0 0.08em;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+/* Transcript find: the matched substrings, and the one jumped to (CSS Custom
+ * Highlight API; see AgentView/transcript-find-highlight.ts). Highlights take
+ * no box styles, so the active match is told apart by an underline. */
+::highlight(transcript-find) {
+  background-color: var(--accent-orange-soft);
 }
-mark[data-transcript-find][data-transcript-find-active] {
-  background: color-mix(in srgb, var(--accent-orange) 42%, var(--accent-orange-soft));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-orange-text) 40%, transparent);
+::highlight(transcript-find-active) {
+  background-color: color-mix(in srgb, var(--accent-orange) 42%, var(--accent-orange-soft));
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-orange-text) 60%, transparent);
+  text-decoration-thickness: 2px;
 }
 
 /* Plan review: passages with a comment, and the one just jumped to

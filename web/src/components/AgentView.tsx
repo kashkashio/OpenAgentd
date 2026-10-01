@@ -15,7 +15,7 @@
  * `AgentPane` for split/unified modes.
  */
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useDeferredValue, useMemo, memo } from 'react'
 import OctobotMascot from '@/assets/brand/octobot-agentd-source.png'
 
 import { MarkdownBlock } from '@/utils/markdown'
@@ -44,7 +44,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { useAutoFollowScroll } from '@/hooks/useAutoFollowScroll'
 import { TranscriptFind } from './AgentView/TranscriptFind'
 import { collectTranscriptFindMatches, isTranscriptFindableBlock } from './AgentView/transcript-find'
-import { applyTranscriptFindHighlight, clearTranscriptFindHighlight } from './AgentView/transcript-find-highlight'
+import { clearTranscriptFind, paintTranscriptFind } from './AgentView/transcript-find-highlight'
 
 const INITIAL_RENDERED_TURNS = 80
 const TURN_RENDER_STEP = 80
@@ -186,6 +186,19 @@ function latestQuotaWait(blocks: ContentBlock[]): QuotaWait | null {
     if (wait) return wait
   }
   return null
+}
+
+/**
+ * Bring a find match to the middle of the transcript. A range has no
+ * ``scrollIntoView``: its element is brought into view first, so a match in a
+ * horizontally scrolled code block is revealed, then the match itself is
+ * centred (the element can be far taller than the viewport).
+ */
+function scrollRangeToCenter(root: HTMLElement, range: Range) {
+  range.startContainer.parentElement?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  const rect = range.getBoundingClientRect()
+  const rootRect = root.getBoundingClientRect()
+  root.scrollTop += rect.top + rect.height / 2 - (rootRect.top + root.clientHeight / 2)
 }
 
 function formatQuotaCountdown(resetsAt: number, now = Date.now()): string {
@@ -442,11 +455,14 @@ export function AgentView({
   // `[...blocks, ...liveTail]` copy is never needed here — nothing reads full
   // merged content, only counts and the last block).
   const liveTail = useMemo(() => liveBlockTail(blocks, currentBlocks), [blocks, currentBlocks])
+  // Matching walks the whole transcript, so it trails the keystroke that asked
+  // for it: the find field updates at once, the matches when React has time.
+  const deferredFindQuery = useDeferredValue(findQuery)
   // Merged only while find is open: the copy costs a whole-transcript walk
   // on every streamed token.
   const findMatches = useMemo(
-    () => (findOpen ? collectTranscriptFindMatches([...blocks, ...liveTail], findQuery) : []),
-    [blocks, findOpen, findQuery, liveTail],
+    () => (findOpen ? collectTranscriptFindMatches([...blocks, ...liveTail], deferredFindQuery) : []),
+    [blocks, deferredFindQuery, findOpen, liveTail],
   )
   const clampedFindIndex = findMatches.length === 0
     ? 0
@@ -832,26 +848,35 @@ export function AgentView({
     const root = scrollRef.current
     if (!root) return
     if (!findOpen) {
-      clearTranscriptFindHighlight(root)
+      clearTranscriptFind()
       return
     }
-    let observer: MutationObserver | null = null
     const paint = (scrollActive: boolean) => {
-      observer?.disconnect()
-      const active = applyTranscriptFindHighlight(root, findQuery, clampedFindIndex)
+      const active = paintTranscriptFind(root, deferredFindQuery, clampedFindIndex)
       if (scrollActive && active) {
         attachedRef.current = false
-        active.scrollIntoView({ block: 'center' })
+        scrollRangeToCenter(root, active)
       }
-      observer?.observe(root, { subtree: true, childList: true, characterData: true })
     }
-    observer = new MutationObserver(() => paint(false))
+    // Painting never touches the DOM, so this only sees React's own updates
+    // (a streamed token, a fold opening). Those move text under the painted
+    // ranges; repaint once per frame, however many arrived.
+    let frame: number | null = null
+    const observer = new MutationObserver(() => {
+      if (frame !== null) return
+      frame = requestAnimationFrame(() => {
+        frame = null
+        paint(false)
+      })
+    })
+    observer.observe(root, { subtree: true, childList: true, characterData: true })
     paint(true)
     return () => {
-      observer?.disconnect()
-      clearTranscriptFindHighlight(root)
+      observer.disconnect()
+      if (frame !== null) cancelAnimationFrame(frame)
+      clearTranscriptFind()
     }
-  }, [attachedRef, clampedFindIndex, findOpen, findQuery, scrollRef])
+  }, [attachedRef, clampedFindIndex, deferredFindQuery, findOpen, scrollRef])
 
   return (
     <FileRefContext.Provider value={fileRefOpener ?? null}>
