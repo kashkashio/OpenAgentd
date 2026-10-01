@@ -8,6 +8,7 @@ import {
   switchToBundledAppBackend,
 } from '@/lib/app-backend'
 import { queryClient } from '@/lib/query-client'
+import { preloadConnectedApp } from '@/lib/connected-app-preload'
 import { useLspInstallStore } from '@/stores/useLspInstallStore'
 
 const DESKTOP_BOOTSTRAP_POLL_MS = 300
@@ -111,6 +112,10 @@ export function useAppBackendBootstrap(): AppBackendBootstrap {
 
     const finishReady = () => {
       if (cancelled) return
+      // Start the shell's first reads before it renders (an effect would run
+      // after the whole router tree's first commit), and again for a
+      // restarted or switched backend, whose cache was just cleared.
+      preloadConnectedApp(queryClient)
       setFailed(false)
       setUnavailable(false)
       setReady(true)
