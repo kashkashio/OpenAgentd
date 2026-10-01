@@ -19,6 +19,7 @@ tokio-tungstenite = "0.29"
 percent-encoding = "2"
 bytes = "1"
 url = "2"
+tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 tempfile = "3"
