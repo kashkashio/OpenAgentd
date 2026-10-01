@@ -15,6 +15,9 @@ export function useSmoothStream(targetText: string, isStreaming: boolean): strin
   const [displayedText, setDisplayedText] = useState(targetText)
   const targetRef = useRef(targetText)
   const displayedLengthRef = useRef(targetText.length)
+  // Outlives the effect: it re-runs on every delta (~16 ms), and a clock local
+  // to it reset on each run, so the throttle never held between deltas.
+  const lastUpdateTimeRef = useRef(0)
 
   useEffect(() => {
     targetRef.current = targetText
@@ -38,7 +41,6 @@ export function useSmoothStream(targetText: string, isStreaming: boolean): strin
 
     let frameId: number
     let active = true
-    let lastUpdateTime = 0
 
     const loop = (time?: number) => {
       if (!active) return
@@ -56,7 +58,7 @@ export function useSmoothStream(targetText: string, isStreaming: boolean): strin
         throttleMs = 35
       }
 
-      if (timestamp - lastUpdateTime >= throttleMs) {
+      if (timestamp - lastUpdateTimeRef.current >= throttleMs) {
         setDisplayedText((prev) => {
           const target = targetRef.current
           // If target changed to something that is no longer an extension, snap.
@@ -76,7 +78,7 @@ export function useSmoothStream(targetText: string, isStreaming: boolean): strin
           displayedLengthRef.current = nextText.length
           return nextText
         })
-        lastUpdateTime = timestamp
+        lastUpdateTimeRef.current = timestamp
       }
 
       // Nothing left to animate — stop asking for frames. Re-arming

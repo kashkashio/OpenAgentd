@@ -50,3 +50,4 @@ shlex.workspace = true
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }

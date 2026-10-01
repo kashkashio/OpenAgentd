@@ -152,6 +152,34 @@ pub fn tail_text(text: &str, max_lines: usize, max_bytes: usize) -> (String, boo
     (format!("{}\n...output truncated ({omitted} bytes omitted)...\n{}", decode_ignore(&enc[..hb]), decode_ignore(&enc[enc.len() - tb..])), true)
 }
 
+/// Appends `bytes` decoded lossily, holding back an incomplete trailing
+/// UTF-8 sequence in `carry` so a character split across pipe reads is not
+/// shown as two U+FFFD.
+fn push_utf8_lossy(out: &mut String, carry: &mut Vec<u8>, bytes: &[u8]) {
+    carry.extend_from_slice(bytes);
+    let cut = carry.len() - incomplete_utf8_tail(carry);
+    out.push_str(&String::from_utf8_lossy(&carry[..cut]));
+    carry.drain(..cut);
+}
+
+/// Length of a valid-looking but unfinished UTF-8 sequence at the end of `b`.
+fn incomplete_utf8_tail(b: &[u8]) -> usize {
+    for back in 1..=b.len().min(3) {
+        let c = b[b.len() - back];
+        if c & 0xC0 == 0x80 {
+            continue;
+        }
+        let need = match c {
+            0xF0..=0xF4 => 4,
+            0xE0..=0xEF => 3,
+            0xC2..=0xDF => 2,
+            _ => 1,
+        };
+        return if need > back { back } else { 0 };
+    }
+    0
+}
+
 fn live_window(text: &str) -> (String, bool) {
     let mut t = text.to_string();
     let mut cut = false;
@@ -541,19 +569,23 @@ impl Tool for ShellTool {
             let pending = pending.clone();
             async move {
                 let mut buf = vec![0u8; 8192];
+                let mut carry: Vec<u8> = vec![];
                 loop {
                     match out.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             collector.lock().unwrap().add(&buf[..n]);
                             let mut p = pending.lock().unwrap();
-                            p.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            push_utf8_lossy(&mut p, &mut carry, &buf[..n]);
                             if p.chars().count() > 2 * LIVE_MAX_CHARS {
                                 let (kept, _) = live_window(&p);
                                 *p = format!("{LIVE_TRUNCATED}{kept}");
                             }
                         }
                     }
+                }
+                if !carry.is_empty() {
+                    pending.lock().unwrap().push_str(&String::from_utf8_lossy(&carry));
                 }
                 out
             }
@@ -668,6 +700,25 @@ mod tests {
     #[test]
     fn strips_ansi() {
         assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
+    }
+
+    #[test]
+    fn live_text_keeps_characters_split_across_reads() {
+        let (mut out, mut carry) = (String::new(), Vec::new());
+        let bytes = "é 日本 🦀".as_bytes();
+        // Every split point, including inside 2-, 3- and 4-byte characters.
+        for cut in 0..=bytes.len() {
+            out.clear();
+            push_utf8_lossy(&mut out, &mut carry, &bytes[..cut]);
+            push_utf8_lossy(&mut out, &mut carry, &bytes[cut..]);
+            assert_eq!(out, "é 日本 🦀", "split at byte {cut}");
+            assert!(carry.is_empty());
+        }
+        // Invalid bytes still decode lossily instead of being held forever.
+        out.clear();
+        push_utf8_lossy(&mut out, &mut carry, b"a\xffb\x80");
+        assert_eq!(out, "a\u{fffd}b\u{fffd}");
+        assert!(carry.is_empty());
     }
 
     fn ctx(ws: &Path) -> ToolContext {

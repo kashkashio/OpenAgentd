@@ -75,6 +75,9 @@ describe('Review dock layout', () => {
     // 45% of a 1000px center, capped so the chat keeps 400px.
     expect(separator.getAttribute('aria-valuenow')).toBe('450')
     expect(separator.getAttribute('aria-valuemax')).toBe('600')
+    // The body keeps that width while the aside tweens open or closed.
+    const body = dock.querySelector<HTMLElement>('[data-review-dock]')!
+    expect(body.parentElement!.style.width).toBe('450px')
 
     fireEvent.keyDown(separator, { key: 'ArrowLeft' })
     expect(useLayoutStore.getState().dockRatio).toBeCloseTo(0.466, 3)

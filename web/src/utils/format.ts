@@ -24,12 +24,17 @@ export function shortModelName(modelId: string | null | undefined): string | nul
   return modelId.split(':').at(-1)?.split('/').at(-1) || modelId
 }
 
+// Building an ``Intl`` formatter costs far more than using one, and the
+// transcript formats a time per message on every render. Build each once.
+let timeFormatter: Intl.DateTimeFormat | undefined
+
 export function formatTime(date: Date): string {
-  return date.toLocaleTimeString(undefined, {
+  timeFormatter ??= new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
     hour12: false,
   })
+  return timeFormatter.format(date)
 }
 
 /**
@@ -113,6 +118,49 @@ export function formatCompactUpcoming(dateStr: string | null | undefined, now: D
 // zone and tell us the UTC offset of that zone at any instant. We avoid
 // pulling in `date-fns-tz` for two small helpers.
 
+type ZoneFormatterKind = 'offset' | 'wallClock' | 'display'
+
+const ZONE_FORMAT_OPTIONS: Record<ZoneFormatterKind, { locale: string; options: Intl.DateTimeFormatOptions }> = {
+  offset: {
+    locale: 'en-US',
+    options: {
+      hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    },
+  },
+  wallClock: {
+    locale: 'en-US',
+    options: {
+      hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    },
+  },
+  display: {
+    locale: 'en-GB',
+    options: {
+      hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    },
+  },
+}
+
+const zoneFormatters = new Map<string, Intl.DateTimeFormat>()
+
+/** One formatter per (kind, zone). Throws for an unknown zone, never caching it. */
+function zoneFormatter(kind: ZoneFormatterKind, timeZone: string): Intl.DateTimeFormat {
+  const key = `${kind}\u0000${timeZone}`
+  let formatter = zoneFormatters.get(key)
+  if (!formatter) {
+    const { locale, options } = ZONE_FORMAT_OPTIONS[kind]
+    formatter = new Intl.DateTimeFormat(locale, { ...options, timeZone })
+    zoneFormatters.set(key, formatter)
+  }
+  return formatter
+}
+
 /**
  * Me get the offset (in minutes, east-of-UTC) that the IANA `timeZone` was
  * at the given UTC instant. e.g. `Asia/Ho_Chi_Minh` → 420 always;
@@ -122,13 +170,7 @@ export function formatCompactUpcoming(dateStr: string | null | undefined, now: D
  */
 export function getTimezoneOffsetMinutes(timeZone: string, instant: Date): number {
   try {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      hourCycle: 'h23',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    })
-    const parts = dtf.formatToParts(instant)
+    const parts = zoneFormatter('offset', timeZone).formatToParts(instant)
     const map: Record<string, string> = {}
     for (const p of parts) if (p.type !== 'literal') map[p.type] = p.value
     const asUTC = Date.UTC(
@@ -185,13 +227,7 @@ export function isoToWallClock(iso: string, timeZone: string): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return ''
   try {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      hourCycle: 'h23',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit',
-    })
-    const parts = dtf.formatToParts(date)
+    const parts = zoneFormatter('wallClock', timeZone).formatToParts(date)
     const map: Record<string, string> = {}
     for (const p of parts) if (p.type !== 'literal') map[p.type] = p.value
     return `${map.year}-${map.month}-${map.day}T${map.hour}:${map.minute}`
@@ -210,13 +246,7 @@ export function formatInTimezone(iso: string | null | undefined, timeZone: strin
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return ''
   try {
-    const dtf = new Intl.DateTimeFormat('en-GB', {
-      timeZone,
-      hourCycle: 'h23',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit',
-    })
-    const parts = dtf.formatToParts(date)
+    const parts = zoneFormatter('display', timeZone).formatToParts(date)
     const map: Record<string, string> = {}
     for (const p of parts) if (p.type !== 'literal') map[p.type] = p.value
     return `${map.day}/${map.month}/${map.year} ${map.hour}:${map.minute}`

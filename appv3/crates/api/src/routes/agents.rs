@@ -356,11 +356,6 @@ fn validate_or_restore(rollback_name: Option<&str>, rollback_content: Option<&st
 // ── registry ────────────────────────────────────────────────────────────────
 
 const HIDDEN_TOOLS: [&str; 4] = ["skill", "todo_manage", "schedule_task", "note"];
-/// Registry entries v2 exposes but v3 does not implement.
-const V2_ONLY_TOOL_DESCRIPTIONS: [(&str, &str); 2] = [
-    ("generate_image", "Create or edit an image in the session workspace. Returns ``![alt](file.ext)`` markdown; include it verbatim so it renders inline. On failure returns ``Error: ...``."),
-    ("generate_video", "Generate a video clip in the session workspace using Veo. Use first_frame for image-to-video, last_frame for interpolation, reference_images for subject consistency, or extend_video to extend a clip. Returns ``![alt](file.mp4)`` markdown; include it verbatim so it renders inline. On failure returns ``Error: ...``."),
-];
 
 fn settings_err(e: impl std::fmt::Display) -> ApiError {
     ApiError::internal(e)
@@ -411,22 +406,28 @@ fn member_entries() -> Vec<Value> {
     profiles.into_iter().map(|(_, p)| json!({"name": p.name, "description": p.description, "tools": p.tools, "model": p.model})).collect()
 }
 
+/// Built-in and MCP tools agents can enable, sorted, minus the ones the
+/// runtime injects on its own.
+fn tool_catalog() -> Vec<Value> {
+    let mut catalog: Vec<(String, String)> = loader::default_tool_registry()
+        .into_values()
+        .map(|tool| {
+            let desc = tool.definition()["function"]["description"].as_str().unwrap_or("").to_string();
+            (tool.name().to_string(), desc)
+        })
+        .filter(|(n, _)| !HIDDEN_TOOLS.contains(&n.as_str()))
+        .collect();
+    catalog.sort_by(|a, b| a.0.cmp(&b.0));
+    catalog.into_iter().map(|(n, d)| json!({"name": n, "description": d})).collect()
+}
+
 async fn get_registry() -> ApiResult<Response> {
     drop(crate::registry_refresh_gate().read().await);
     warm_provider_model_cache().await?;
     let rt = rs::load_runtime_settings().map_err(settings_err)?;
     let custom = rt.summarization.prompt_token_threshold;
 
-    let mut catalog: Vec<(String, String)> = V2_ONLY_TOOL_DESCRIPTIONS.iter().map(|(n, d)| (n.to_string(), d.to_string())).collect();
-    for (name, tool) in loader::default_tool_registry() {
-        let def = tool.definition();
-        let desc = def["function"]["description"].as_str().unwrap_or("").to_string();
-        catalog.retain(|(n, _)| *n != name);
-        catalog.push((tool.name().to_string(), desc));
-    }
-    catalog.retain(|(n, _)| !HIDDEN_TOOLS.contains(&n.as_str()));
-    catalog.sort_by(|a, b| a.0.cmp(&b.0));
-    let tools: Vec<Value> = catalog.into_iter().map(|(n, d)| json!({"name": n, "description": d})).collect();
+    let tools = tool_catalog();
 
     let mut skills: Vec<(String, String)> = blocking(discover_runtime_skills).await.into_iter().map(|i| (i.name, i.description)).collect();
     skills.sort_by(|a, b| a.0.cmp(&b.0));
@@ -649,6 +650,20 @@ async fn delete_by_name(name: String) -> ApiResult<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_catalog_lists_registry_tools_sorted_without_hidden_ones() {
+        let tools = tool_catalog();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+        for n in ["generate_image", "generate_video", "read", "shell"] {
+            let t = tools.iter().find(|t| t["name"] == n).unwrap_or_else(|| panic!("{n} missing: {names:?}"));
+            assert!(!t["description"].as_str().unwrap().is_empty(), "{n}");
+        }
+        assert!(names.iter().all(|n| !HIDDEN_TOOLS.contains(n)), "{names:?}");
+    }
 
     #[test]
     fn parse_content_rules() {

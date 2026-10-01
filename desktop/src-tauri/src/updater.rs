@@ -139,98 +139,136 @@ pub fn validate_install_preconditions(
     Ok(())
 }
 
+/// Local code-signing identity for unsigned release bundles.
+///
+/// It lives in a keychain of its own rather than the login keychain: with a
+/// key in the login keychain, codesign showed "codesign wants to access key
+/// …" for every signature (several per update with ``--deep``) unless the
+/// user picked Always Allow. We hold this keychain's password, so it can be
+/// unlocked and given a partition list that lets codesign in silently.
 #[cfg(target_os = "macos")]
-fn resolve_macos_signing_identity() -> String {
-    let local_cert_name = "OpenAgentd Local Signer";
+const LOCAL_SIGNER: &str = "OpenAgentd Local Signer";
 
-    if let Ok(output) = std::process::Command::new("security")
-        .args(["find-identity", "-v", "-p", "codesigning"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.contains(local_cert_name) {
-            return local_cert_name.to_string();
-        }
-        for line in stdout.lines() {
-            if line.contains("Apple Development:") {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        return line[start + 1..start + 1 + end].to_string();
-                    }
-                }
-            }
-        }
-    }
+/// Not a secret. The certificate is trusted nowhere and the designated
+/// requirement is identifier-only, so the key grants nothing an ad-hoc
+/// signature could not; the password only lets us unlock without a prompt.
+/// ``desktop/scripts/install.sh`` and the Homebrew cask use the same values.
+#[cfg(target_os = "macos")]
+const SIGNING_KEYCHAIN_PASSWORD: &str = "openagentd-local-signing";
 
-    if let Ok(tmp_dir) = tempfile::tempdir() {
-        let cert_cnf = tmp_dir.path().join("cert.cnf");
-        let key_file = tmp_dir.path().join("oad.key");
-        let crt_file = tmp_dir.path().join("oad.crt");
-        let p12_file = tmp_dir.path().join("oad.p12");
+#[cfg(target_os = "macos")]
+fn signing_keychain_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join("Library/Keychains/openagentd-signing.keychain-db"))
+}
 
-        let cnf_content = "[req]\ndistinguished_name = req_distinguished_name\nprompt = no\n\n[req_distinguished_name]\nCN = OpenAgentd Local Signer\nO = OpenAgentd Local\n\n[v3_req]\nbasicConstraints = CA:FALSE\nkeyUsage = digitalSignature\nextendedKeyUsage = codeSigning\n";
-        if std::fs::write(&cert_cnf, cnf_content).is_ok() {
-            let req_ok = std::process::Command::new("openssl")
-                .args([
-                    "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
-                    "-config", cert_cnf.to_str().unwrap(),
-                    "-extensions", "v3_req",
-                    "-keyout", key_file.to_str().unwrap(),
-                    "-out", crt_file.to_str().unwrap(),
-                ])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+/// Who signs a bundle that needs a stable signature.
+#[cfg(target_os = "macos")]
+enum MacSigner {
+    /// An identity already in the login keychain (Apple Development).
+    Login(String),
+    /// [`LOCAL_SIGNER`] from its own keychain.
+    Local(PathBuf),
+    AdHoc,
+}
 
-            if req_ok {
-                let p12_ok = std::process::Command::new("openssl")
-                    .args([
-                        "pkcs12", "-export", "-legacy",
-                        "-inkey", key_file.to_str().unwrap(),
-                        "-in", crt_file.to_str().unwrap(),
-                        "-name", local_cert_name,
-                        "-out", p12_file.to_str().unwrap(),
-                        "-passout", "pass:oadsecret",
-                    ])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-
-                if p12_ok {
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    let keychain = format!("{home}/Library/Keychains/login.keychain-db");
-                    let import_ok = std::process::Command::new("security")
-                        .args([
-                            "import", p12_file.to_str().unwrap(),
-                            "-k", &keychain,
-                            "-P", "oadsecret",
-                            "-T", "/usr/bin/codesign",
-                        ])
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false);
-
-                    if import_ok {
-                        let _ = std::process::Command::new("security")
-                            .args([
-                                "add-trusted-cert", "-d", "-r", "trustRoot",
-                                "-p", "codeSign",
-                                "-k", &keychain,
-                                crt_file.to_str().unwrap(),
-                            ])
-                            .output();
-                        return local_cert_name.to_string();
-                    }
-                }
-            }
+/// An Apple Development identity when there is one (as before; its key was
+/// made by Xcode and its Team ID scopes the app's keychain items), else the
+/// local identity, else ad hoc.
+#[cfg(target_os = "macos")]
+fn resolve_macos_signer() -> MacSigner {
+    if let Some(out) = security(&["find-identity", "-v", "-p", "codesigning"]) {
+        if let Some(name) = apple_development_identity(&String::from_utf8_lossy(&out.stdout)) {
+            return MacSigner::Login(name.to_string());
         }
     }
+    signing_keychain_path().map_or(MacSigner::AdHoc, |keychain| local_signer(&keychain))
+}
 
-    "-".to_string()
+/// The first Apple Development identity in ``security find-identity`` output.
+#[cfg(target_os = "macos")]
+fn apple_development_identity(find_identity: &str) -> Option<&str> {
+    find_identity
+        .lines()
+        .filter(|line| line.contains("\"Apple Development:"))
+        .find_map(|line| line.split('"').nth(1))
 }
 
 #[cfg(target_os = "macos")]
-fn prepare_macos_update_archive(bytes: Vec<u8>, bundle_id: &str) -> Result<Vec<u8>, String> {
+fn local_signer(keychain: &Path) -> MacSigner {
+    if ensure_local_signer(keychain) {
+        MacSigner::Local(keychain.to_path_buf())
+    } else {
+        MacSigner::AdHoc
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn security(args: &[&str]) -> Option<std::process::Output> {
+    std::process::Command::new("/usr/bin/security")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+}
+
+/// Unlock ``keychain`` (creating it and the identity on first use). True when
+/// codesign can sign with [`LOCAL_SIGNER`] from it without any prompt.
+#[cfg(target_os = "macos")]
+fn ensure_local_signer(keychain: &Path) -> bool {
+    let Some(kc) = keychain.to_str() else { return false };
+    if !keychain.exists() {
+        if security(&["create-keychain", "-p", SIGNING_KEYCHAIN_PASSWORD, kc]).is_none() {
+            return false;
+        }
+        // No auto-lock timeout; it is unlocked again before every use anyway.
+        let _ = security(&["set-keychain-settings", kc]);
+    }
+    if security(&["unlock-keychain", "-p", SIGNING_KEYCHAIN_PASSWORD, kc]).is_none() {
+        return false;
+    }
+    let listed = security(&["find-identity", "-p", "codesigning", kc])
+        .is_some_and(|out| String::from_utf8_lossy(&out.stdout).contains(&format!("\"{LOCAL_SIGNER}\"")));
+    listed || create_local_signer(kc).is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn create_local_signer(keychain: &str) -> Option<()> {
+    let dir = tempfile::tempdir().ok()?;
+    let path = |name: &str| dir.path().join(name).to_str().map(str::to_owned);
+    let (cnf, key, crt, p12) = (path("cert.cnf")?, path("key.pem")?, path("cert.pem")?, path("openagentd-signing.p12")?);
+    std::fs::write(
+        &cnf,
+        "[req]\ndistinguished_name = dn\nprompt = no\n\n[dn]\nCN = OpenAgentd Local Signer\nO = OpenAgentd Local\n\n[v3_req]\nbasicConstraints = CA:FALSE\nkeyUsage = digitalSignature\nextendedKeyUsage = codeSigning\n",
+    )
+    .ok()?;
+    // The system LibreSSL by absolute path: its default PKCS#12 encryption is
+    // the one ``security import`` reads. (OpenSSL 3 from PATH needs
+    // ``-legacy``, which LibreSSL rejects.)
+    let openssl = |args: &[&str]| {
+        std::process::Command::new("/usr/bin/openssl")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+    };
+    openssl(&[
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+        "-config", &cnf, "-extensions", "v3_req", "-keyout", &key, "-out", &crt,
+    ])?;
+    openssl(&["pkcs12", "-export", "-inkey", &key, "-in", &crt, "-name", LOCAL_SIGNER, "-out", &p12, "-passout", "pass:openagentd"])?;
+    security(&["import", &p12, "-k", keychain, "-P", "openagentd", "-T", "/usr/bin/codesign"])?;
+    // Without the partition list codesign still prompts, despite ``-T``.
+    security(&["set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", SIGNING_KEYCHAIN_PASSWORD, keychain])?;
+    Some(())
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_macos_update_archive(
+    bytes: Vec<u8>,
+    bundle_id: &str,
+    signer: impl FnOnce() -> MacSigner,
+) -> Result<Vec<u8>, String> {
     use flate2::{read::GzDecoder, write::GzEncoder, Compression};
     use std::ffi::OsStr;
 
@@ -293,14 +331,18 @@ fn prepare_macos_update_archive(bytes: Vec<u8>, bundle_id: &str) -> Result<Vec<u
         return Ok(bytes);
     }
 
-    // Pass the explicit identifier-only requirement for *every* local signing
-    // identity (persistent local cert, Apple Development, ad-hoc). Without
-    // ``-r=`` codesign derives a default requirement that pins the signing
-    // certificate, and self-signed local certs are not stable across machines
-    // or regenerations.
-    let identity = resolve_macos_signing_identity();
-    let output = std::process::Command::new("codesign")
-        .args(["--force", "--deep", "--sign", &identity, "--options", "runtime"])
+    // Pass the explicit identifier-only requirement for every signer (Apple
+    // Development, the local identity, ad hoc). Without ``-r=`` codesign derives a
+    // default requirement that pins the signing certificate, and self-signed
+    // local certs are not stable across machines or regenerations.
+    let mut codesign = std::process::Command::new("codesign");
+    codesign.args(["--force", "--deep", "--options", "runtime"]);
+    match signer() {
+        MacSigner::Login(identity) => codesign.args(["--sign", &identity]),
+        MacSigner::Local(keychain) => codesign.arg("--keychain").arg(keychain).args(["--sign", LOCAL_SIGNER]),
+        MacSigner::AdHoc => codesign.args(["--sign", "-"]),
+    };
+    let output = codesign
         .arg(format!("-r={stable_requirement}"))
         .arg("--entitlements")
         .arg(&entitlements)
@@ -562,7 +604,9 @@ pub async fn run_update_install(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let bytes = {
         let bundle_id = app.config().identifier.clone();
-        tokio::task::spawn_blocking(move || prepare_macos_update_archive(bytes, &bundle_id))
+        tokio::task::spawn_blocking(move || {
+            prepare_macos_update_archive(bytes, &bundle_id, resolve_macos_signer)
+        })
             .await
             .map_err(|e| format!("Prepare macOS update task panicked: {e}"))??
     };
@@ -786,8 +830,15 @@ pub fn format_download_progress(downloaded_mb: usize, total_bytes: Option<u64>) 
 
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests {
-    use super::prepare_macos_update_archive;
+    use super::{apple_development_identity, local_signer, prepare_macos_update_archive};
     use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+
+    #[test]
+    fn picks_the_first_apple_development_identity() {
+        let listing = "  1) 1A2B \"OpenAgentd Local Signer\"\n  2) 3C4D \"Apple Development: dev@example.com (T32MD9LA8Y)\"\n  3) 5E6F \"Apple Development: other\"\n     3 valid identities found\n";
+        assert_eq!(apple_development_identity(listing), Some("Apple Development: dev@example.com (T32MD9LA8Y)"));
+        assert_eq!(apple_development_identity("     0 valid identities found\n"), None);
+    }
 
     #[test]
     fn prepared_update_uses_a_stable_designated_requirement() {
@@ -826,10 +877,13 @@ mod macos_tests {
             .finish()
             .expect("compress input tar");
 
-        let prepared = prepare_macos_update_archive(input, "com.openagentd.desktop")
+        // A throwaway signing keychain and no login-keychain lookup: the test
+        // must not touch the keychains (or Apple identities) of whoever runs it.
+        let keychain = source.path().join("signing.keychain-db");
+        let prepared = prepare_macos_update_archive(input, "com.openagentd.desktop", || local_signer(&keychain))
             .expect("prepare update archive");
         let prepared_again =
-            prepare_macos_update_archive(prepared.clone(), "com.openagentd.desktop")
+            prepare_macos_update_archive(prepared.clone(), "com.openagentd.desktop", || local_signer(&keychain))
                 .expect("recheck prepared update archive");
         assert_eq!(
             prepared_again, prepared,
@@ -863,6 +917,19 @@ mod macos_tests {
         assert_eq!(
             designated, "designated => identifier \"com.openagentd.desktop\"",
             "designated requirement must be identifier-only and stable: {requirement}"
+        );
+        // Signed by the local identity from its own keychain. Signing with a
+        // key in the login keychain prompted "codesign wants to access key"
+        // for every signature.
+        let details = std::process::Command::new("codesign")
+            .args(["-d", "-vv"])
+            .arg(extracted.path().join("OpenAgentd.app"))
+            .output()
+            .expect("inspect prepared signer");
+        let details = String::from_utf8_lossy(&details.stderr);
+        assert!(
+            details.lines().any(|line| line == "Authority=OpenAgentd Local Signer"),
+            "expected the local signing identity: {details}"
         );
     }
 }

@@ -195,8 +195,8 @@ fn safe_join(root: &Path, rel: &str, want_dir: bool) -> Option<PathBuf> {
 
 /// `_parse_line_ref` → (path, label, start, end).
 fn parse_line_ref(rel: &str) -> (String, String, Option<usize>, Option<usize>) {
-    let re = regex::Regex::new(r"^(?P<path>.+)#L(?P<start>\d+)(?:-L?(?P<end>\d+))?$").unwrap();
-    let Some(c) = re.captures(rel) else { return (rel.into(), rel.into(), None, None) };
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^(?P<path>.+)#L(?P<start>\d+)(?:-L?(?P<end>\d+))?$").unwrap());
+    let Some(c) = RE.captures(rel) else { return (rel.into(), rel.into(), None, None) };
     let path = c["path"].to_string();
     let (Ok(start), end) = (c["start"].parse::<usize>(), c.name("end").map(|m| m.as_str().parse::<usize>())) else {
         return (rel.into(), rel.into(), None, None);

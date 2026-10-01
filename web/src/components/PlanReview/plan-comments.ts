@@ -228,15 +228,4 @@ export function clearPlanReviewDrafts(): void {
 export const PLAN_COMMENT_HIGHLIGHT = 'plan-comment'
 export const PLAN_COMMENT_ACTIVE_HIGHLIGHT = 'plan-comment-active'
 
-interface HighlightRegistry {
-  set(name: string, highlight: unknown): void
-  delete(name: string): void
-}
-
-/** `CSS.highlights` and `Highlight`, where the browser has them. */
-export function highlightApi(): { registry: HighlightRegistry; create: (ranges: Range[]) => unknown } | null {
-  const registry = (globalThis as { CSS?: { highlights?: HighlightRegistry } }).CSS?.highlights
-  const Ctor = (globalThis as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight
-  if (!registry || !Ctor) return null
-  return { registry, create: (ranges) => new Ctor(...ranges) }
-}
+export { highlightApi } from '@/utils/css-highlights'

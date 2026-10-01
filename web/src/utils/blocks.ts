@@ -1,7 +1,20 @@
+import { current, isDraft } from 'immer'
 import type { ContentBlock } from '@/api/types'
 
 export function generateBlockId(): string {
   return `block-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+/**
+ * The plain array behind ``blocks``, for read-only scans inside an Immer
+ * recipe. Reading a draft array element by element (``find``, ``some``, a
+ * loop, a spread) creates a child draft per block, so a scan over a long
+ * session cost ~1 ms each. An unmodified draft hands back its base array
+ * as is; a modified one, an exact snapshot. The elements are frozen: write
+ * through ``blocks`` (``blocks[i] = …``), never through the result.
+ */
+export function readBlocks(blocks: ContentBlock[]): readonly ContentBlock[] {
+  return isDraft(blocks) ? current(blocks) : blocks
 }
 
 /** Cache of confirmed-block-id sets, keyed on the `blocks` array identity.
@@ -71,15 +84,18 @@ export function mergeBlocks(
 
 /**
  * Blocks after ``id`` that render something; ``null`` once ``id`` is gone.
- * Scans from the end, so the cost is the number of blocks counted.
+ * Scans from the end, so the cost is the number of blocks counted. ``liveTail``
+ * follows ``blocks``, so callers need not merge the two to count across them.
  */
-export function countBlocksAfter(blocks: ContentBlock[], id: string): number | null {
+export function countBlocksAfter(blocks: ContentBlock[], id: string, liveTail: ContentBlock[] = []): number | null {
   let count = 0
-  for (let i = blocks.length - 1; i >= 0; i -= 1) {
-    const block = blocks[i]
-    if (block.id === id) return count
-    const blank = (block.type === 'text' || block.type === 'thinking') && block.content.trim().length === 0
-    if (!blank) count += 1
+  for (const part of [liveTail, blocks]) {
+    for (let i = part.length - 1; i >= 0; i -= 1) {
+      const block = part[i]
+      if (block.id === id) return count
+      const blank = (block.type === 'text' || block.type === 'thinking') && block.content.trim().length === 0
+      if (!blank) count += 1
+    }
   }
   return null
 }
@@ -112,28 +128,29 @@ function isReplaySnapshot(existing: string, incoming: string): boolean {
 }
 
 /**
- * Merge a streamed `text`/`thinking` chunk into `blocks`.
+ * Merge a streamed `text`/`thinking` chunk into `blocks`, in place.
  *
- * Shared by `appendText` and `appendThinking` — the two differ only in the
- * block type they accumulate into.
+ * `blocks` may be an Immer draft: only the touched block is read through it
+ * and replaced by index, so a delta never drafts the rest of the turn. The
+ * blocks themselves are never mutated, which keeps this safe on a plain copy
+ * of frozen state too (see `appendText`).
  */
-function appendStreamed(
+export function appendStreamedInto(
   blocks: ContentBlock[],
   type: 'text' | 'thinking',
   text: string,
   replayPossible: boolean,
-): ContentBlock[] {
+): void {
   const lastIdx = blocks.length - 1
   const last = blocks[lastIdx]
 
   // Common case: keep filling the open block of this kind.
   if (last && last.type === type) {
-    const next = [...blocks]
-    next[lastIdx] = {
+    blocks[lastIdx] = {
       ...last,
       content: replayPossible && isReplaySnapshot(last.content, text) ? text : last.content + text,
     }
-    return next
+    return
   }
 
   // Attach replay whose snapshot belongs to an *earlier* block of this kind in
@@ -146,19 +163,19 @@ function appendStreamed(
   // marks a real attach: during live streaming a thinking chunk arriving after
   // text is a legitimately *new* reasoning block and must not be merged back.
   if (replayPossible) {
+    const view = readBlocks(blocks)
     for (let i = lastIdx; i >= 0; i--) {
-      const block = blocks[i]
+      const block = view[i]
       // A user block ends the turn the snapshot describes — never reach past it.
       if (block.type === 'user') break
       if (block.type !== type) continue
       if (!isReplaySnapshot(block.content, text)) break
-      const next = [...blocks]
-      next[i] = { ...block, content: text }
-      return next
+      blocks[i] = { ...block, content: text }
+      return
     }
   }
 
-  return [...blocks, { id: generateBlockId(), type, content: text }]
+  blocks.push({ id: generateBlockId(), type, content: text })
 }
 
 export function appendThinking(
@@ -166,7 +183,9 @@ export function appendThinking(
   text: string,
   replayPossible = false,
 ): ContentBlock[] {
-  return appendStreamed(blocks, 'thinking', text, replayPossible)
+  const next = [...blocks]
+  appendStreamedInto(next, 'thinking', text, replayPossible)
+  return next
 }
 
 export function appendText(
@@ -174,44 +193,104 @@ export function appendText(
   text: string,
   replayPossible = false,
 ): ContentBlock[] {
-  return appendStreamed(blocks, 'text', text, replayPossible)
+  const next = [...blocks]
+  appendStreamedInto(next, 'text', text, replayPossible)
+  return next
 }
 
 /** tool_call event — first delta appearance, no args yet. Creates a pending card.
- *  If a block with this toolCallId already exists (reconnect replay), skip — no duplicate. */
+ *  If a block with this toolCallId already exists (reconnect replay), skip — no duplicate.
+ *
+ *  The ``…Into`` variants of the tool helpers change ``blocks`` in place and
+ *  report whether anything changed. They run against Immer drafts: the scan
+ *  reads the plain array (``readBlocks``) and only the touched card is
+ *  replaced by index (or pushed), so a tool event never drafts the whole turn
+ *  or session. The plain-named versions are copy-on-write wrappers that
+ *  return the original array when nothing changed. */
+export function initToolInto(
+  blocks: ContentBlock[],
+  name: string,
+  toolCallId?: string,
+  durationMs?: number,
+): boolean {
+  // Me skip if already have block with same id — reconnect replay dedup
+  if (toolCallId && readBlocks(blocks).some((b) => b.type === 'tool' && b.toolCallId === toolCallId)) {
+    return false
+  }
+  blocks.push({
+    // Use the server-issued toolCallId as the block id when known — it's
+    // already the stable identifier every reconciliation path matches on,
+    // and parseAgentBlocks gives the eventual persisted tool block the same
+    // id, so a live/confirmed duplicate becomes a real id collision that
+    // liveBlockTail's render-boundary dedup can actually catch.
+    id: toolCallId ?? generateBlockId(),
+    type: 'tool',
+    content: '',
+    toolName: name,
+    toolArgs: undefined,
+    toolDone: false,
+    toolCallId,
+    durationMs,
+    startedAt: Date.now(),
+  })
+  return true
+}
+
 export function initTool(
   blocks: ContentBlock[],
   name: string,
   toolCallId?: string,
   durationMs?: number,
 ): ContentBlock[] {
-  // Me skip if already have block with same id — reconnect replay dedup
-  if (toolCallId && blocks.some((b) => b.type === 'tool' && b.toolCallId === toolCallId)) {
-    return blocks
-  }
-  return [
-    ...blocks,
-    {
-      // Use the server-issued toolCallId as the block id when known — it's
-      // already the stable identifier every reconciliation path matches on,
-      // and parseAgentBlocks gives the eventual persisted tool block the same
-      // id, so a live/confirmed duplicate becomes a real id collision that
-      // liveBlockTail's render-boundary dedup can actually catch.
-      id: toolCallId ?? generateBlockId(),
-      type: 'tool',
-      content: '',
-      toolName: name,
-      toolArgs: undefined,
-      toolDone: false,
-      toolCallId,
-      durationMs,
-      startedAt: Date.now(),
-    },
-  ]
+  const next = [...blocks]
+  return initToolInto(next, name, toolCallId, durationMs) ? next : blocks
 }
 
 /** tool_start event — args assembled, execution starting. Fills in args on existing block.
- *  If block already has args (reconnect replay), skip the update — idempotent. */
+ *  If block already has args (reconnect replay), skip the update — idempotent.
+ *  See ``initToolInto``. */
+export function addToolInto(
+  blocks: ContentBlock[],
+  name: string,
+  args?: string,
+  toolCallId?: string,
+  durationMs?: number,
+): boolean {
+  // Find existing block by toolCallId first, then by name (no-args-yet pending).
+  const view = readBlocks(blocks)
+  for (let i = view.length - 1; i >= 0; i--) {
+    const block = view[i]
+    if (
+      block.type === 'tool' &&
+      ((toolCallId && block.toolCallId === toolCallId) ||
+        (!toolCallId && block.toolName === name && block.toolArgs === undefined))
+    ) {
+      // Me skip if args already set — reconnect replay dedup
+      if (block.toolArgs !== undefined && block.toolArgs !== null) return false
+      blocks[i] = {
+        ...block,
+        toolArgs: args,
+        durationMs: durationMs ?? block.durationMs,
+        startedAt: block.startedAt ?? Date.now(),
+      }
+      return true
+    }
+  }
+  // Fallback: no matching block found (e.g. missed tool_call event) — create new
+  blocks.push({
+    id: toolCallId ?? generateBlockId(),
+    type: 'tool',
+    content: '',
+    toolName: name,
+    toolArgs: args,
+    toolDone: false,
+    toolCallId,
+    durationMs,
+    startedAt: Date.now(),
+  })
+  return true
+}
+
 export function addTool(
   blocks: ContentBlock[],
   name: string,
@@ -219,44 +298,67 @@ export function addTool(
   toolCallId?: string,
   durationMs?: number,
 ): ContentBlock[] {
-  // Find existing block by toolCallId first, then by name (no-args-yet pending).
-  // Copy-on-write: these helpers run against an immer draft, where spreading the
-  // array materialises a proxy per element. Copying up front charged that O(n)
-  // cost even on the replay-dedup and no-match paths, which change nothing.
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i]
-    if (
-      block.type === 'tool' &&
-      ((toolCallId && block.toolCallId === toolCallId) ||
-        (!toolCallId && block.toolName === name && block.toolArgs === undefined))
-    ) {
-      // Me skip if args already set — reconnect replay dedup
-      if (block.toolArgs !== undefined && block.toolArgs !== null) return blocks
-      const result = [...blocks]
-      result[i] = {
-        ...block,
-        toolArgs: args,
-        durationMs: durationMs ?? block.durationMs,
-        startedAt: block.startedAt ?? Date.now(),
+  const next = [...blocks]
+  return addToolInto(next, name, args, toolCallId, durationMs) ? next : blocks
+}
+
+function completedTool(
+  block: ContentBlock,
+  toolResult: string | undefined,
+  serverDurationMs: number | undefined,
+  extra: Record<string, unknown> | undefined,
+  completedAt: number,
+): ContentBlock {
+  // Use client elapsed since first chunk so the frozen display matches
+  // what the live timer was counting up. Server execution time is kept
+  // separately as serverDurationMs for metrics.
+  const clientElapsedMs = block.startedAt !== undefined
+    ? Math.max(0, completedAt - block.startedAt)
+    : undefined
+  return {
+    ...block,
+    toolDone: true,
+    toolResult,
+    durationMs: clientElapsedMs ?? block.durationMs,
+    serverDurationMs: serverDurationMs ?? block.serverDurationMs,
+    extra: extra ? { ...(block.extra ?? {}), ...extra } : block.extra,
+  }
+}
+
+/** tool_end event — the call finished. See ``initToolInto``. */
+export function completeToolInto(
+  blocks: ContentBlock[],
+  name: string,
+  toolCallId?: string,
+  toolResult?: string,
+  serverDurationMs?: number,
+  extra?: Record<string, unknown>,
+  completedAt = Date.now(),
+): boolean {
+  const view = readBlocks(blocks)
+  // 1. Prefer exact match by toolCallId (handles same tool called multiple times)
+  if (toolCallId) {
+    for (let i = view.length - 1; i >= 0; i--) {
+      const block = view[i]
+      if (block.type === 'tool' && block.toolCallId === toolCallId) {
+        // Me skip if already done — reconnect replay dedup
+        if (block.toolDone) return false
+        blocks[i] = completedTool(block, toolResult, serverDurationMs, extra, completedAt)
+        return true
       }
-      return result
     }
   }
-  // Fallback: no matching block found (e.g. missed tool_call event) — create new
-  return [
-    ...blocks,
-    {
-      id: toolCallId ?? generateBlockId(),
-      type: 'tool',
-      content: '',
-      toolName: name,
-      toolArgs: args,
-      toolDone: false,
-      toolCallId,
-      durationMs,
-      startedAt: Date.now(),
-    },
-  ]
+
+  // 2. Fall back to last incomplete block matching by name
+  for (let i = view.length - 1; i >= 0; i--) {
+    const block = view[i]
+    if (block.type === 'tool' && block.toolName === name && !block.toolDone) {
+      blocks[i] = completedTool(block, toolResult, serverDurationMs, extra, completedAt)
+      return true
+    }
+  }
+
+  return false
 }
 
 export function completeTool(
@@ -268,55 +370,8 @@ export function completeTool(
   extra?: Record<string, unknown>,
   completedAt = Date.now(),
 ): ContentBlock[] {
-  // Copy-on-write — see addTool.
-  // 1. Prefer exact match by toolCallId (handles same tool called multiple times)
-  if (toolCallId) {
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const block = blocks[i]
-      if (block.type === 'tool' && block.toolCallId === toolCallId) {
-        // Me skip if already done — reconnect replay dedup
-        if (block.toolDone) return blocks
-        // Use client elapsed since first chunk so the frozen display matches
-        // what the live timer was counting up. Server execution time is kept
-        // separately as serverDurationMs for metrics.
-        const clientElapsedMs = block.startedAt !== undefined
-          ? Math.max(0, completedAt - block.startedAt)
-          : undefined
-        const result = [...blocks]
-        result[i] = {
-          ...block,
-          toolDone: true,
-          toolResult,
-          durationMs: clientElapsedMs ?? block.durationMs,
-          serverDurationMs: serverDurationMs ?? block.serverDurationMs,
-          extra: extra ? { ...(block.extra ?? {}), ...extra } : block.extra,
-        }
-        return result
-      }
-    }
-  }
-
-  // 2. Fall back to last incomplete block matching by name
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i]
-    if (block.type === 'tool' && block.toolName === name && !block.toolDone) {
-      const clientElapsedMs = block.startedAt !== undefined
-        ? Math.max(0, completedAt - block.startedAt)
-        : undefined
-      const result = [...blocks]
-      result[i] = {
-        ...block,
-        toolDone: true,
-        toolResult,
-        durationMs: clientElapsedMs ?? block.durationMs,
-        serverDurationMs: serverDurationMs ?? block.serverDurationMs,
-        extra: extra ? { ...(block.extra ?? {}), ...extra } : block.extra,
-      }
-      return result
-    }
-  }
-
-  return blocks
+  const next = [...blocks]
+  return completeToolInto(next, name, toolCallId, toolResult, serverDurationMs, extra, completedAt) ? next : blocks
 }
 
 /** Trailing lines of live tool output retained for display.
@@ -355,17 +410,12 @@ function lastNLines(s: string, n: number): string {
   return s.slice(idx + 1)
 }
 
-export function appendToolOutput(
-  blocks: ContentBlock[],
+/** Index of the card a streamed output delta belongs to, newest first; -1 if none. */
+function toolOutputTarget(
+  blocks: readonly ContentBlock[],
   name: string,
   toolCallId: string | undefined,
-  text: string,
-): ContentBlock[] {
-  // Copy-on-write matters most here: this runs per streamed output delta, and
-  // the reducer calls it a second time against the (session-sized) confirmed
-  // `blocks` whenever the live lookup misses. Returning the original reference
-  // on a miss is also load-bearing — `applyBufferedSSEDelta` uses identity to
-  // detect "no live card matched".
+): number {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i]
     if (
@@ -373,22 +423,56 @@ export function appendToolOutput(
       ((toolCallId && block.toolCallId === toolCallId) ||
         (!toolCallId && block.toolName === name && !block.toolDone))
     ) {
-      let newOutput = `${block.toolOutput ?? ''}${text}`
-      // lines.length > N  <=>  newlines_count + 1 > N  <=>  >= N newlines
-      if (countNewlinesAtLeast(newOutput, LIVE_OUTPUT_MAX_LINES) >= LIVE_OUTPUT_MAX_LINES) {
-        newOutput =
-          '... [truncated live output] ...\n' + lastNLines(newOutput, LIVE_OUTPUT_MAX_LINES)
-      }
-      if (newOutput.length > LIVE_OUTPUT_MAX_CHARS) {
-        newOutput = `... [truncated live output] ...\n${newOutput.slice(-LIVE_OUTPUT_MAX_CHARS)}`
-      }
-      const result = [...blocks]
-      result[i] = { ...block, toolOutput: newOutput }
-      return result
+      return i
     }
   }
+  return -1
+}
 
-  return blocks
+function withToolOutput(block: ContentBlock, text: string): ContentBlock {
+  let newOutput = `${block.toolOutput ?? ''}${text}`
+  // lines.length > N  <=>  newlines_count + 1 > N  <=>  >= N newlines
+  if (countNewlinesAtLeast(newOutput, LIVE_OUTPUT_MAX_LINES) >= LIVE_OUTPUT_MAX_LINES) {
+    newOutput =
+      '... [truncated live output] ...\n' + lastNLines(newOutput, LIVE_OUTPUT_MAX_LINES)
+  }
+  if (newOutput.length > LIVE_OUTPUT_MAX_CHARS) {
+    newOutput = `... [truncated live output] ...\n${newOutput.slice(-LIVE_OUTPUT_MAX_CHARS)}`
+  }
+  return { ...block, toolOutput: newOutput }
+}
+
+/**
+ * Append a streamed output delta to its tool card, in place; `false` when no
+ * card matches. Runs per output delta, a second time against the
+ * (session-sized) confirmed `blocks` when the live lookup misses, so the scan
+ * reads the plain array (`readBlocks`) and only the matched card is replaced.
+ */
+export function appendToolOutputInto(
+  blocks: ContentBlock[],
+  name: string,
+  toolCallId: string | undefined,
+  text: string,
+): boolean {
+  const view = readBlocks(blocks)
+  const i = toolOutputTarget(view, name, toolCallId)
+  if (i < 0) return false
+  blocks[i] = withToolOutput(view[i], text)
+  return true
+}
+
+/** Copy-on-write `appendToolOutputInto`: the original array when nothing matched. */
+export function appendToolOutput(
+  blocks: ContentBlock[],
+  name: string,
+  toolCallId: string | undefined,
+  text: string,
+): ContentBlock[] {
+  const i = toolOutputTarget(blocks, name, toolCallId)
+  if (i < 0) return blocks
+  const result = [...blocks]
+  result[i] = withToolOutput(blocks[i], text)
+  return result
 }
 
 /** Read ``state`` off a ``compaction`` block's ``extra`` bag. */
@@ -421,19 +505,30 @@ export function startCompaction(blocks: ContentBlock[]): ContentBlock[] {
 /** summarization_content — append streaming summary text onto the most
  *  recent ``compacting`` block. If no such block exists (events out of
  *  order), drop the chunk silently. */
+/**
+ * Append a streamed summary chunk to the in-flight compaction divider, in
+ * place; ``false`` when there is none. It runs per summary token against the
+ * confirmed ``blocks``, which compaction only ever meets at their longest, so
+ * like ``appendToolOutputInto`` it scans the plain array and replaces one block.
+ */
+export function appendCompactionContentInto(blocks: ContentBlock[], text: string): boolean {
+  const view = readBlocks(blocks)
+  for (let i = view.length - 1; i >= 0; i--) {
+    const block = view[i]
+    if (getCompactionState(block) === 'compacting') {
+      blocks[i] = { ...block, content: block.content + text }
+      return true
+    }
+  }
+  return false
+}
+
 export function appendCompactionContent(
   blocks: ContentBlock[],
   text: string,
 ): ContentBlock[] {
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i]
-    if (getCompactionState(block) === 'compacting') {
-      const result = [...blocks]
-      result[i] = { ...block, content: block.content + text }
-      return result
-    }
-  }
-  return blocks
+  const next = [...blocks]
+  return appendCompactionContentInto(next, text) ? next : blocks
 }
 
 /** summarization_end — flip the trailing ``compacting`` block to

@@ -49,6 +49,23 @@ export function InputComposerSuggestions({
     showBelow: false,
   })
 
+  // Scroll arrives for every scroller on the page (capture phase), including
+  // the transcript while it streams and this menu's own list, so keep the
+  // state when nothing moved instead of re-rendering per event.
+  const setPositionIfChanged = useCallback((next: typeof position) => {
+    setPosition((prev) =>
+      prev.top === next.top &&
+      prev.bottom === next.bottom &&
+      prev.left === next.left &&
+      prev.right === next.right &&
+      prev.maxHeight === next.maxHeight &&
+      prev.width === next.width &&
+      prev.showBelow === next.showBelow
+        ? prev
+        : next,
+    )
+  }, [])
+
   const updatePosition = useCallback(() => {
     const parentEl = containerRef.current?.parentElement
     if (!parentEl) return
@@ -82,7 +99,7 @@ export function InputComposerSuggestions({
       // (e.g. the <main> column which clips overflow on mobile). Coordinates are
       // in the visual-viewport frame (i.e. what fixed-position elements use).
       const GAP = 4 // px gap between menu edge and input bar
-      setPosition({
+      setPositionIfChanged({
         top: resolvedShowBelow ? rect.bottom + GAP : undefined,
         bottom: resolvedShowBelow ? undefined : viewportHeight - rect.top + GAP,
         left: rect.left,
@@ -118,7 +135,7 @@ export function InputComposerSuggestions({
     const maxHeight = Math.max(80, Math.min(256, availableSpace - 12))
     const GAP = 4
 
-    setPosition({
+    setPositionIfChanged({
       top: showBelow ? rect.height + GAP : undefined,
       bottom: showBelow ? undefined : rect.height + GAP,
       left: 0,
@@ -128,15 +145,27 @@ export function InputComposerSuggestions({
       showBelow,
     })
     lastDesktopDirectionRef.current = showBelow
-  }, [isMobile, suggestionsBelow])
+  }, [isMobile, suggestionsBelow, setPositionIfChanged])
 
   useEffect(() => {
     if (!menuOpen) return
 
     updatePosition()
 
+    // Scroll fires per frame for every scroller on the page; measure (a
+    // forced layout) at most once per frame. Resizes are rare and stay
+    // immediate so the menu tracks the soft keyboard without lag.
+    let frame = 0
+    const scheduleUpdate = () => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        updatePosition()
+      })
+    }
+
     window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, { capture: true })
+    window.addEventListener('scroll', scheduleUpdate, { capture: true, passive: true })
     // On mobile the soft keyboard fires visualViewport 'resize' without
     // triggering window 'resize', so subscribe separately when available.
     if (isMobile && typeof window.visualViewport?.addEventListener === 'function') {
@@ -154,8 +183,9 @@ export function InputComposerSuggestions({
     }
 
     return () => {
+      if (frame) cancelAnimationFrame(frame)
       window.removeEventListener('resize', updatePosition)
-      window.removeEventListener('scroll', updatePosition, { capture: true })
+      window.removeEventListener('scroll', scheduleUpdate, { capture: true })
       if (isMobile && typeof window.visualViewport?.removeEventListener === 'function') {
         window.visualViewport.removeEventListener('resize', updatePosition)
       }

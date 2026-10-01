@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { createElement } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query'
 import { cleanup, render, waitFor } from '@testing-library/react'
 import { setApiBaseUrl } from '@/api/base-url'
 
@@ -129,6 +129,137 @@ it('reconciles the active session whenever the global connection opens', async (
 
   await waitFor(() => expect(loadSession).toHaveBeenCalledWith('current', null))
   expect(connectStream).toHaveBeenCalledTimes(1)
+})
+
+/** The health dot follows the global connection instead of a fast poll. */
+describe('health follows the global connection', () => {
+  type Callbacks = GlobalCallbacks & { onError?: (error: Error) => void; onDone?: () => void }
+
+  /** Mounts the stream plus a live health query; returns its request count. */
+  async function mount(healthy: boolean) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    let requests = 0
+    const observer = new QueryObserver(client, {
+      queryKey: queryKeys.health(),
+      queryFn: async () => {
+        requests += 1
+        if (!healthy) throw new Error('down')
+        return { status: 'ok', version: 'x', capabilities: [] }
+      },
+      staleTime: Number.POSITIVE_INFINITY,
+    })
+    const unsubscribe = observer.subscribe(() => {})
+    await waitFor(() => expect(client.getQueryState(queryKeys.health())?.fetchStatus).toBe('idle'))
+    render(createElement(QueryClientProvider, { client }, createElement(GlobalEventStream)))
+    requests = 0
+    return { requests: () => requests, unsubscribe }
+  }
+
+  it('rechecks health as soon as the connection drops', async () => {
+    for (const drop of [(c: Callbacks) => c.onError?.(new Error('Failed to fetch')), (c: Callbacks) => c.onDone?.()]) {
+      cleanup()
+      const health = await mount(true)
+      ;(globalCallbacks as Callbacks).onOpen?.()
+      drop(globalCallbacks as Callbacks)
+      await waitFor(() => expect(health.requests()).toBe(1))
+      health.unsubscribe()
+    }
+  })
+
+  it('rechecks a failed health check the moment the connection opens', async () => {
+    const health = await mount(false)
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    await waitFor(() => expect(health.requests()).toBe(1))
+    health.unsubscribe()
+  })
+
+  it('leaves a healthy check alone when the connection opens', async () => {
+    const health = await mount(true)
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(health.requests()).toBe(0)
+    health.unsubscribe()
+  })
+})
+
+/**
+ * A server or proxy that accepts the stream and drops it at once must not turn
+ * into a resync loop: every resync refetches every loaded session-list page and
+ * the full current session.
+ */
+describe('a flapping global connection', () => {
+  type Callbacks = GlobalCallbacks & { onDone?: () => void }
+  // Bun's runner has no jest-style fake timers (see ToastStack.test.tsx).
+  let restoreTimers: () => void = () => {}
+  let timers: Map<number, { callback: () => void; delay: number }>
+
+  beforeEach(() => {
+    const realSetTimeout = globalThis.setTimeout
+    const realClearTimeout = globalThis.clearTimeout
+    let sequence = 0
+    timers = new Map()
+    globalThis.setTimeout = ((callback: () => void, delay?: number) => {
+      const id = ++sequence
+      timers.set(id, { callback, delay: delay ?? 0 })
+      return id as unknown as ReturnType<typeof setTimeout>
+    }) as unknown as typeof setTimeout
+    globalThis.clearTimeout = ((id: number) => { timers.delete(id) }) as typeof clearTimeout
+    restoreTimers = () => {
+      globalThis.setTimeout = realSetTimeout
+      globalThis.clearTimeout = realClearTimeout
+    }
+  })
+
+  afterEach(() => restoreTimers())
+
+  /** Runs the pending timer scheduled with the longest delay; returns that delay. */
+  function runLongestTimer(): number {
+    const [id, timer] = [...timers].sort((a, b) => b[1].delay - a[1].delay)[0]!
+    timers.delete(id)
+    timer.callback()
+    return timer.delay
+  }
+
+  function mountWithSession() {
+    const loadSession = mock(async () => {})
+    useAgentStore.setState({ sessionId: 'current', loadSession })
+    render(createElement(QueryClientProvider, { client: new QueryClient() }, createElement(GlobalEventStream)))
+    return loadSession
+  }
+
+  it('keeps backing off while connections open and drop without delivering an event', () => {
+    mountWithSession()
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    ;(globalCallbacks as Callbacks).onDone?.()
+    const first = runLongestTimer()
+    expect(globalEventStream).toHaveBeenCalledTimes(2)
+
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    ;(globalCallbacks as Callbacks).onDone?.()
+    const second = runLongestTimer()
+
+    expect(second).toBeGreaterThan(first)
+  })
+
+  it('resyncs after a reconnect only once the connection stays up', () => {
+    const loadSession = mountWithSession()
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    expect(loadSession).toHaveBeenCalledTimes(1)
+
+    // Drops, reconnects, and drops again before settling: no resync.
+    ;(globalCallbacks as Callbacks).onDone?.()
+    runLongestTimer()
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    ;(globalCallbacks as Callbacks).onDone?.()
+    expect(loadSession).toHaveBeenCalledTimes(1)
+
+    // Reconnects and stays up: one resync once it settles.
+    runLongestTimer()
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    expect(loadSession).toHaveBeenCalledTimes(1)
+    runLongestTimer()
+    expect(loadSession).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('handleGlobalEvent', () => {
@@ -348,6 +479,46 @@ describe('handleGlobalEvent', () => {
     await reconcileCurrentSession(2, () => 2)
 
     expect(loadSession).toHaveBeenCalledWith('current', '/workspace')
+    expect(connectStream).toHaveBeenCalledTimes(1)
+  })
+
+  // A suspended turn (an open ask_user or plan review) has nothing to replay.
+  // Re-attaching tore down a healthy stream on every global resync for as long
+  // as the question stayed open.
+  it('keeps a connected stream when the session only waits on the user', async () => {
+    const question = { id: 'q1', sessionId: 'current', toolCallId: 'call-1', questions: [], kind: 'plan_review' }
+    const loadSession = mock(async () => { useAgentStore.setState({ isAgentWorking: true }) })
+    const connectStream = mock(() => new AbortController())
+    useAgentStore.setState({
+      sessionId: 'current',
+      _workspace: '/workspace',
+      isConnected: true,
+      pendingQuestion: question as unknown as import('@/stores/useAgentStore').AgentStore['pendingQuestion'],
+      loadSession,
+      connectStream,
+    })
+
+    await reconcileCurrentSession(2, () => 2)
+
+    expect(loadSession).toHaveBeenCalledWith('current', '/workspace')
+    expect(connectStream).not.toHaveBeenCalled()
+  })
+
+  it('attaches the stream of a session waiting on the user when none is connected', async () => {
+    const question = { id: 'q1', sessionId: 'current', toolCallId: 'call-1', questions: [] }
+    const loadSession = mock(async () => { useAgentStore.setState({ isAgentWorking: true }) })
+    const connectStream = mock(() => new AbortController())
+    useAgentStore.setState({
+      sessionId: 'current',
+      _workspace: '/workspace',
+      isConnected: false,
+      pendingQuestion: question as unknown as import('@/stores/useAgentStore').AgentStore['pendingQuestion'],
+      loadSession,
+      connectStream,
+    })
+
+    await reconcileCurrentSession(2, () => 2)
+
     expect(connectStream).toHaveBeenCalledTimes(1)
   })
 

@@ -1,4 +1,5 @@
-//! Compatibility with databases written by the v2 (Python) backend.
+//! Query behaviour against a fresh database, plus reading databases that the
+//! v2 (Python) backend wrote (data compat, kept until a migration retires it).
 //!
 //! `fresh_db_*` tests always run. `real_v2_db_*` run against a copy of a real
 //! v2 database when `OAD_V2_DB` points at one (never the original file).
@@ -36,6 +37,42 @@ async fn concurrent_saves_get_distinct_positions() {
     assert_eq!(seqs.len(), n, "duplicate seq values");
 }
 
+/// Transcript order is `seq`; `created_at` can step back with the clock.
+#[tokio::test]
+async fn interrupt_marks_the_last_assistant_row_by_position() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let earlier = save_message(&pool, &s.id, NewMessage::assistant(Some("first".into()))).await.unwrap();
+    let last = save_message(&pool, &s.id, NewMessage::assistant(Some("second".into()))).await.unwrap();
+    sqlx::query("UPDATE session_messages SET created_at = '2000-01-01 00:00:00.000000' WHERE id = ?").bind(&last.id).execute(&pool).await.unwrap();
+    mark_last_assistant_interrupted(&pool, &s.id).await.unwrap();
+    let interrupted = |id: String| {
+        let pool = pool.clone();
+        async move { get_message(&pool, &id).await.unwrap().unwrap().extra_json().and_then(|e| e.get("interrupted").cloned()) }
+    };
+    assert_eq!(interrupted(last.id.clone()).await, Some(serde_json::json!(true)));
+    assert_eq!(interrupted(earlier.id.clone()).await, None);
+}
+
+#[tokio::test]
+async fn save_message_returns_the_stored_row() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let mut extra = serde_json::Map::new();
+    extra.insert("usage".into(), serde_json::json!({"input": 12, "note": "héllo"}));
+    let msg = NewMessage {
+        reasoning_content: Some("thinking…".into()),
+        tool_calls: Some(serde_json::json!([{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}])),
+        extra: Some(extra),
+        ..NewMessage::assistant(Some("naïve ✓".into()))
+    };
+    let saved = save_message(&pool, &s.id, msg).await.unwrap();
+    let stored = get_message(&pool, &saved.id).await.unwrap().unwrap();
+    assert_eq!(serde_json::to_value(&saved).unwrap(), serde_json::to_value(&stored).unwrap());
+    assert_eq!(saved.session_id, stored.session_id);
+    assert_eq!(saved.content.as_deref(), Some("naïve ✓"));
+}
+
 #[tokio::test]
 async fn sessions_by_ids_accepts_both_id_forms_and_skips_missing() {
     let (_d, pool) = fresh().await;
@@ -51,16 +88,42 @@ async fn sessions_by_ids_accepts_both_id_forms_and_skips_missing() {
 }
 
 #[tokio::test]
+async fn session_pages_follow_their_cursor() {
+    let (_d, pool) = fresh().await;
+    let mut ids = vec![];
+    for i in 0..3 {
+        ids.push(create_session(&pool, NewSession { workspace: "/tmp/ws".into(), title: Some(format!("s{i}")), ..Default::default() }).await.unwrap().id);
+    }
+    let (first, cursor, more) = list_sessions_page(&pool, None, 2, &[], None).await.unwrap();
+    assert!(more);
+    assert_eq!(first.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), [ids[2].clone(), ids[1].clone()]);
+    let cursor = cursor.expect("next cursor");
+    let (rest, _, more) = list_sessions_page(&pool, Some(&cursor), 2, &[], None).await.unwrap();
+    assert!(!more);
+    assert_eq!(rest.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), [ids[0].clone()]);
+    // Only the `<created_at>|<uuid>` form the server hands out is accepted.
+    let bare = cursor.split('|').next().unwrap();
+    assert!(list_sessions_page(&pool, Some(bare), 2, &[], None).await.is_err());
+}
+
+#[tokio::test]
 async fn released_queued_messages_move_to_the_tail() {
     let (_d, pool) = fresh().await;
     let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
     let queued = save_message(&pool, &s.id, NewMessage { kind: Some("queued".into()), ..NewMessage::user("later") }).await.unwrap();
     let reply = save_message(&pool, &s.id, NewMessage::user("meanwhile")).await.unwrap();
+    let revision = |pool: appv3_db::DbPool, id: String| async move { get_session(&pool, &id).await.unwrap().unwrap().history_structure_revision };
+    let before = revision(pool.clone(), s.id.clone()).await;
     let released = release_queued_user_messages(&pool, &s.id, Some("abc")).await.unwrap();
     assert_eq!(released.len(), 1);
     assert_eq!(released[0].id, queued.id);
     assert_eq!(released[0].kind, "chat");
     assert!(released[0].seq > reply.seq, "{} <= {}", released[0].seq, reply.seq);
+    // The returned row is the stored one.
+    assert_eq!(released[0].snapshot().as_deref(), Some("abc"));
+    let stored = get_message(&pool, &queued.id).await.unwrap().unwrap();
+    assert_eq!((stored.seq, &stored.created_at, &stored.extra), (released[0].seq, &released[0].created_at, &released[0].extra));
+    assert!(revision(pool.clone(), s.id.clone()).await > before);
 }
 
 #[tokio::test]

@@ -1,6 +1,5 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "katex/dist/katex.min.css";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
 /* Bundled Nerd Font icons fallback — mobile fix (see nerd-font-icons.css). */
@@ -750,6 +749,16 @@ html[data-mobile-shell][data-vp-anim] .settings-modal-shell {
   overflow-anchor: none;
 }
 
+/* Long line lists (file viewer, diffs) render in blocks of lines. Offscreen
+ * blocks skip layout and paint: 8k rows lay out in ~10 ms instead of
+ * ~120 ms in Chrome. ``auto`` keeps each block's real size once rendered;
+ * the variable is only the first estimate. Find-in-page and copy still
+ * reach skipped content. */
+.oa-line-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--oa-line-block-height, 4000px);
+}
+
 /* From md up the timeline scrubber (AgentView/TimelineScrubber) is the
  * transcript's scrollbar; a native one would sit under the same edge. */
 @media (width >= 48rem) {
@@ -834,12 +843,13 @@ html[data-mobile-shell][data-vp-anim] .settings-modal-shell {
 }
 
 /* ─────────────────────────────────────────────────────────────
- * Font-weight transition — signature interaction.
+ * Font-weight on hover/press — signature interaction.
  * Apply to buttons, nav items, tabs, menu items. Not prose.
+ * Not transitioned: animating font-weight re-lays-out the text on every
+ * frame of the transition.
  * ───────────────────────────────────────────────────────────── */
 .interactive-weight {
   font-weight: 400;
-  transition: font-weight var(--motion-fast) var(--ease-in-out);
 }
 .interactive-weight:hover  { font-weight: 500; }
 .interactive-weight:active { font-weight: 600; }
@@ -1124,18 +1134,17 @@ html[data-app-hidden="true"] *::after {
   }
 }
 
-/* Transcript find: highlight the matched substring only. */
-mark[data-transcript-find] {
-  background: var(--accent-orange-soft);
-  color: inherit;
-  border-radius: 2px;
-  padding: 0 0.08em;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+/* Transcript find: the matched substrings, and the one jumped to (CSS Custom
+ * Highlight API; see AgentView/transcript-find-highlight.ts). Highlights take
+ * no box styles, so the active match is told apart by an underline. */
+::highlight(transcript-find) {
+  background-color: var(--accent-orange-soft);
 }
-mark[data-transcript-find][data-transcript-find-active] {
-  background: color-mix(in srgb, var(--accent-orange) 42%, var(--accent-orange-soft));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-orange-text) 40%, transparent);
+::highlight(transcript-find-active) {
+  background-color: color-mix(in srgb, var(--accent-orange) 42%, var(--accent-orange-soft));
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-orange-text) 60%, transparent);
+  text-decoration-thickness: 2px;
 }
 
 /* Plan review: passages with a comment, and the one just jumped to

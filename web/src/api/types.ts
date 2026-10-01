@@ -695,8 +695,6 @@ export interface QuestionItem {
   header: string
   options: QuestionOption[]
   multiple: boolean
-  /** When true the UI appends a "Type your own answer" option. */
-  custom: boolean
 }
 
 /** Wire shape of a `pending_questions` row (history + `GET /{sid}/question`). */

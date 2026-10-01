@@ -557,6 +557,7 @@ export function WorkspacePanel({
       exit={mobile ? { opacity: 0 } : { width: 0 }}
       resize={dockResize}
       getMotion={dockMotion}
+      pinContentWidth
       className={cn(
         'fixed bottom-0 right-0 z-40 min-h-0 w-full overflow-hidden border-l border-(--color-border) bg-(--bg-page) shadow-xl md:w-auto md:shadow-none',
         // Overlay covers the chat column (kept mounted underneath); side mode

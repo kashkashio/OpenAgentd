@@ -211,4 +211,30 @@ describe('useSmoothStream', () => {
     // It should now update
     expect(result.current.length).toBeGreaterThan(lenAfterFirst)
   })
+
+  /**
+   * Deltas land every ~16 ms, and each one re-ran the effect, which reset the
+   * throttle clock — so the first frame after every delta re-rendered (and
+   * re-parsed) the whole long message, whatever the throttle said.
+   */
+  it('keeps throttling when new text arrives between frames', () => {
+    let text = 'A'.repeat(5500)
+    const { result, rerender } = renderHook(() => useSmoothStream(text, true))
+
+    text = 'A'.repeat(5500) + ' B'.repeat(100)
+    rerender()
+    act(() => {
+      pendingFrames[pendingFrames.length - 1]?.(100)
+    })
+    const lenAfterFirst = result.current.length
+
+    // A new delta arrives 20 ms later, still inside the 75 ms window.
+    text = text + ' C'.repeat(100)
+    rerender()
+    act(() => {
+      pendingFrames[pendingFrames.length - 1]?.(120)
+    })
+
+    expect(result.current.length).toBe(lenAfterFirst)
+  })
 })

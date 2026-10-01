@@ -278,17 +278,20 @@ impl Hook for QueuedInjectionHook {
                 return None;
             }
         };
+        // Every released row, so each steer arrives with its @-mention context.
         state.messages.extend(crate::history::rows_to_llm_messages(&queued));
         state.meta_pop("question_resume");
-        let ids: Vec<String> = queued.iter().map(|r| appv3_db::codec::api_uuid(&r.id)).collect();
+        // The UI shows only what the user wrote.
+        let visible: Vec<&appv3_db::SessionMessage> = queued.iter().filter(|r| !appv3_db::is_attached_row(r)).collect();
+        let ids: Vec<String> = visible.iter().map(|r| appv3_db::codec::api_uuid(&r.id)).collect();
         let data: Vec<Value> =
-            queued.iter().map(|r| json!({"id": appv3_db::codec::api_uuid(&r.id), "content": r.content.clone().unwrap_or_default(), "extra": r.extra_json()})).collect();
+            visible.iter().map(|r| json!({"id": appv3_db::codec::api_uuid(&r.id), "content": r.content.clone().unwrap_or_default(), "extra": r.extra_json()})).collect();
         store().push_event(
             &self.session_id,
             &Envelope::from_parts("queued_turn_start", json!({"type": "queued_turn_start", "agent": self.agent_name, "message_ids": ids, "messages": data})),
             false,
         );
-        tracing::info!("queued_messages_injected session_id={} count={}", self.session_id, queued.len());
+        tracing::info!("queued_messages_injected session_id={} count={}", self.session_id, ids.len());
         Some(ModelRequest { messages: state.messages_for_llm(), system_prompt: _req.system_prompt.clone() })
     }
 }

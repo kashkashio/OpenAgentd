@@ -48,7 +48,7 @@ export function TodosPopover({ open, onOpenChange, todos, plan = null, onClearPl
       <button
         type="button"
         className={cn(
-          'absolute inset-x-0 bottom-0 top-[calc(var(--spacing-app-header)+env(safe-area-inset-top,0px))] cursor-default bg-black/15 backdrop-blur-[1px] transition-opacity duration-100 ease-out pointer-events-auto',
+          'absolute inset-x-0 bottom-0 top-[calc(var(--spacing-app-header)+env(safe-area-inset-top,0px))] cursor-default bg-black/15 transition-opacity duration-100 ease-out pointer-events-auto',
           closing ? 'opacity-0' : 'opacity-100',
         )}
         aria-label="Close tasks"

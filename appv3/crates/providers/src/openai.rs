@@ -114,15 +114,24 @@ pub fn set_header(h: &mut Vec<(String, String)>, k: &str, v: &str) {
 // ── sanitization ────────────────────────────────────────────────────────────
 
 /// v2 `sanitize_openai_tool_pairs`.
-pub fn sanitize_tool_pairs(messages: &[ChatMessage]) -> Vec<ChatMessage> {
-    let mut result = Vec::with_capacity(messages.len());
+/// Strip assistant tool calls without a full set of results and drop orphan
+/// tool rows. Borrows when nothing needs fixing (the normal case), so a
+/// healthy transcript is not copied on every model call.
+pub fn sanitize_tool_pairs(messages: &[ChatMessage]) -> std::borrow::Cow<'_, [ChatMessage]> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Fix {
+        Keep,
+        StripCalls,
+        Drop,
+    }
+    let mut fixes = Vec::with_capacity(messages.len());
     let mut expected: HashSet<String> = HashSet::new();
     for (idx, msg) in messages.iter().enumerate() {
-        match msg {
+        let fix = match msg {
             ChatMessage::Assistant(a) => {
                 expected.clear();
                 let Some(tcs) = a.tool_calls.as_ref().filter(|t| !t.is_empty()) else {
-                    result.push(msg.clone());
+                    fixes.push(Fix::Keep);
                     continue;
                 };
                 let ids: HashSet<String> = tcs.iter().filter(|t| !t.id.is_empty()).map(|t| t.id.clone()).collect();
@@ -139,30 +148,42 @@ pub fn sanitize_tool_pairs(messages: &[ChatMessage]) -> Vec<ChatMessage> {
                 }
                 if !ids.is_empty() && ids.is_subset(&following) {
                     expected = ids;
-                    result.push(msg.clone());
+                    Fix::Keep
                 } else {
                     let mut sorted: Vec<_> = ids.into_iter().collect();
                     sorted.sort();
                     tracing::warn!("openai_strip_incomplete_assistant_tool_calls idx={} ids=[{}]", idx, sorted.join(", "));
-                    let mut a2 = a.clone();
-                    a2.tool_calls = None;
-                    result.push(ChatMessage::Assistant(a2));
+                    Fix::StripCalls
                 }
             }
             ChatMessage::Tool { tool_call_id, .. } => {
                 if !tool_call_id.is_empty() && expected.remove(tool_call_id) {
-                    result.push(msg.clone());
+                    Fix::Keep
                 } else {
                     tracing::warn!("openai_drop_orphan_tool_message idx={} tool_call_id={}", idx, tool_call_id);
+                    Fix::Drop
                 }
             }
             _ => {
                 expected.clear();
-                result.push(msg.clone());
+                Fix::Keep
             }
-        }
+        };
+        fixes.push(fix);
     }
-    result
+    if fixes.iter().all(|f| *f == Fix::Keep) {
+        return std::borrow::Cow::Borrowed(messages);
+    }
+    let fixed = messages
+        .iter()
+        .zip(fixes)
+        .filter_map(|(m, fix)| match (fix, m) {
+            (Fix::Keep, _) => Some(m.clone()),
+            (Fix::StripCalls, ChatMessage::Assistant(a)) => Some(ChatMessage::Assistant(AssistantMessage { tool_calls: None, ..a.clone() })),
+            _ => None,
+        })
+        .collect();
+    std::borrow::Cow::Owned(fixed)
 }
 
 fn oai_parts(parts: &[ContentBlock]) -> Vec<Value> {
@@ -344,7 +365,7 @@ impl CompletionsHandler {
     pub fn build_request(&self, messages: &[ChatMessage], tools: Option<&[ToolSpec]>, stream: bool, merged: &Kwargs) -> Value {
         let mut body = Map::new();
         body.insert("model".into(), json!(self.model));
-        body.insert("messages".into(), json!(convert_messages(&sanitize_tool_pairs(messages), self.dialect)));
+        body.insert("messages".into(), Value::Array(convert_messages(&sanitize_tool_pairs(messages), self.dialect)));
         if let Some(t) = convert_tools(tools) {
             body.insert("tools".into(), json!(t));
         }
@@ -505,8 +526,7 @@ pub fn parse_stream_chunk_ext(data: &Value, copilot_usage: bool) -> Option<ChatC
     let created = data.get("created").and_then(|v| v.as_i64()).unwrap_or(0);
     let model = data.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let usage = data.get("usage").filter(|u| u.is_object()).map(|u| usage_from_openai_ext(u, copilot_usage));
-    let choices = data.get("choices").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-    let Some(choice) = choices.first() else {
+    let Some(choice) = data.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) else {
         return usage.map(|u| ChatCompletionChunk { id, created, model, choices: vec![], usage: Some(u), agent_name: None });
     };
     let d = &choice["delta"];
@@ -710,7 +730,7 @@ impl ResponsesHandler {
     fn build_request_base(&self, messages: &[ChatMessage], tools: Option<&[ToolSpec]>, stream: bool, merged: &Kwargs) -> Map<String, Value> {
         let mut body = Map::new();
         body.insert("model".into(), json!(self.model));
-        body.insert("input".into(), json!(self.convert_messages(&sanitize_tool_pairs(messages))));
+        body.insert("input".into(), Value::Array(self.convert_messages(&sanitize_tool_pairs(messages))));
         body.insert("stream".into(), json!(stream));
         if self.preserve_stateless_reasoning {
             body.insert("store".into(), json!(false));
@@ -1376,6 +1396,46 @@ mod tests {
         let out = sanitize_tool_pairs(&msgs);
         assert_eq!(out.len(), 2);
         assert!(out[0].as_assistant().unwrap().tool_calls.is_none());
+    }
+
+    #[test]
+    fn sanitize_borrows_a_well_paired_transcript() {
+        let msgs = vec![
+            ChatMessage::user("go"),
+            ChatMessage::Assistant(AssistantMessage { tool_calls: Some(vec![ToolCall::new("a", "x", "{}"), ToolCall::new("b", "y", "{}")]), ..Default::default() }),
+            ChatMessage::tool("b", None, "rb"),
+            ChatMessage::tool("a", None, "ra"),
+            ChatMessage::Assistant(AssistantMessage { content: Some("done".into()), ..Default::default() }),
+        ];
+        assert!(matches!(sanitize_tool_pairs(&msgs), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn sanitize_keeps_good_pairs_while_fixing_bad_ones() {
+        let msgs = vec![
+            ChatMessage::Assistant(AssistantMessage { tool_calls: Some(vec![ToolCall::new("a", "x", "{}")]), ..Default::default() }),
+            ChatMessage::tool("a", None, "ra"),
+            ChatMessage::tool("a", None, "duplicate"),
+            ChatMessage::Assistant(AssistantMessage {
+                content: Some("half".into()),
+                tool_calls: Some(vec![ToolCall::new("b", "x", "{}"), ToolCall::new("c", "x", "{}")]),
+                ..Default::default()
+            }),
+            ChatMessage::tool("b", None, "rb"),
+            ChatMessage::user("next"),
+        ];
+        let out = sanitize_tool_pairs(&msgs);
+        let shape: Vec<(String, Option<String>, bool)> =
+            out.iter().map(|m| (m.role().to_string(), m.content().map(String::from), m.as_assistant().map(|a| a.tool_calls.is_some()).unwrap_or(false))).collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("assistant".into(), None, true),
+                ("tool".into(), Some("ra".into()), false),
+                ("assistant".into(), Some("half".into()), false),
+                ("user".into(), Some("next".into()), false),
+            ]
+        );
     }
 
     #[test]

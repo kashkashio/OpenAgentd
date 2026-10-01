@@ -5,6 +5,15 @@ import userEvent from '@testing-library/user-event'
 import { PendingMessageQueue } from '@/components/PendingMessageQueue'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { useHeldMessagesStore } from '@/stores/useHeldMessagesStore'
+import { useToastStore } from '@/stores/useToastStore'
+
+const realFetch = globalThis.fetch
+/** The cancel endpoint answers with ``status`` (204 cancelled, 404 already read). */
+function answerCancel(status: number) {
+  globalThis.fetch = mock(() =>
+    Promise.resolve(new Response(status === 204 ? null : JSON.stringify({ detail: 'x' }), { status })),
+  ) as unknown as typeof fetch
+}
 
 const INITIAL_TEAM_STATE = {
   _pendingMessages: [],
@@ -17,6 +26,8 @@ afterEach(() => {
   cleanup()
   useAgentStore.setState(INITIAL_TEAM_STATE)
   useHeldMessagesStore.setState({ messages: [] })
+  useToastStore.setState({ toasts: [] })
+  globalThis.fetch = realFetch
 })
 
 describe('PendingMessageQueue', () => {
@@ -122,6 +133,26 @@ describe('PendingMessageQueue', () => {
     expect(screen.queryByText('Injected on member stream')).toBeNull()
   })
 
+  it('shows a queued steer even when an earlier message used the same text', () => {
+    useAgentStore.setState({
+      sessionId: 'session-1',
+      leadName: 'openagentd',
+      agentStreams: {
+        openagentd: {
+          blocks: [{ id: 'earlier', type: 'user', content: 'continue' }],
+          currentBlocks: [],
+          status: 'working',
+          usage: { promptTokens: 0, completionTokens: 0, cachedTokens: 0 },
+        } as never,
+      },
+      _pendingMessages: [{ id: 'queued', sessionId: 'session-1', content: 'continue' }],
+    })
+
+    render(<PendingMessageQueue />)
+
+    expect(screen.getByText('continue')).toBeTruthy()
+  })
+
   it('allows queued messages to span full width on mobile and caps width from md up', () => {
     useAgentStore.setState({
       sessionId: 'session-1',
@@ -136,10 +167,11 @@ describe('PendingMessageQueue', () => {
     expect(wrapper).toBeTruthy()
   })
 
-  it('restores queued text into the composer before removing the pending message', async () => {
+  it('restores queued text into the composer once the server has cancelled it', async () => {
     const user = userEvent.setup()
     const restoreListener = mock(() => {})
     window.addEventListener('queue:restore-draft', restoreListener)
+    answerCancel(204)
     useAgentStore.setState({
       sessionId: 'session-1',
       _pendingMessages: [
@@ -153,6 +185,46 @@ describe('PendingMessageQueue', () => {
 
     expect(restoreListener).toHaveBeenCalledTimes(1)
     expect(useAgentStore.getState()._pendingMessages).toEqual([])
+    window.removeEventListener('queue:restore-draft', restoreListener)
+  })
+
+  it('does not hand back a steer the agent read before the cancel landed', async () => {
+    const user = userEvent.setup()
+    const restoreListener = mock(() => {})
+    window.addEventListener('queue:restore-draft', restoreListener)
+    answerCancel(404)
+    useAgentStore.setState({
+      sessionId: 'session-1',
+      _pendingMessages: [{ id: 'pending-1', sessionId: 'session-1', content: 'Too late to edit' }],
+    })
+
+    render(<PendingMessageQueue />)
+    await user.click(screen.getByLabelText('Edit queued message'))
+
+    expect(restoreListener).not.toHaveBeenCalled()
+    expect(useAgentStore.getState()._pendingMessages).toEqual([])
+    expect(useAgentStore.getState().error).toBeNull()
+    expect(useToastStore.getState().toasts.map((t) => t.title)).toEqual(['Already sent to the agent'])
+    window.removeEventListener('queue:restore-draft', restoreListener)
+  })
+
+  it('keeps a steer queued when the cancel fails', async () => {
+    const user = userEvent.setup()
+    const restoreListener = mock(() => {})
+    window.addEventListener('queue:restore-draft', restoreListener)
+    answerCancel(500)
+    useAgentStore.setState({
+      sessionId: 'session-1',
+      error: null,
+      _pendingMessages: [{ id: 'pending-1', sessionId: 'session-1', content: 'Still queued' }],
+    })
+
+    render(<PendingMessageQueue />)
+    await user.click(screen.getByLabelText('Edit queued message'))
+
+    expect(restoreListener).not.toHaveBeenCalled()
+    expect(useAgentStore.getState()._pendingMessages.map((m) => m.id)).toEqual(['pending-1'])
+    expect(useAgentStore.getState().error).toBeTruthy()
     window.removeEventListener('queue:restore-draft', restoreListener)
   })
 
@@ -202,6 +274,7 @@ describe('PendingMessageQueue', () => {
 
   it('restores queued files into the composer on cancel', async () => {
     const user = userEvent.setup()
+    answerCancel(204)
     const file = new File(['data'], 'doc.txt', { type: 'text/plain' })
     let restoredFiles: File[] | undefined
     const restoreListener = mock((e: unknown) => {
@@ -256,6 +329,25 @@ describe('PendingMessageQueue', () => {
     render(<PendingMessageQueue />)
 
     expect(screen.getByText('After the turn')).toBeTruthy()
+  })
+
+  // A steer left queued after a failed turn (its files are on another
+  // device) has no running turn to read it.
+  it('says a steer left queued after a failed turn goes with the next message', () => {
+    useAgentStore.setState({
+      sessionId: 'session-1',
+      leadName: 'lead',
+      isAgentWorking: false,
+      agentStreams: {
+        lead: { blocks: [], currentBlocks: [], status: 'error', usage: { promptTokens: 0, completionTokens: 0, cachedTokens: 0 } } as never,
+      },
+      _pendingMessages: [{ id: 'q1', sessionId: 'session-1', content: 'see attached' }],
+    })
+
+    render(<PendingMessageQueue />)
+
+    expect(screen.getByText('Sends with your next message')).toBeTruthy()
+    expect(screen.queryByText('Read before the next step')).toBeNull()
   })
 
   it('edits a held message by moving it back into the composer, with its files', async () => {

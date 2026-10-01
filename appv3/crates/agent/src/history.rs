@@ -272,8 +272,8 @@ pub fn to_new_message(msg: &ChatMessage) -> NewMessage {
 
 /// Insert synthetic tool rows for unmatched tool_calls in the LLM window.
 pub async fn heal_orphaned_tool_calls(pool: &DbPool, session_id: &str) -> Result<usize> {
-    let rows = db::llm_window_rows(pool, session_id, false).await?;
-    let assistants: Vec<&SessionMessage> =
+    let rows = db::llm_window_tool_pairs(pool, session_id).await?;
+    let assistants: Vec<&db::ToolPairRow> =
         rows.iter().filter(|r| r.role == "assistant" && r.tool_calls_json().map(|t| t.as_array().map(|a| !a.is_empty()).unwrap_or(false)).unwrap_or(false)).collect();
     if assistants.is_empty() {
         return Ok(0);

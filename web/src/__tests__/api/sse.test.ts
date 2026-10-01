@@ -17,11 +17,46 @@ function fakeResponse(text: string): Response {
   return new Response(stream, { status: 200 });
 }
 
+/** Delivers ``chunks`` as separate reads, the way a network stream does. */
+function chunkedResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200 });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("readSSE", () => {
+  it("reassembles lines split across reads, including a long data line and CRLF", async () => {
+    const big = "x".repeat(50_000);
+    const wire = `event: tool_end\r\ndata: {"result":"${big}"}\r\n\r\nevent: message\ndata: {"text":"a"}\n\ndata: {"type":"done"}\n\n`;
+    // Uneven slices: a boundary inside "event:", inside the long line, and on "\r|\n".
+    const cuts = [3, 20, 9000, 30000, 50020, 50023, 50030, wire.length - 2];
+    const chunks: string[] = [];
+    let at = 0;
+    for (const cut of cuts) { chunks.push(wire.slice(at, cut)); at = cut; }
+    chunks.push(wire.slice(at));
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    await new Promise<void>((resolve) => {
+      readSSE(chunkedResponse(chunks), {
+        onEvent: (type, data) => events.push({ type, data }),
+        onDone: resolve,
+      });
+    });
+
+    expect(events.map((e) => e.type)).toEqual(["tool_end", "message", "done"]);
+    expect((events[0].data as { result: string }).result).toBe(big);
+    expect((events[1].data as { text: string }).text).toBe("a");
+  });
+
   it("reports event-handler failures as execution errors, not malformed JSON", async () => {
     const errors: Error[] = []
     const parseErrors: Error[] = []

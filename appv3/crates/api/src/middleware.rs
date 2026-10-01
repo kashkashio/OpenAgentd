@@ -1,8 +1,8 @@
 //! Port of `app/core/middlewares.py` + `app/core/desktop_auth.py`.
 //!
 //! Layer order mirrors v2's `add_middleware` sequence (last added =
-//! outermost): CORS → SecurityHeaders → DesktopToken → GZip →
-//! RequestSizeLimit → NetworkBindGuard → router.
+//! outermost): CORS → SecurityHeaders → DesktopToken → SkipGzipForLoopback →
+//! GZip → RequestSizeLimit → NetworkBindGuard → router.
 
 use crate::util::json_status;
 use appv3_core::auth::{
@@ -28,6 +28,35 @@ pub struct ConnInfo {
 
 impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>> for ConnInfo {
     fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        ConnInfo { local: stream.io().local_addr().ok(), remote: Some(*stream.remote_addr()) }
+    }
+}
+
+/// A TCP listener whose connections have Nagle's algorithm off. SSE frames
+/// (one per streamed token) are tiny writes; with Nagle on, the kernel can
+/// hold each one back until the previous write is ACKed, which adds delay
+/// and jitter to streaming. axum leaves `TCP_NODELAY` unset.
+pub struct NoDelayTcpListener(pub tokio::net::TcpListener);
+
+impl axum::serve::Listener for NoDelayTcpListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (io, addr) = axum::serve::Listener::accept(&mut self.0).await;
+        if let Err(e) = io.set_nodelay(true) {
+            tracing::debug!("tcp_nodelay_failed remote={} error={}", addr, e);
+        }
+        (io, addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, NoDelayTcpListener>> for ConnInfo {
+    fn connect_info(stream: axum::serve::IncomingStream<'_, NoDelayTcpListener>) -> Self {
         ConnInfo { local: stream.io().local_addr().ok(), remote: Some(*stream.remote_addr()) }
     }
 }
@@ -343,7 +372,52 @@ pub async fn cors(axum::extract::State(c): axum::extract::State<Cors>, req: Requ
 
 pub fn gzip_layer() -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
     use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
-    tower_http::compression::CompressionLayer::new().no_br().no_deflate().no_zstd().compress_when(SizeAbove::new(1000).and(NotForContentType::SSE).and(NotForContentType::GRPC))
+    use tower_http::CompressionLevel;
+    // Media and archives are already compressed; gzipping them again burns
+    // CPU for nothing. Fastest keeps most of the ratio on JSON at about a
+    // quarter of the default level's cost, and the server is usually local.
+    let worth_compressing = |_: StatusCode, _: axum::http::Version, h: &axum::http::HeaderMap, _: &axum::http::Extensions| {
+        let ct = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+        let compressed_already = (ct.starts_with("image/") && !ct.starts_with("image/svg"))
+            || [
+                "video/",
+                "audio/",
+                "font/woff",
+                "application/zip",
+                "application/gzip",
+                "application/x-gzip",
+                "application/pdf",
+                "application/octet-stream",
+                "application/x-7z",
+                "application/x-rar",
+                "application/zstd",
+            ]
+            .iter()
+            .any(|p| ct.starts_with(p));
+        !compressed_already
+    };
+    tower_http::compression::CompressionLayer::new()
+        .no_br()
+        .no_deflate()
+        .no_zstd()
+        .quality(CompressionLevel::Fastest)
+        .compress_when(SizeAbove::new(1000).and(NotForContentType::SSE).and(NotForContentType::GRPC).and(worth_compressing))
+}
+
+/// Sends identity bodies to clients on this machine. On loopback, gzip at
+/// Fastest nearly doubles a 1.3 MB history page's latency (4.6 → 8.2 ms) and
+/// server CPU, and the client still has to inflate it. A request with
+/// proxy headers came through a local reverse proxy or tunnel for a remote
+/// user, so it keeps gzip. Runs outside `gzip_layer`, which then sees no
+/// `Accept-Encoding` and leaves the body alone.
+pub async fn skip_gzip_for_loopback(mut req: Request, next: Next) -> Response {
+    let loopback = req.extensions().get::<ConnectInfo<ConnInfo>>().and_then(|c| c.0.remote).is_some_and(|a| a.ip().to_canonical().is_loopback());
+    let h = req.headers();
+    let proxied = h.contains_key(header::FORWARDED) || h.contains_key("x-forwarded-for") || h.contains_key(header::VIA);
+    if loopback && !proxied {
+        req.headers_mut().remove(header::ACCEPT_ENCODING);
+    }
+    next.run(req).await
 }
 
 // ── Panics ──────────────────────────────────────────────────────────────────
@@ -364,6 +438,80 @@ mod tests {
     use super::*;
     use tower::ServiceExt;
 
+    /// `Content-Encoding` the gzip layer gives a 4 KB body of `content_type`.
+    async fn encoding_for(content_type: &'static str, partial: bool) -> Option<String> {
+        let app = axum::Router::new()
+            .route(
+                "/f",
+                axum::routing::get(move || async move {
+                    let mut r = Response::new(Body::from("a".repeat(4096)));
+                    r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+                    if partial {
+                        *r.status_mut() = StatusCode::PARTIAL_CONTENT;
+                        r.headers_mut().insert(header::CONTENT_RANGE, HeaderValue::from_static("bytes 0-4095/9000"));
+                    }
+                    r
+                }),
+            )
+            .layer(gzip_layer());
+        let req = Request::get("/f").header(header::ACCEPT_ENCODING, "gzip").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        resp.headers().get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn gzip_covers_text_and_skips_already_compressed_media() {
+        for ct in ["application/json", "text/html; charset=utf-8", "image/svg+xml", "application/javascript"] {
+            assert_eq!(encoding_for(ct, false).await.as_deref(), Some("gzip"), "{ct}");
+        }
+        for ct in ["image/png", "image/jpeg", "video/mp4", "audio/mpeg", "application/zip", "application/pdf", "application/octet-stream", "font/woff2", "text/event-stream"] {
+            assert_eq!(encoding_for(ct, false).await, None, "{ct}");
+        }
+    }
+
+    #[tokio::test]
+    async fn gzip_leaves_partial_content_alone() {
+        // Content-Range counts identity bytes; encoding the slice breaks seeking.
+        assert_eq!(encoding_for("application/json", true).await, None);
+    }
+
+    /// `Content-Encoding` for a 4 KB JSON body sent from `peer`, through the
+    /// same layer order as `create_app`, with optional extra request headers.
+    async fn encoding_from(peer: Option<&str>, extra: &[(&'static str, &'static str)]) -> Option<String> {
+        let app = axum::Router::new()
+            .route("/f", axum::routing::get(|| async { ([(header::CONTENT_TYPE, "application/json")], "a".repeat(4096)) }))
+            .layer(gzip_layer())
+            .layer(axum::middleware::from_fn(skip_gzip_for_loopback));
+        let mut req = Request::get("/f").header(header::ACCEPT_ENCODING, "gzip");
+        for (k, v) in extra {
+            req = req.header(*k, *v);
+        }
+        let mut req = req.body(Body::empty()).unwrap();
+        if let Some(p) = peer {
+            req.extensions_mut().insert(ConnectInfo(ConnInfo { local: None, remote: Some(p.parse().unwrap()) }));
+        }
+        let resp = app.oneshot(req).await.unwrap();
+        resp.headers().get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn loopback_clients_get_identity_responses() {
+        assert_eq!(encoding_from(Some("127.0.0.1:50000"), &[]).await, None);
+        assert_eq!(encoding_from(Some("[::1]:50000"), &[]).await, None);
+        assert_eq!(encoding_from(Some("[::ffff:127.0.0.1]:50000"), &[]).await, None);
+    }
+
+    #[tokio::test]
+    async fn remote_and_proxied_clients_keep_gzip() {
+        assert_eq!(encoding_from(Some("192.168.1.20:50000"), &[]).await.as_deref(), Some("gzip"));
+        assert_eq!(encoding_from(None, &[]).await.as_deref(), Some("gzip"));
+        // A reverse proxy or tunnel on this machine connects from loopback but
+        // relays to remote users, who still need the smaller body.
+        for h in [("x-forwarded-for", "203.0.113.7"), ("forwarded", "for=203.0.113.7"), ("via", "1.1 proxy")] {
+            assert_eq!(encoding_from(Some("127.0.0.1:50000"), &[h]).await.as_deref(), Some("gzip"), "{}", h.0);
+        }
+    }
+
     #[tokio::test]
     async fn a_panicking_handler_answers_500() {
         async fn boom() -> &'static str {
@@ -374,6 +522,17 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
         assert_eq!(&body[..], b"Internal Server Error");
+    }
+
+    #[tokio::test]
+    async fn accepted_connections_have_nagle_off() {
+        use axum::serve::Listener;
+        let mut listener = NoDelayTcpListener(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::spawn(tokio::net::TcpStream::connect(addr));
+        let (io, _) = listener.accept().await;
+        assert!(io.nodelay().unwrap());
+        drop(client.await.unwrap().unwrap());
     }
 
     fn policy(token: &str, insecure_lan: bool) -> Policy {

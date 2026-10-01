@@ -183,8 +183,9 @@ function AgentLayoutBase() {
   useEffect(() => {
     return useAgentStore.subscribe((state, prev) => {
       if (state.sessionId && state.sessionId !== prev.sessionId && !sessionIdRef.current) {
+        // Also refetches the active infinite list (it is under this prefix);
+        // a separate refetchQueries would only cancel and resend it.
         void queryClient.invalidateQueries({ queryKey: queryKeys.session.sessions.all() })
-        void queryClient.refetchQueries({ queryKey: queryKeys.session.sessions.infinite(), type: 'active' })
         const workspace = workspaceRef.current
         if (workspace) saveLastWorkspace(workspace)
         navigateRef.current({

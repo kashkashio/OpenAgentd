@@ -111,13 +111,18 @@ export function resolveApiUrl(url: string | undefined): string | undefined {
   return url
 }
 
-export async function cancelQueuedMessage(sessionId: string, messageId: string): Promise<void> {
+/**
+ * Cancel a queued message. False when it is no longer queued: the agent read
+ * it first, so it must not be handed back for editing.
+ */
+export async function cancelQueuedMessage(sessionId: string, messageId: string): Promise<boolean> {
   const res = await fetch(
     `${apiBaseUrl()}/agent/sessions/${encodeURIComponent(sessionId)}/queued-messages/${encodeURIComponent(messageId)}`,
     { method: 'DELETE' },
   )
-  if (res.status === 404) return
+  if (res.status === 404) return false
   if (!res.ok) await parseDetailOrThrow(res, 'DELETE queued message')
+  return true
 }
 
 export function agentStream(sessionId: string, callbacks: SSECallbacks, signal?: AbortSignal): void {

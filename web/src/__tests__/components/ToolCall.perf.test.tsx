@@ -9,7 +9,7 @@
  * "3.2s" duration label.
  */
 import { describe, it, expect, afterEach, beforeEach, spyOn } from "bun:test"
-import { act, render, cleanup } from "@testing-library/react"
+import { act, render, cleanup, fireEvent } from "@testing-library/react"
 import { ToolCall } from "@/components/ToolCall"
 import * as displayModule from "@/components/ToolCall/display"
 
@@ -98,4 +98,49 @@ describe("ToolCall — perf: memoized display/diff derivation", () => {
     }
   })
 
+})
+
+// Reopening a long run mounts hundreds of collapsed tool rows at once. The
+// expanded details unwrap JSON-encoded string arguments and pretty-print the
+// result (a full parse + stringify of arguments that can hold whole files),
+// so that work must wait until a row is opened.
+describe("ToolCall — argument details", () => {
+  it("formats argument details only once the row is expanded", () => {
+    const args = JSON.stringify({ payload: JSON.stringify({ nested: true }) })
+    const stringify = spyOn(JSON, "stringify")
+    const sawUnwrapped = () =>
+      stringify.mock.calls.some(([value]) => {
+        const payload = value && typeof value === "object" ? (value as { payload?: unknown }).payload : undefined
+        return typeof payload === "object" && payload !== null
+      })
+    try {
+      const { getByRole, container } = render(<ToolCall name="custom_tool" args={args} done result="ok" />)
+      expect(sawUnwrapped()).toBe(false)
+
+      fireEvent.click(getByRole("button", { name: /Expand .* details/ }))
+
+      expect(sawUnwrapped()).toBe(true)
+      expect(container.textContent).toContain('"nested": true')
+    } finally {
+      stringify.mockRestore()
+    }
+  })
+})
+
+// The enter animation marks a tool that just joined a live transcript. Rows
+// mounted already finished are history (a reopen, a revealed turn, an older
+// page): animating them started hundreds of compositor animations at once.
+describe("ToolCall — enter animation", () => {
+  it("animates a row that arrives while still running, and keeps it once done", () => {
+    const { container, rerender } = render(<ToolCall name="custom_tool" args='{"a":1}' done={false} />)
+    expect(container.querySelector(".tool-row-enter")).not.toBeNull()
+    rerender(<ToolCall name="custom_tool" args='{"a":1}' done result="ok" />)
+    expect(container.querySelector(".tool-row-enter")).not.toBeNull()
+  })
+
+  it("shows a row that mounts already finished without the enter animation", () => {
+    const { container } = render(<ToolCall name="custom_tool" args='{"a":1}' done result="ok" />)
+    expect(container.querySelector(".tool-row-enter")).toBeNull()
+    expect(container.textContent).toContain("Custom Tool")
+  })
 })

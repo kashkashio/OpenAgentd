@@ -182,6 +182,52 @@ No v2 feature is left unported. Each item below is a deliberate, documented
 deviation. The harnesses in §1 either did not reach it or normalised it
 explicitly.
 
+- **Performance changes to the wire format** (v3 only; v2 parity is no
+  longer a goal):
+  - *History pages* (`GET /api/agent/{sid}/history`,
+    `api/src/routes/agent/chat.rs`). Member rows and the session-wide
+    `estimated_cost_usd` / `completion_tokens` totals come only on the
+    newest page and on `since` deltas. Older (`before`) pages return
+    `members: []` and omit the lead's totals. v2 paged each member with
+    the lead's `(seq, id)` cursor, but `seq` is per session, so every
+    older page re-sent each member's newest rows, which the web client
+    then prepended twice. Member pages run concurrently, and the totals
+    for the lead and all members come from one grouped scan. Covered by
+    `history_paging_flow` in `api/tests/http_api.rs`.
+  - *JSON bytes* (`api/src/util.rs`, `db/src/codec.rs`). Responses and the
+    DB's JSON columns (`extra`, `tool_calls`, tool-call `arguments`) are
+    compact `serde_json`, with non-ASCII written as UTF-8. v2 used
+    Python's `json.dumps` style (`", "`/`": "` separators, `\uXXXX`
+    escapes), about 6× the bytes for non-ASCII text in rows and provider
+    requests. Rows written in the old style still parse. History messages
+    are serialized straight from the row (`db::api::MessageView`), so an
+    old row's `tool_calls`/`extra` keep their stored spacing and escapes;
+    JSON clients read both the same.
+  - *History and session-list cursors.* `before` is `seq[|id]` (history)
+    or `<created_at>|<uuid>` (sessions), and `since` is a uuid7 message
+    id: the forms the server hands out. v2's bare-timestamp cursors now
+    get 422. Covered by `history_paging_flow` and
+    `session_pages_follow_their_cursor` (`db/tests/queries.rs`).
+- **`ask_user` free text is unconditional.** The model-facing schema has no
+  `custom` flag, and a `custom` arg from an older schema is ignored. The
+  question payload still carries `custom: true`, because clients on an
+  earlier web build only offer free text when it is set. The answer route
+  takes one typed answer per question even for rows stored with
+  `custom: false` (`tools/ask_user.rs`, `api/src/routes/agent/questions.rs`).
+- **Queued messages ("steers") keep send order and their context.** Both
+  change where rows sit in `session_messages`; old rows need no migration.
+  - A new message promotes any rows still `kind='queued'` (left over from a
+    failed turn) to the tail *before* it is saved, so they keep their place.
+    Previously the new message was saved first and the older steers were
+    promoted after it.
+  - On promotion, a steer's attached rows (`extra.attachment_for_message_id`,
+    its @-mention context saved at queue time) move right after it and are
+    pinned, as an idle send's mention note is. Previously they stayed at the
+    queue-time position, which could fall between a tool call and its
+    result, and the steer was injected without them. Queued rows from older DBs
+    get the same treatment. `queued_turn_start` still lists only the
+    steers (`db::is_attached_row`). Covered by
+    `agent/tests/queued_messages.rs`.
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and

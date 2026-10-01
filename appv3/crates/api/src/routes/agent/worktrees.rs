@@ -110,8 +110,8 @@ async fn require_git_repo(ws: &Path) -> ApiResult<()> {
 }
 
 fn slugify(v: &str) -> String {
-    let re = regex::Regex::new(r"[^a-z0-9]+").unwrap();
-    let slug = re.replace_all(&v.trim().to_lowercase(), "-").trim_matches('-').to_string();
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"[^a-z0-9]+").unwrap());
+    let slug = RE.replace_all(&v.trim().to_lowercase(), "-").trim_matches('-').to_string();
     slug.chars().take(80).collect::<String>().trim_matches('-').to_string()
 }
 
@@ -120,8 +120,8 @@ fn validate_name(v: Option<&str>) -> ApiResult<String> {
     if name.is_empty() {
         name = "session".into();
     }
-    let re = regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$").unwrap();
-    if !re.is_match(&name) {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$").unwrap());
+    if !RE.is_match(&name) {
         return Err(ApiError::unprocessable("Worktree name may only contain letters, numbers, '.', '_' and '-'."));
     }
     Ok(name)

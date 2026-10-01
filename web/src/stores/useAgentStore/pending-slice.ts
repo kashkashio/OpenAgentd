@@ -79,6 +79,15 @@ function queuedAttachmentMetas(files?: File[]) {
   }))
 }
 
+/** Whether ``queued_turn_start`` already put the queued message ``id`` in a
+ *  stream (it can beat the POST response). By id only: matching text hid
+ *  every steer whose text the session had already sent once. */
+function isSpliced(draft: AgentStore, id: string): boolean {
+  return Object.values(draft.agentStreams).some((stream) =>
+    stream.currentBlocks.some((b) => b.id === id) || stream.blocks.some((b) => b.id === id),
+  )
+}
+
 function makePendingMessage(
   id: string,
   sessionId: string,
@@ -178,10 +187,7 @@ export const createPendingSlice: StateCreator<
           draft._sessionSettingsDirty = false
           draft._sessionSettingsVersion += 1
           const msgId = result.message_id ?? ''
-          const alreadySpliced = Object.values(draft.agentStreams).some((stream) =>
-            stream.currentBlocks.some((b) => b.id === msgId || (b.type === 'user' && !b.extra?.from_agent && b.content === content)) ||
-            stream.blocks.some((b) => b.id === msgId || (b.type === 'user' && !b.extra?.from_agent && b.content === content))
-          )
+          const alreadySpliced = isSpliced(draft, msgId)
           if (!alreadySpliced) {
             draft._pendingMessages.push(
               makePendingMessage(
@@ -274,10 +280,7 @@ export const createPendingSlice: StateCreator<
             stream._turnStartedAt = turnStartedBefore
           }
           const msgId = result.message_id
-          const alreadySpliced = Object.values(draft.agentStreams).some((s) =>
-            s.currentBlocks.some((b) => b.id === msgId || (b.type === 'user' && !b.extra?.from_agent && b.content === content)) ||
-            s.blocks.some((b) => b.id === msgId || (b.type === 'user' && !b.extra?.from_agent && b.content === content))
-          )
+          const alreadySpliced = isSpliced(draft, msgId)
           if (!alreadySpliced) {
             draft._pendingMessages.push(
               makePendingMessage(result.message_id, result.session_id, content, submittedAt, files),
@@ -306,17 +309,28 @@ export const createPendingSlice: StateCreator<
     }
   },
 
-  removePendingMessage: (id: string) => {
+  removePendingMessage: async (id: string) => {
     const pending = get()._pendingMessages.find((m) => m.id === id)
-    set((draft) => {
+    const drop = () => set((draft) => {
       draft._pendingMessages = draft._pendingMessages.filter((m) => m.id !== id)
     })
-    if (pending?.sessionId) {
-      void cancelQueuedMessage(pending.sessionId, id).catch((err) => {
-        set((draft) => {
-          draft.error = err instanceof Error ? err.message : 'Failed to cancel queued message'
-        })
+    // Already spliced into the transcript: the agent has it.
+    if (!pending) return 'sent'
+    if (!pending.sessionId) {
+      drop()
+      return 'cancelled'
+    }
+    // The chip stays until the server answers: the agent may read the message
+    // in the meantime, and then it is no longer the user's to edit.
+    try {
+      const cancelled = await cancelQueuedMessage(pending.sessionId, id)
+      drop()
+      return cancelled ? 'cancelled' : 'sent'
+    } catch (err) {
+      set((draft) => {
+        draft.error = err instanceof Error ? err.message : 'Failed to cancel queued message'
       })
+      return 'failed'
     }
   },
 })

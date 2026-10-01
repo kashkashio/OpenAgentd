@@ -80,8 +80,10 @@ function patternLanguage(
       const ranges: Array<TokenRange> = []
       const occupied = new Uint8Array(code.length)
 
-      for (const { className, regex, group } of patterns) {
-        const scanner = new RegExp(regex.source, regex.flags)
+      // Each pattern's own (global) regex is reused: tokenize is synchronous,
+      // so resetting ``lastIndex`` before each scan is enough to share it.
+      for (const { className, regex: scanner, group } of patterns) {
+        scanner.lastIndex = 0
         let match: RegExpExecArray | null
         while ((match = scanner.exec(code)) !== null) {
           if (match[0].length === 0) {

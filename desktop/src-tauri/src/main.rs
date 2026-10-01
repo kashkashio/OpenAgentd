@@ -17,9 +17,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex as StdMutex,
+    Arc, Mutex as StdMutex, OnceLock,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{
     menu::MenuItem,
     AppHandle, Emitter, Manager, RunEvent, Runtime, WindowEvent, Wry,
@@ -36,6 +36,14 @@ use crate::window::{
 };
 use crate::menu::{install_desktop_menus, update_tray_status, handle_desktop_menu};
 use crate::commands::wait_for_health;
+
+static LAUNCHED: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds since launch, so `desktop.log` (whole seconds) shows where a
+/// slow start spends its time.
+pub fn launch_ms() -> u128 {
+    LAUNCHED.get_or_init(Instant::now).elapsed().as_millis()
+}
 
 /// Shared application state.
 pub struct AppState {
@@ -316,13 +324,9 @@ async fn restart_sidecar_and_reload_window(app: &AppHandle) -> Result<()> {
         if cfg!(debug_assertions) {
             window
                 .navigate(
-                    format!(
-                        "http://localhost:5173/?oa-app-id={}&oa-window-id={}",
-                        app.config().identifier,
-                        window.label(),
-                    )
-                    .parse()
-                    .context("parse dev frontend url")?,
+                    crate::window::frontend_dev_url(&app.config().identifier, window.label())
+                        .parse()
+                        .context("parse dev frontend url")?,
                 )
                 .context("navigate app window")?;
         }
@@ -385,50 +389,54 @@ pub async fn shutdown_sidecar_now_with_grace(app: &AppHandle, grace: Duration) {
     }
 }
 
-async fn start_backend_and_window(app: AppHandle) -> Result<()> {
-    let state: tauri::State<'_, AppState> = app.state();
-    if app.get_webview_window(MAIN_WINDOW).is_none() {
-        build_app_window(
-            &app,
-            MAIN_WINDOW.to_string(),
-            backend_unavailable_init_script(),
-        )
-        .await?;
-    }
+/// The backend a launch settled on, before it is published to the window.
+enum StartedBackend {
+    External(String),
+    Bundled {
+        sidecar: Box<Sidecar>,
+        handshake: crate::sidecar::Handshake,
+        base: String,
+        guard: BackendStartGuard,
+    },
+    /// Why the bundled backend could not start (shown with Retry).
+    Failed(String),
+}
 
+/// Build the main window while `backend` starts, then publish the backend.
+///
+/// `backend` must be spawned outside the runtime (from `setup`). Building a
+/// window blocks this task's worker until the main thread has built it, and a
+/// task spawned from a worker waits in that worker's LIFO slot, which other
+/// workers cannot steal, so it would not start before the window.
+async fn start_backend_and_window(
+    app: AppHandle,
+    backend: tauri::async_runtime::JoinHandle<Result<StartedBackend>>,
+) -> Result<()> {
+    let window = if app.get_webview_window(MAIN_WINDOW).is_none() {
+        build_app_window(&app, MAIN_WINDOW.to_string(), backend_unavailable_init_script())
+            .await
+            .map(|_| ())
+    } else {
+        Ok(())
+    };
+    let started = backend.await.map_err(|e| anyhow::anyhow!("backend start task: {e}"))??;
+    publish_backend(&app, started).await?;
+    window
+}
+
+/// Probe the saved external server, else spawn the bundled sidecar and wait
+/// until it is healthy. Touches no window, so it can run while one builds.
+async fn start_backend(app: AppHandle) -> Result<StartedBackend> {
+    let state: tauri::State<'_, AppState> = app.state();
     if let Some(active_base_url) = load_app_backend_config(&app)
         .ok()
         .and_then(|config| config.active_base_url)
     {
         match crate::config::normalize_external_base_url(&active_base_url) {
-            Ok(base) => match wait_for_health(&base, 8, Duration::from_millis(250)).await {
-                Ok(()) => {
-                    state
-                        .window_backend_base_urls
-                        .lock()
-                        .unwrap()
-                        .insert(MAIN_WINDOW.to_string(), base.clone());
-                    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                        window
-                            .eval(frontend_init_script(None, &base))
-                            .context("inject external backend config")?;
-                    }
-                    update_tray_status(&app, "Status: Running");
-                    app.emit(
-                        "backend-ready",
-                        BackendReady {
-                            port: 0,
-                            version: "external".to_string(),
-                            base_url: base,
-                            token: None,
-                            sidecar_running: false,
-                        },
-                    )
-                    .ok();
-                    return Ok(());
-                }
+            Ok(base) => match crate::commands::probe_saved_backend(&base).await {
+                Ok(()) => return Ok(StartedBackend::External(base)),
                 Err(e) => {
-                    log::warn!("desktop: saved external backend is not reachable at startup: {e:#}")
+                    log::warn!("desktop: saved external backend is not reachable at startup (at_ms={}): {e:#}", launch_ms())
                 }
             },
             Err(e) => {
@@ -437,108 +445,125 @@ async fn start_backend_and_window(app: AppHandle) -> Result<()> {
         }
     }
 
-    let mut start_guard = BackendStartGuard::try_acquire(
+    let guard = BackendStartGuard::try_acquire(
         state.backend_starting.clone(),
         state.backend_failed.clone(),
     )
     .ok_or_else(|| anyhow::anyhow!("bundled backend is already starting"))?;
-    match Sidecar::spawn(&app) {
-        Ok(mut sidecar) => {
-            let handshake_result = sidecar
-                .read_handshake(SIDECAR_HANDSHAKE_TIMEOUT)
-                .await
-                .context("read sidecar handshake");
-            match handshake_result {
-                Ok(handshake) => {
-                    log::info!(
-                        "sidecar handshake: port={} pid={} version={}",
-                        handshake.port,
-                        handshake.pid,
-                        handshake.version
-                    );
-
-                    let base = format!("http://127.0.0.1:{}", handshake.port);
-                    if let Err(e) = wait_for_health(&base, 60, Duration::from_millis(250)).await {
-                        log::warn!("desktop: sidecar health check failed at startup: {e:#}");
-                        // The sidecar is not stored in AppState on failure, so
-                        // explicitly reap it before exposing Retry. Dropping a
-                        // tokio Child alone does not guarantee process exit on
-                        // Unix; an orphan would waste memory and contend with
-                        // the replacement backend.
-                        sidecar
-                            .shutdown_with_grace(Duration::from_millis(750))
-                            .await;
-                        update_tray_status(&app, "Status: Error");
-                        app.emit(
-                            "backend-error",
-                            BackendError {
-                                message: format!("Sidecar health check failed: {e:#}"),
-                            },
-                        )
-                        .ok();
-                    } else {
-                        let token = handshake.token.clone();
-                        let init_script = frontend_init_script(Some(&token), &base);
-
-                        let _ = state.sidecar.lock().await.replace(sidecar);
-                        let _ = state.desktop_token.lock().await.replace(handshake.token);
-                        let _ = state.backend_base_url.lock().await.replace(base.clone());
-                        *state.backend_mode.lock().await = BackendMode::Bundled;
-                        start_guard.complete();
-
-                        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                            window
-                                .eval(&init_script)
-                                .context("inject bundled backend config")?;
-                        }
-                        update_tray_status(&app, "Status: Running");
-
-                        app.emit(
-                            "backend-ready",
-                            BackendReady {
-                                port: handshake.port,
-                                version: handshake.version,
-                                base_url: base,
-                                token: Some(token),
-                                sidecar_running: true,
-                            },
-                        )
-                        .ok();
-                    }
-                }
-                Err(e) => {
-                    log::warn!("desktop: sidecar handshake failed at startup: {e:#}");
-                    sidecar
-                        .shutdown_with_grace(Duration::from_millis(750))
-                        .await;
-                    update_tray_status(&app, "Status: Error");
-                    app.emit(
-                        "backend-error",
-                        BackendError {
-                            message: format!("Sidecar handshake failed: {e:#}"),
-                        },
-                    )
-                    .ok();
-                }
-            }
-        }
+    let mut sidecar = match Sidecar::spawn(&app) {
+        Ok(sidecar) => sidecar,
         Err(e) => {
             log::warn!("desktop: sidecar unavailable at startup: {e:#}");
-            update_tray_status(&app, "Status: Error");
+            return Ok(StartedBackend::Failed(format!("Sidecar unavailable: {e:#}")));
+        }
+    };
+    log::info!("startup: sidecar spawned at_ms={}", launch_ms());
+    let handshake = match sidecar
+        .read_handshake(SIDECAR_HANDSHAKE_TIMEOUT)
+        .await
+        .context("read sidecar handshake")
+    {
+        Ok(handshake) => handshake,
+        Err(e) => {
+            log::warn!("desktop: sidecar handshake failed at startup: {e:#}");
+            sidecar
+                .shutdown_with_grace(Duration::from_millis(750))
+                .await;
+            return Ok(StartedBackend::Failed(format!("Sidecar handshake failed: {e:#}")));
+        }
+    };
+    log::info!(
+        "sidecar handshake: port={} pid={} version={} at_ms={}",
+        handshake.port,
+        handshake.pid,
+        handshake.version,
+        launch_ms()
+    );
+
+    let base = format!("http://127.0.0.1:{}", handshake.port);
+    if let Err(e) = wait_for_health(&base, 60, Duration::from_millis(250)).await {
+        log::warn!("desktop: sidecar health check failed at startup: {e:#}");
+        // The sidecar is not stored in AppState on failure, so
+        // explicitly reap it before exposing Retry. Dropping a
+        // tokio Child alone does not guarantee process exit on
+        // Unix; an orphan would waste memory and contend with
+        // the replacement backend.
+        sidecar
+            .shutdown_with_grace(Duration::from_millis(750))
+            .await;
+        return Ok(StartedBackend::Failed(format!("Sidecar health check failed: {e:#}")));
+    }
+    Ok(StartedBackend::Bundled { sidecar: Box::new(sidecar), handshake, base, guard })
+}
+
+/// Hand the backend to the main window, the tray and the frontend.
+async fn publish_backend(app: &AppHandle, started: StartedBackend) -> Result<()> {
+    let state: tauri::State<'_, AppState> = app.state();
+    match started {
+        StartedBackend::External(base) => {
+            state
+                .window_backend_base_urls
+                .lock()
+                .unwrap()
+                .insert(MAIN_WINDOW.to_string(), base.clone());
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                window
+                    .eval(frontend_init_script(None, &base))
+                    .context("inject external backend config")?;
+            }
+            update_tray_status(app, "Status: Running");
             app.emit(
-                "backend-error",
-                BackendError {
-                    message: format!("Sidecar unavailable: {e:#}"),
+                "backend-ready",
+                BackendReady {
+                    port: 0,
+                    version: "external".to_string(),
+                    base_url: base,
+                    token: None,
+                    sidecar_running: false,
                 },
             )
             .ok();
         }
-    }
+        StartedBackend::Bundled { sidecar, handshake, base, mut guard } => {
+            let token = handshake.token.clone();
+            let init_script = frontend_init_script(Some(&token), &base);
 
+            let _ = state.sidecar.lock().await.replace(*sidecar);
+            let _ = state.desktop_token.lock().await.replace(handshake.token);
+            let _ = state.backend_base_url.lock().await.replace(base.clone());
+            *state.backend_mode.lock().await = BackendMode::Bundled;
+            guard.complete();
+
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                window
+                    .eval(&init_script)
+                    .context("inject bundled backend config")?;
+            }
+            update_tray_status(app, "Status: Running");
+            log::info!("startup: bundled backend ready at_ms={}", launch_ms());
+
+            app.emit(
+                "backend-ready",
+                BackendReady {
+                    port: handshake.port,
+                    version: handshake.version,
+                    base_url: base,
+                    token: Some(token),
+                    sidecar_running: true,
+                },
+            )
+            .ok();
+        }
+        StartedBackend::Failed(message) => {
+            update_tray_status(app, "Status: Error");
+            app.emit("backend-error", BackendError { message }).ok();
+        }
+    }
     Ok(())
 }
 
 fn main() {
+    LAUNCHED.get_or_init(Instant::now);
     let state = AppState {
         sidecar: Arc::new(Mutex::new(None)),
         desktop_token: Arc::new(Mutex::new(None)),
@@ -626,30 +651,24 @@ fn main() {
             updater::updater_release_notes
         ])
         .setup(|app| {
-            install_desktop_menus(app)?;
-            #[cfg(target_os = "macos")]
-            tray_popup::create_tray_popup(app)?;
-            match desktop_log_path(app.handle()) {
-                Ok(path) => log::info!("desktop log path={}", path.display()),
-                Err(e) => log::warn!("desktop log path unavailable: {e:#}"),
-            }
+            log::info!("startup: setup at_ms={}", launch_ms());
             log::info!(
                 "desktop app starting version={} pid={} target_os={}",
                 env!("CARGO_PKG_VERSION"),
                 std::process::id(),
                 std::env::consts::OS
             );
+            // The backend and the HTTP client's TLS roots (~190 ms on macOS)
+            // are the slowest parts of a launch, so they start before the
+            // menus. Nothing is published to the tray or a window before
+            // `setup` returns: the main window can only build after it.
+            std::thread::spawn(|| {
+                crate::usage::shared_client();
+            });
             let handle = app.handle().clone();
+            let backend = tauri::async_runtime::spawn(start_backend(handle.clone()));
             tauri::async_runtime::spawn(async move {
-                // Bundles from previous runs are unreachable (`update_state`
-                // is in-memory and starts empty), so reclaim their disk.
-                updater::purge_cached_updates(&handle);
-                let updater_handle = handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    let _ = updater::run_update_check(updater_handle, true).await;
-                });
-                if let Err(e) = start_backend_and_window(handle.clone()).await {
+                if let Err(e) = start_backend_and_window(handle.clone(), backend).await {
                     log::error!("failed to start backend: {e:#}");
                     update_tray_status(&handle, "Status: Error");
                     handle
@@ -661,6 +680,20 @@ fn main() {
                         )
                         .ok();
                 }
+            });
+            install_desktop_menus(app)?;
+            log::info!("startup: menus built at_ms={}", launch_ms());
+            match desktop_log_path(app.handle()) {
+                Ok(path) => log::info!("desktop log path={}", path.display()),
+                Err(e) => log::warn!("desktop log path unavailable: {e:#}"),
+            }
+            let updater_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Bundles from previous runs are unreachable (`update_state`
+                // is in-memory and starts empty), so reclaim their disk.
+                updater::purge_cached_updates(&updater_handle);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let _ = updater::run_update_check(updater_handle, true).await;
             });
             let usage_poll_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

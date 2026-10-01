@@ -49,7 +49,9 @@ if (import.meta.main) {
   // 778 kB, with a 1.97 MB index chunk.
   // Design feedback chips, comment editing and React 19 source mapping
   // raised it to 2.62 MB / 783 kB, with a 1.98 MB index chunk.
-  const limits = { eagerBytes: 2_640_000, eagerGzipBytes: 790_000, largestChunkBytes: 1_990_000 }
+  // Loading KaTeX and its stylesheet on first use lowered it to
+  // 2.37 MB / 705 kB, with a 1.72 MB index chunk.
+  const limits = { eagerBytes: 2_380_000, eagerGzipBytes: 712_000, largestChunkBytes: 1_730_000 }
   console.log('Production JavaScript budget:', sizes)
   const failures = budgetFailures(sizes, limits)
   if (failures.length) {

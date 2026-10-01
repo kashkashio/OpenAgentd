@@ -6,7 +6,6 @@ use crate::{Tool, ToolContext, ToolError, ToolOutput, ToolResult};
 use async_trait::async_trait;
 use regex::Regex;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -424,7 +423,6 @@ pub fn apply_chunks(content: &str, chunks: &[Chunk], path: &str) -> Result<(Stri
 struct Snap {
     content: Vec<u8>,
     mode: u32,
-    digest: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -456,11 +454,24 @@ fn snapshot(p: &Path) -> Result<Option<Snap>, ToolError> {
         return Err(verr(format!("Path is a directory: {}", p.display())));
     }
     let content = std::fs::read(p)?;
-    let digest = Sha256::digest(&content).to_vec();
-    Ok(Some(Snap { content, mode: file_mode(p), digest }))
+    Ok(Some(Snap { content, mode: file_mode(p) }))
 }
 
-fn stage_file(path: &Path, data: &[u8], mode: u32) -> std::io::Result<PathBuf> {
+/// Flush staged bytes before the rename so a crash can't publish a truncated
+/// file. On Apple platforms `sync_all` is `F_FULLFSYNC` (~5 ms per file, it
+/// also drains the drive cache); plain `fsync(2)` (~0.5 ms) is enough for
+/// workspace edits, so the full flush is kept only for memory pages.
+fn flush_staged(f: &std::fs::File, full: bool) -> std::io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    if !full {
+        use std::os::fd::AsRawFd;
+        return nix::unistd::fsync(f.as_raw_fd()).map_err(std::io::Error::from);
+    }
+    let _ = full;
+    f.sync_all()
+}
+
+fn stage_file(path: &Path, data: &[u8], mode: u32, full_sync: bool) -> std::io::Result<PathBuf> {
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let mut tmp = tempfile::Builder::new().prefix(&format!(".{}.", path.file_name().unwrap_or_default().to_string_lossy())).suffix(".tmp").tempfile_in(parent)?;
@@ -472,7 +483,7 @@ fn stage_file(path: &Path, data: &[u8], mode: u32) -> std::io::Result<PathBuf> {
     }
     let _ = mode;
     tmp.write_all(data)?;
-    tmp.as_file().sync_all()?;
+    flush_staged(tmp.as_file(), full_sync)?;
     let (_, p) = tmp.keep().map_err(|e| e.error)?;
     Ok(p)
 }
@@ -594,7 +605,7 @@ pub fn apply_patch(denied: &DeniedPaths, patch_text: &str) -> Result<(String, Ve
                 parent = pp.parent().map(Path::to_path_buf);
             }
             let f = virt[p].as_ref().unwrap();
-            staged.push((p.clone(), stage_file(p, &f.content, f.mode)?));
+            staged.push((p.clone(), stage_file(p, &f.content, f.mode, is_memory_path(p))?));
         }
         for (p, snap) in &original {
             match snap {
@@ -608,7 +619,7 @@ pub fn apply_patch(denied: &DeniedPaths, patch_text: &str) -> Result<(String, Ve
                         return Err(verr(format!("Path changed during patch: {} was removed", p.display())));
                     }
                     let c = std::fs::read(p)?;
-                    if Sha256::digest(&c).to_vec() != s.digest || file_mode(p) != s.mode {
+                    if c != s.content || file_mode(p) != s.mode {
                         return Err(verr(format!("Path changed during patch: {}", p.display())));
                     }
                 }
@@ -636,7 +647,7 @@ pub fn apply_patch(denied: &DeniedPaths, patch_text: &str) -> Result<(String, Ve
                     let _ = std::fs::remove_file(p);
                 }
                 Some(s) => {
-                    if let Ok(t) = stage_file(p, &s.content, s.mode) {
+                    if let Ok(t) = stage_file(p, &s.content, s.mode, is_memory_path(p)) {
                         let _ = std::fs::rename(t, p);
                     }
                 }
@@ -728,5 +739,42 @@ mod tests {
         std::fs::write(t.path().join("c.py"), "def f():\r\n    return 1\r\n").unwrap();
         apply_patch(&d, "*** Begin Patch\n*** Update File: c.py\n@@ def f():\n-return 1\n+return 2\n*** End Patch").unwrap();
         assert_eq!(std::fs::read_to_string(t.path().join("c.py")).unwrap(), "def f():\r\n    return 2\r\n");
+    }
+
+    #[test]
+    fn failing_later_file_leaves_earlier_files_untouched() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dp(t.path());
+        std::fs::write(t.path().join("a.txt"), "one\n").unwrap();
+        let e = apply_patch(&d, "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+uno\n*** Add File: new/b.txt\n+b\n*** Update File: missing.txt\n@@\n-x\n+y\n*** End Patch")
+            .unwrap_err();
+        assert!(e.to_string().contains("File not found"), "{e}");
+        assert_eq!(std::fs::read_to_string(t.path().join("a.txt")).unwrap(), "one\n");
+        assert!(!t.path().join("new").exists());
+    }
+
+    #[test]
+    fn multi_file_patch_reports_every_changed_path_once() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dp(t.path());
+        std::fs::write(t.path().join("a.txt"), "one\ntwo\n").unwrap();
+        let (out, changed) =
+            apply_patch(&d, "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+uno\n*** Update File: a.txt\n@@\n-two\n+dos\n*** Add File: b.txt\n+b\n*** End Patch").unwrap();
+        assert_eq!(std::fs::read_to_string(t.path().join("a.txt")).unwrap(), "uno\ndos\n");
+        assert_eq!(changed.len(), 2);
+        assert!(out.ends_with("Updated paths:\na.txt\nb.txt"), "{out}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_keeps_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let d = dp(t.path());
+        let p = t.path().join("run.sh");
+        std::fs::write(&p, "echo 1\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        apply_patch(&d, "*** Begin Patch\n*** Update File: run.sh\n@@\n-echo 1\n+echo 2\n*** End Patch").unwrap();
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o7777, 0o755);
     }
 }

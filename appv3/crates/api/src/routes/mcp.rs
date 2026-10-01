@@ -118,8 +118,9 @@ fn parse_server_body(v: Option<&Value>, errs: &mut Vec<Value>) -> Option<ServerC
 
 // ── OAuth secret storage ────────────────────────────────────────────────────
 
-fn env_ref_re() -> regex::Regex {
-    regex::Regex::new(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$").unwrap()
+fn env_ref_re() -> &'static regex::Regex {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$").unwrap());
+    &RE
 }
 
 fn oauth_env_key(name: &str, field: &str) -> String {

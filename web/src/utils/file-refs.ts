@@ -37,7 +37,10 @@ const PATH = String.raw`(?:\.{1,2}\/|~\/|\/)?(?:${SEGMENT}\/)*${SEGMENT}`
 // An en dash counts too: models write ranges as prose.
 const POSITION = String.raw`(?::(\d+)(?::(\d+))?(?:[-–](\d+))?|#L(\d+)(?:C(\d+))?(?:-L?(\d+)(?:C\d+)?)?)`
 const EXACT = new RegExp(`^(${PATH})${POSITION}?$`)
-const FREE = new RegExp(String.raw`(?<![\w./@~:-])(${PATH})${POSITION}?(?![\w/])`, 'g')
+// The boundary before a path is checked in ``findFileRefs``: a lookbehind is a
+// parse error before Safari 16.4.
+const FREE = new RegExp(String.raw`(${PATH})${POSITION}?(?![\w/])`, 'g')
+const PATH_CHAR = /[\w./@~:-]/
 const HREF = new RegExp(`^(.+?)${POSITION}?$`)
 
 function extensionOf(path: string): string | null {
@@ -87,13 +90,21 @@ export function parseFileHref(href: string): FileRef | null {
 /** File references in free text, e.g. compiler or grep output, in order. */
 export function findFileRefs(text: string): Array<{ start: number; end: number; ref: FileRef }> {
   const found: Array<{ start: number; end: number; ref: FileRef }> = []
-  for (const match of text.matchAll(FREE)) {
+  FREE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = FREE.exec(text)) !== null) {
+    // The old negative lookbehind: a path never starts right after a path
+    // character, even one the previous match consumed. Retry one later.
+    if (match.index > 0 && PATH_CHAR.test(text[match.index - 1])) {
+      FREE.lastIndex = match.index + 1
+      continue
+    }
     const path = match[1]
     const hasLine = match[2] !== undefined || match[5] !== undefined
     if (!extensionOf(path) || (!path.includes('/') && !hasLine)) continue
     const ref = withPosition(path, match, 2)
     if (!ref) continue
-    const start = match.index ?? 0
+    const start = match.index
     found.push({ start, end: start + match[0].length, ref })
     if (found.length >= MAX_FREE_REFS) break
   }

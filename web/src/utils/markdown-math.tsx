@@ -7,17 +7,53 @@
  * - Fenced math blocks: ```math and ```katex
  *
  * Distinguishes math from currency ($50 and $100) and escaped dollars (\$50).
+ *
+ * KaTeX (~270 kB plus CSS) loads on first use: the parser starts the fetch as
+ * soon as it sees math, and formulas show their source until it arrives.
  */
 
-import { memo, useMemo } from 'react'
-import katex from 'katex'
+import { memo, useEffect, useMemo, useSyncExternalStore } from 'react'
 import type { BlockNode, BlockParseContext, InlineNode, MarkdownExtension } from '@tanstack/markdown'
+
+type Katex = typeof import('katex').default
+
+let katexModule: Katex | null = null
+let katexLoading: Promise<void> | null = null
+const katexListeners = new Set<() => void>()
+
+function loadKatex(): void {
+  katexLoading ??= import('@/utils/katex-instance').then(
+    (m) => {
+      katexModule = m.default
+      for (const notify of katexListeners) notify()
+    },
+    () => {
+      // Let a later formula retry (e.g. a chunk fetch that failed offline).
+      katexLoading = null
+    },
+  )
+}
+
+function subscribeKatex(notify: () => void): () => void {
+  katexListeners.add(notify)
+  return () => katexListeners.delete(notify)
+}
+
+function useKatex(): Katex | null {
+  const k = useSyncExternalStore(subscribeKatex, () => katexModule, () => katexModule)
+  useEffect(() => {
+    if (!k) loadKatex()
+  }, [k])
+  return k
+}
 
 export const MATH_INLINE_SENTINEL = '\uE000math:inline:'
 export const MATH_BLOCK_SENTINEL = '\uE000math:block:'
 
+// No lookbehind (a parse error before Safari 16.4): an inline `$…$` body ends
+// on a character that is not whitespace or a backslash via `[^\s\\$]`.
 const MATH_REGEX =
-  /(?:\\\$)|(?:\$\$([\s\S]+?)\$\$)|(?:\\\[([\s\S]+?)\\\])|(?:\\\(([\s\S]+?)\\\))|(?:\$(?!\s)([^$\n]+?)(?<![\s\\])\$)/g
+  /(?:\\\$)|(?:\$\$([\s\S]+?)\$\$)|(?:\\\[([\s\S]+?)\\\])|(?:\\\(([\s\S]+?)\\\))|(?:\$(?!\s)([^$\n]*?[^\s\\$])\$)/g
 
 const htmlCache = new Map<string, string>()
 const MAX_CACHE_SIZE = 500
@@ -31,8 +67,7 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#039;')
 }
 
-// eslint-disable-next-line react-refresh/only-export-components
-export function renderKatexHtml(math: string, displayMode: boolean): string {
+function renderKatexHtml(katex: Katex, math: string, displayMode: boolean): string {
   const cacheKey = `${displayMode ? 'd' : 'i'}:${math}`
   const cached = htmlCache.get(cacheKey)
   if (cached !== undefined) return cached
@@ -58,7 +93,9 @@ export function renderKatexHtml(math: string, displayMode: boolean): string {
 }
 
 export const MathSpan = memo(function MathSpan({ math }: { math: string }) {
-  const html = useMemo(() => renderKatexHtml(math, false), [math])
+  const katex = useKatex()
+  const html = useMemo(() => (katex ? renderKatexHtml(katex, math, false) : null), [katex, math])
+  if (html === null) return <span className="oa-math-inline">{math}</span>
   return (
     <span
       className="oa-math-inline"
@@ -68,7 +105,9 @@ export const MathSpan = memo(function MathSpan({ math }: { math: string }) {
 })
 
 export const MathBlock = memo(function MathBlock({ math }: { math: string }) {
-  const html = useMemo(() => renderKatexHtml(math, true), [math])
+  const katex = useKatex()
+  const html = useMemo(() => (katex ? renderKatexHtml(katex, math, true) : null), [katex, math])
+  if (html === null) return <div className="oa-math-block my-2 max-w-full overflow-x-auto text-center">{math}</div>
   return (
     <div
       className="oa-math-block my-2 max-w-full overflow-x-auto text-center"
@@ -82,6 +121,7 @@ export function parseMathBlock(context: BlockParseContext): BlockNode | undefine
   const first = context.lines[context.index] ?? ''
   const trimmed = first.trim()
   if (trimmed.startsWith('$$') || trimmed.startsWith('\\[')) {
+    loadKatex()
     const isBracket = trimmed.startsWith('\\[')
     const openToken = isBracket ? '\\[' : '$$'
     const closeToken = isBracket ? '\\]' : '$$'
@@ -162,6 +202,7 @@ export function transformMathInline(nodes: InlineNode[]): InlineNode[] {
       if (match.index > lastIndex) {
         result.push({ type: 'text', value: node.value.slice(lastIndex, match.index) })
       }
+      loadKatex()
       if (match[1] !== undefined) {
         result.push({ type: 'inlineCode', value: `${MATH_BLOCK_SENTINEL}${match[1]}` })
       } else if (match[2] !== undefined) {

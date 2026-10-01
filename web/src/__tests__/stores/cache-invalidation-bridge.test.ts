@@ -134,19 +134,19 @@ describe('applyCacheInvalidations', () => {
     })
   })
 
-  it('processes duplicate events (TanStack invalidation is idempotent)', () => {
+  it('invalidates a key once when a batch repeats it', () => {
+    // A repeated invalidate is not free: it cancels the in-flight refetch
+    // and sends it again.
     const client = makeMockClient()
     applyCacheInvalidations(client, [
       { kind: 'scheduler' },
       { kind: 'scheduler' },
       { kind: 'scheduler' },
     ])
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(3)
-    for (let i = 0; i < 3; i += 1) {
-      expect(client.invalidateQueries.mock.calls[i][0]).toEqual({
-        queryKey: queryKeys.scheduler.list(),
-      })
-    }
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1)
+    expect(client.invalidateQueries.mock.calls[0][0]).toEqual({
+      queryKey: queryKeys.scheduler.list(),
+    })
   })
 
   it('preserves per-event sessionId across mixed sessions', () => {

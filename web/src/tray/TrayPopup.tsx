@@ -274,11 +274,20 @@ export function TrayPopup() {
 
   useEffect(() => {
     void load()
+    // `listen` resolves after an IPC round trip; a cleanup that runs first
+    // (unmount, or a server switch changing `load`) must still remove it, or
+    // stale listeners keep reloading for the previous server.
+    let cancelled = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      unlisten = await listen(TRAY_REFRESH_EVENT, () => void load())
+      const stop = await listen(TRAY_REFRESH_EVENT, () => void load())
+      if (cancelled) stop()
+      else unlisten = stop
     })()
-    return () => unlisten?.()
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [load])
 
   useEffect(() => {

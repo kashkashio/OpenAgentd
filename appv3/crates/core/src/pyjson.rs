@@ -9,25 +9,10 @@ pub fn dumps(value: &Value) -> String {
     out
 }
 
-/// `json.dumps(value, ensure_ascii=False)`.
-pub fn dumps_unicode(value: &Value) -> String {
-    let mut out = String::new();
-    write(value, &mut out, ", ", ": ", false);
-    out
-}
-
 /// `json.dumps(value, separators=(",", ":"))`.
 pub fn dumps_compact(value: &Value) -> String {
     let mut out = String::new();
     write(value, &mut out, ",", ":", true);
-    out
-}
-
-/// Starlette `JSONResponse.render`: `json.dumps(ensure_ascii=False,
-/// separators=(",", ":"))`.
-pub fn dumps_response(value: &Value) -> String {
-    let mut out = String::new();
-    write(value, &mut out, ",", ":", false);
     out
 }
 

@@ -3,13 +3,19 @@ import { health } from '@/api/client'
 import { queryKeys } from './keys'
 import { getAppBackendStatus } from '@/lib/app-backend'
 
+/**
+ * Safety net only: the global event stream rechecks health when it drops or
+ * reopens (`use-global-event-stream.ts`), so the dot no longer needs a 30 s poll.
+ */
+export const HEALTH_FALLBACK_POLL_MS = 5 * 60_000
+
 export function useHealthQuery() {
   return useQuery({
     queryKey: queryKeys.health(),
     queryFn: health,
     retry: 3,
     retryDelay: 1000,
-    refetchInterval: 30000,
+    refetchInterval: HEALTH_FALLBACK_POLL_MS,
     refetchIntervalInBackground: false,
   })
 }

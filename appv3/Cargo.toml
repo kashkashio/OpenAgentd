@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.3.1"
+version = "3.4.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/lthoangg/openagentd"
@@ -26,7 +26,7 @@ anyhow = "1.0"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
+serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip", "raw_value"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v5", "v4", "v7", "serde"] }

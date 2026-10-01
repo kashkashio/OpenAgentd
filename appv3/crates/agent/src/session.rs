@@ -477,6 +477,13 @@ impl AgentSession {
             extra.insert("snapshot".into(), Value::String(snap));
         }
         db::cleanup_reverted_tail(&self.pool, &sid).await?;
+        // Steers still queued (a failed turn, another device, a question that
+        // was superseded) go first: saved after this message, the next model
+        // call would promote them behind it, and the agent would read the
+        // older text last.
+        if let Err(e) = crate::snapshot::release_queued(&self.pool, &sid).await {
+            tracing::warn!("release_queued_before_message_failed session_id={} error={}", sid, e);
+        }
         let mut nm = NewMessage::user(m.content.clone());
         nm.extra = Some(extra);
         let persisted = db::save_message(&self.pool, &sid, nm).await?;
@@ -587,9 +594,11 @@ impl AgentSession {
         if queued.is_empty() {
             return false;
         }
-        let ids: Vec<String> = queued.iter().map(|r| db::codec::api_uuid(&r.id)).collect();
+        // The UI shows only what the user wrote; the turn reads the rest from history.
+        let visible: Vec<&db::SessionMessage> = queued.iter().filter(|r| !db::is_attached_row(r)).collect();
+        let ids: Vec<String> = visible.iter().map(|r| db::codec::api_uuid(&r.id)).collect();
         let data: Vec<Value> =
-            queued.iter().map(|r| json!({"id": db::codec::api_uuid(&r.id), "content": r.content.clone().unwrap_or_default(), "extra": r.extra_json()})).collect();
+            visible.iter().map(|r| json!({"id": db::codec::api_uuid(&r.id), "content": r.content.clone().unwrap_or_default(), "extra": r.extra_json()})).collect();
         self.clear_cancel();
         self.set_active_turn(true);
         self.spawn_turn(TurnOptions {
@@ -887,13 +896,15 @@ impl AgentSession {
 
         let ws_path = session_workspace_dir(&sid, Some(&workspace));
         let denied = Arc::new(DeniedPaths::new(&ws_path, Some(sid.clone())));
+        // Reads every memory page; keep that disk walk off the async worker.
+        let memory = tokio::task::spawn_blocking(appv3_memory::memory_context).await.unwrap_or_default();
         let mut hooks: Vec<HookRef> = vec![
             Arc::new(CurrentDateHook),
             Arc::new(StreamPublisherHook::new(&sid, &name, true)),
             Arc::new(crate::hooks::otel::OtelHook::new(&name, effective_model.as_deref())),
             Arc::new(crate::hooks::lsp::LspHook { enabled: agent_mode == "coding", denied: denied.clone() }),
             Arc::new(RuntimeProtocolHook),
-            Arc::new(MemoryContextHook { content: appv3_memory::memory_context(), lead: is_lead }),
+            Arc::new(MemoryContextHook { content: memory, lead: is_lead }),
         ];
         if is_lead {
             hooks.push(Arc::new(QueuedInjectionHook {

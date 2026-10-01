@@ -31,13 +31,41 @@ import { MathSpan } from '@/utils/markdown-math'
  *
  * Each body must start and end with a non-space so ``a * b * c`` and a stray
  * ``**`` stay literal. ``_italic_`` requires non-alphanumeric boundaries, which
- * keeps ``snake_case_names`` intact.
+ * keeps ``snake_case_names`` intact. No lookbehind (a parse error before
+ * Safari 16.4): ``nextMarker`` checks the character before ``_`` instead.
  */
 const INLINE_MARKERS =
-  /`([^`\n]+)`|\$(?!\s)([^$\n]+?)(?<![\s\\])\$|\*\*(\S(?:[^*\n]*\S)?)\*\*|\*(\S(?:[^*\n]*\S)?)\*|(?<![A-Za-z0-9])_(\S(?:[^_\n]*\S)?)_(?![A-Za-z0-9])/g
+  /`([^`\n]+)`|\$(?!\s)([^$\n]*?[^\s\\$])\$|\*\*(\S(?:[^*\n]*\S)?)\*\*|\*(\S(?:[^*\n]*\S)?)\*|_(\S(?:[^_\n]*\S)?)_(?![A-Za-z0-9])/g
 
 /** Code-only subset, for text where emphasis would just be noise. */
 const INLINE_CODE_ONLY = /`([^`\n]+)`/g
+
+/**
+ * The next marker match, rejecting an ``_italic_`` that follows an
+ * alphanumeric character — exactly what the old negative lookbehind did,
+ * including when that character ended the previous match.
+ */
+function nextMarker(pattern: RegExp, text: string): RegExpExecArray | null {
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    if (match[5] !== undefined && match.index > 0 && /[A-Za-z0-9]/.test(text[match.index - 1])) {
+      pattern.lastIndex = match.index + 1
+      continue
+    }
+    return match
+  }
+  return null
+}
+
+/** Every full-variant marker match in order (exported for the regex tests). */
+// eslint-disable-next-line react-refresh/only-export-components
+export function findInlineMarkers(text: string): RegExpExecArray[] {
+  INLINE_MARKERS.lastIndex = 0
+  const out: RegExpExecArray[] = []
+  let match: RegExpExecArray | null
+  while ((match = nextMarker(INLINE_MARKERS, text)) !== null) out.push(match)
+  return out
+}
 
 const INLINE_CODE_CLASS =
   'rounded-xs bg-(--bg-key) px-1 py-0.5 font-mono text-[0.9em] text-(--color-text)'
@@ -51,7 +79,7 @@ function tokenizeInline(text: string, variant: 'full' | 'code'): React.ReactNode
   let cursor = 0
   let match: RegExpExecArray | null
 
-  while ((match = pattern.exec(text)) !== null) {
+  while ((match = nextMarker(pattern, text)) !== null) {
     if (match.index > cursor) nodes.push(text.slice(cursor, match.index))
     if (variant === 'code') {
       const [, code] = match

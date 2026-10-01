@@ -17,6 +17,7 @@ let backendReadyListener: ((event: BackendReadyEvent) => void) | null = null
 let backendErrorListener: ((event: BackendErrorEvent) => void) | null = null
 let resolveSecureKey: (() => void) | null = null
 let routerMounted = false
+let preloadsAtFirstRouterRender: number | null = null
 const preloadConnectedAppMock = mock(() => {})
 let clipboardError: Error | null = null
 const writeClipboardMock = mock(async () => {
@@ -111,7 +112,11 @@ mock.module('@tauri-apps/api/webviewWindow', () => ({
 }))
 
 mock.module('@tanstack/react-router', () => ({
-  RouterProvider: () => { routerMounted = true; return null },
+  RouterProvider: () => {
+    if (!routerMounted) preloadsAtFirstRouterRender = preloadConnectedAppMock.mock.calls.length
+    routerMounted = true
+    return null
+  },
 }))
 
 mock.module('@/components/UpdateCard', () => ({
@@ -140,6 +145,7 @@ beforeEach(() => {
   resolveSecureKey = null
   resolveBundledRestart = null
   routerMounted = false
+  preloadsAtFirstRouterRender = null
   preloadConnectedAppMock.mockClear()
   clipboardError = null
   writeClipboardMock.mockClear()
@@ -173,6 +179,25 @@ describe('App backend bootstrap', () => {
 
     await waitFor(() => expect(routerMounted).toBe(true))
     await waitFor(() => expect(preloadConnectedAppMock).toHaveBeenCalledTimes(1))
+  })
+
+  it('starts preloading before the app shell first renders', async () => {
+    render(<App />)
+
+    await waitFor(() => expect(routerMounted).toBe(true))
+    expect(preloadsAtFirstRouterRender).toBe(1)
+  })
+
+  it('warms the new backend after an automatic restart', async () => {
+    render(<App />)
+    await waitFor(() => expect(preloadConnectedAppMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(backendReadyListener).not.toBeNull())
+
+    await act(async () => {
+      backendReadyListener?.({ payload: { base_url: 'http://127.0.0.1:50123', token: 'desktop-token' } })
+    })
+
+    await waitFor(() => expect(preloadConnectedAppMock).toHaveBeenCalledTimes(2))
   })
 
   it('hydrates and remembers the active mobile app backend URL on app startup', async () => {

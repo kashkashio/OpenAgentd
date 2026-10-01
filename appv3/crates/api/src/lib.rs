@@ -20,7 +20,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::Router;
 
 pub use error::{ApiError, ApiResult};
-pub use middleware::{ConnInfo, Policy};
+pub use middleware::{ConnInfo, NoDelayTcpListener, Policy};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,6 +44,7 @@ pub fn create_app(state: AppState, policy: Policy) -> Router {
         .layer(axum::middleware::from_fn_with_state(policy.clone(), middleware::network_bind_guard))
         .layer(axum::middleware::from_fn_with_state(policy.clone(), middleware::request_size_limit))
         .layer(middleware::gzip_layer())
+        .layer(axum::middleware::from_fn(middleware::skip_gzip_for_loopback))
         .layer(axum::middleware::from_fn_with_state(policy, middleware::desktop_token))
         .layer(axum::middleware::from_fn(middleware::security_headers))
         .layer(axum::middleware::from_fn_with_state(cors, middleware::cors))

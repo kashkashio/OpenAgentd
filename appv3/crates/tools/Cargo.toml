@@ -19,6 +19,7 @@ uuid.workspace = true
 chrono.workspace = true
 ignore.workspace = true
 regex.workspace = true
+regex-syntax = "0.8"
 shlex.workspace = true
 tempfile = "3"
 reqwest.workspace = true

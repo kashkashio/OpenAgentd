@@ -24,8 +24,8 @@ pub fn slugify(text: &str) -> String {
 }
 
 fn slug_ok(s: &str) -> bool {
-    let re = regex::Regex::new(r"^[a-z0-9][a-z0-9._-]{0,99}").unwrap();
-    re.is_match(s)
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-z0-9][a-z0-9._-]{0,99}").unwrap());
+    RE.is_match(s)
 }
 
 const SLUG_ERR: &str = "slug must consist of lowercase letters, numbers, hyphens, underscores, or dots, and start with a letter or number";

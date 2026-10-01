@@ -171,15 +171,13 @@ pub fn validate_args(args: &Value) -> Result<Vec<Value>, Vec<String>> {
             }
         }
         let multiple = opt_bool(&mut errs, o, "multiple", &format!("{loc} -> multiple"), false);
-        let custom = opt_bool(&mut errs, o, "custom", &format!("{loc} -> custom"), true);
-        if errs.len() == before && opts_ok {
-            if options.is_empty() && !custom {
-                errs.push(format!("{loc}: Value error, a question with no options must allow a custom answer (set custom=true or provide options)"));
-            } else if !multiple && options.iter().filter(|o| o["recommended"] == json!(true)).count() > 1 {
-                errs.push(format!("{loc}: Value error, a single-select question may recommend at most one option; set multiple=true to recommend several"));
-            }
+        if errs.len() == before && opts_ok && !multiple && options.iter().filter(|o| o["recommended"] == json!(true)).count() > 1 {
+            errs.push(format!("{loc}: Value error, a single-select question may recommend at most one option; set multiple=true to recommend several"));
         }
-        out.push(json!({"question": question, "header": header, "options": options, "multiple": multiple, "custom": custom}));
+        // The user may always type their own answer, so a `custom` arg (from an
+        // older schema) is ignored. The payload keeps `custom: true` because
+        // clients on an earlier web build only offer free text when it is set.
+        out.push(json!({"question": question, "header": header, "options": options, "multiple": multiple, "custom": true}));
     }
     if errs.is_empty() {
         Ok(out)
@@ -226,9 +224,27 @@ mod tests {
         assert_eq!(validate_args(&json!({})).unwrap_err(), vec!["questions: Field required"]);
         let ok = validate_args(&json!({"question": "Q?", "header": "H"})).unwrap();
         assert_eq!(ok[0], json!({"question": "Q?", "header": "H", "options": [], "multiple": false, "custom": true}));
-        let e = validate_args(&json!({"questions": [{"question": "Q", "header": "H", "custom": false}]})).unwrap_err();
-        assert_eq!(e[0], "questions -> 0: Value error, a question with no options must allow a custom answer (set custom=true or provide options)");
         let e = validate_args(&json!({"questions": [{"question": "Q", "header": "H", "options": [{"label": "a"}, {"label": "A "}]}]})).unwrap_err();
         assert_eq!(e[0], "questions -> 0 -> options: Value error, option labels must be unique within a question");
+    }
+
+    // The user can always type their own answer; a model that still sends
+    // `custom` (an older schema in its context) cannot turn that off.
+    #[test]
+    fn every_question_allows_a_typed_answer() {
+        let ok = validate_args(&json!({"questions": [
+            {"question": "Q", "header": "H", "custom": false},
+            {"question": "R", "header": "H", "options": [{"label": "a"}, {"label": "b"}], "custom": "no"},
+        ]}))
+        .unwrap();
+        assert_eq!(ok[0]["custom"], json!(true));
+        assert_eq!(ok[1]["custom"], json!(true));
+    }
+
+    #[test]
+    fn the_model_facing_schema_has_no_custom_switch() {
+        let def = appv3_tools::contract_definition("ask_user").unwrap();
+        let props = def.pointer("/function/parameters/properties/questions/items/properties").unwrap();
+        assert!(props.get("custom").is_none(), "{props}");
     }
 }

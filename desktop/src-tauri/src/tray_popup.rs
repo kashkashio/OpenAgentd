@@ -12,7 +12,7 @@
 //! the credential). ``get_tray_usage_summary`` hands back the cached snapshot
 //! the usage poll loop maintains.
 
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::AppState;
 
@@ -22,11 +22,22 @@ pub const TRAY_POPUP_WINDOW: &str = "tray-popup";
 /// webview knows to refetch usage instead of showing a stale snapshot.
 pub const TRAY_POPUP_REFRESH_EVENT: &str = "tray-popup-refresh";
 
-/// Build the borderless popup window once at startup. It starts hidden and
+/// How long after the main window's page loads the popup is built, so its
+/// own page load does not compete with the main window's.
+#[cfg(target_os = "macos")]
+const PREWARM_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The borderless popup window, built on first use. It starts hidden and
 /// stays alive (mounted) so toggling is cheap; the webview refetches on
 /// every ``TRAY_POPUP_REFRESH_EVENT``.
+///
+/// Call it on the main thread only: the tray click and the prewarm both run
+/// there, so the check and the build cannot race.
 #[cfg(target_os = "macos")]
-pub fn create_tray_popup(app: &tauri::App) -> tauri::Result<()> {
+pub fn ensure_tray_popup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
+    if let Some(window) = app.get_webview_window(TRAY_POPUP_WINDOW) {
+        return Ok(window);
+    }
     let window = WebviewWindowBuilder::new(
         app,
         TRAY_POPUP_WINDOW,
@@ -51,7 +62,29 @@ pub fn create_tray_popup(app: &tauri::App) -> tauri::Result<()> {
             let _ = hide_window.hide();
         }
     });
-    Ok(())
+    log::info!("startup: tray popup built at_ms={}", crate::launch_ms());
+    Ok(window)
+}
+
+/// Build the popup shortly after the main window has loaded, so a first
+/// tray click finds it ready. Building it during `setup` held the main
+/// window back by ~50 ms of main-thread work.
+pub fn prewarm_tray_popup(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(PREWARM_DELAY).await;
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Err(e) = ensure_tray_popup(&handle) {
+                    log::warn!("tray popup prewarm failed: {e:#}");
+                }
+            });
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// Toggle the popup open/closed, anchored under the tray icon.
@@ -59,8 +92,12 @@ pub fn create_tray_popup(app: &tauri::App) -> tauri::Result<()> {
 pub fn toggle_tray_popup(app: &AppHandle) {
     use tauri_plugin_positioner::WindowExt;
 
-    let Some(window) = app.get_webview_window(TRAY_POPUP_WINDOW) else {
-        return;
+    let window = match ensure_tray_popup(app) {
+        Ok(window) => window,
+        Err(e) => {
+            log::warn!("tray popup unavailable: {e:#}");
+            return;
+        }
     };
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
@@ -257,5 +294,23 @@ pub fn tray_action(app: AppHandle, action: String) {
     crate::menu::handle_desktop_menu(&app, &action);
     if let Some(window) = app.get_webview_window(TRAY_POPUP_WINDOW) {
         let _ = window.hide();
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_popup_is_built_on_first_use_and_reused() {
+        let app = tauri::test::mock_app();
+        assert!(app.get_webview_window(TRAY_POPUP_WINDOW).is_none());
+
+        let first = ensure_tray_popup(app.handle()).unwrap();
+        let second = ensure_tray_popup(app.handle()).unwrap();
+
+        assert_eq!(first.label(), TRAY_POPUP_WINDOW);
+        assert_eq!(second.label(), TRAY_POPUP_WINDOW);
+        assert_eq!(app.webview_windows().len(), 1);
     }
 }

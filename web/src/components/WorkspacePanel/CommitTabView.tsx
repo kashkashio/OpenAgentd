@@ -27,6 +27,12 @@ import { DOCK_ACTION_BUTTON_CLASS } from './dock-tab-styles'
 
 /** Larger commits open collapsed so the tab paints without every patch. */
 const AUTO_EXPAND_MAX_FILES = 10
+/**
+ * Changed lines opened by default. Tracked and commit diffs are not capped,
+ * and one regenerated lockfile can be tens of thousands of rows, so files
+ * open in order while they fit and the rest start collapsed.
+ */
+const AUTO_EXPAND_MAX_LINES = 2000
 
 export interface CommitTabViewProps {
   workspace: string
@@ -49,13 +55,23 @@ export function CommitTabView({ workspace, commit }: CommitTabViewProps) {
       : new Map<string, DiffFileSection>()),
     [diffText, workspace],
   )
+  const defaultCollapsed = useMemo(() => {
+    if (files.length > AUTO_EXPAND_MAX_FILES) return new Set(files.map((f) => f.path))
+    const closed = new Set<string>()
+    let opened = 0
+    for (const file of files) {
+      const lines = file.additions + file.deletions
+      if (opened + lines > AUTO_EXPAND_MAX_LINES) closed.add(file.path)
+      else opened += lines
+    }
+    return closed
+  }, [files])
   // ``null`` = follow the size default; a Set once the user toggles a file.
   const [collapsed, setCollapsed] = useState<Set<string> | null>(null)
-  const isCollapsed = (path: string) =>
-    collapsed ? collapsed.has(path) : files.length > AUTO_EXPAND_MAX_FILES
+  const isCollapsed = (path: string) => (collapsed ?? defaultCollapsed).has(path)
   const toggle = (path: string) => {
     setCollapsed((current) => {
-      const next = new Set(current ?? (files.length > AUTO_EXPAND_MAX_FILES ? files.map((f) => f.path) : []))
+      const next = new Set(current ?? defaultCollapsed)
       if (next.has(path)) next.delete(path)
       else next.add(path)
       return next
