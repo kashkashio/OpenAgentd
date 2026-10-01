@@ -28,18 +28,21 @@ fn parent_gone() -> &'static Notify {
 }
 
 /// Shut down gracefully when the parent dies, and exit hard if shutdown has
-/// not finished within the grace period.
+/// not finished within the grace period. Waits on the kernel's exit
+/// notification; polls only where that isn't available.
 fn start_parent_watch(parent: i32) {
     std::thread::Builder::new()
         .name("parent-watch".into())
-        .spawn(move || loop {
-            if !crate::paths::pid_alive(parent) {
-                eprintln!("parent-watch: parent pid {parent} no longer alive; shutting down");
-                parent_gone().notify_one();
-                std::thread::sleep(std::time::Duration::from_secs(15));
-                std::process::exit(1);
+        .spawn(move || {
+            if crate::paths::wait_pid_exit(parent).is_none() {
+                while crate::paths::pid_alive(parent) {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            eprintln!("parent-watch: parent pid {parent} no longer alive; shutting down");
+            parent_gone().notify_one();
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            std::process::exit(1);
         })
         .expect("spawn parent watch");
 }
