@@ -276,7 +276,7 @@ impl GoogleGenAiProvider {
         let (contents, system) = convert_messages(messages);
         let gtools = convert_tools(tools);
         let mut body = Map::new();
-        body.insert("contents".into(), json!(contents));
+        body.insert("contents".into(), Value::Array(contents));
         if let Some(s) = system {
             body.insert("systemInstruction".into(), s);
         }

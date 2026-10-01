@@ -426,7 +426,7 @@ impl AnthropicProvider {
         };
         let mut p = Map::new();
         p.insert("model".into(), json!(self.model));
-        p.insert("messages".into(), json!(msgs));
+        p.insert("messages".into(), Value::Array(msgs));
         p.insert("max_tokens".into(), json!(max_tokens));
         if let Some(s) = system {
             p.insert("system".into(), json!(s));
