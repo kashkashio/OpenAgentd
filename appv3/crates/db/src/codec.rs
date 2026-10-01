@@ -1,14 +1,11 @@
-//! Byte-level encoding rules shared with the v2 (Python/SQLAlchemy) backend.
-//!
-//! v2 and v3 must be able to open the *same* SQLite file, so every value v3
-//! writes has to look exactly like what SQLAlchemy writes, and every value v3
-//! reads may have been written by either side:
+//! On-disk encoding rules. Ids and datetimes keep the forms the v2
+//! (Python/SQLAlchemy) backend wrote, so existing databases stay readable:
 //!
 //! | Column type (SQLAlchemy)   | On-disk form                          |
 //! |----------------------------|---------------------------------------|
 //! | `sa.Uuid()`                | 32-char lowercase hex, no hyphens     |
 //! | `TZDateTime` / `DateTime`  | naive UTC `YYYY-MM-DD HH:MM:SS.ffffff` |
-//! | `JSON()`                   | `json.dumps` text; Python `None` → `'null'` |
+//! | `JSON()`                   | compact UTF-8 JSON; `None` → `'null'`. Older rows hold Python `json.dumps` text, which reads the same. |
 //!
 //! The API layer, on the other hand, speaks Pydantic: hyphenated UUIDs and
 //! ISO-8601 datetimes with a `Z` suffix (fraction omitted when zero).
@@ -125,19 +122,13 @@ pub fn json_col(raw: Option<&str>) -> Option<Value> {
     }
 }
 
-/// Encode a value for a `JSON()` column the way SQLAlchemy does
-/// (`json.dumps` defaults), including `None` → `'null'`.
+/// Encode a value for a `JSON()` column: compact, non-ASCII verbatim, and
+/// `None` → `'null'` like SQLAlchemy.
 pub fn json_db(value: Option<&Value>) -> String {
     match value {
         None => "null".to_string(),
-        Some(v) => py_json_dumps(v),
+        Some(v) => serde_json::to_string(v).expect("serde_json::Value always serializes"),
     }
-}
-
-/// `json.dumps(value)` with Python defaults: `", "` / `": "` separators and
-/// `ensure_ascii=True`.
-pub fn py_json_dumps(value: &Value) -> String {
-    appv3_core::pyjson::dumps(value)
 }
 
 #[cfg(test)]
@@ -168,10 +159,12 @@ mod tests {
     }
 
     #[test]
-    fn json_matches_python_dumps() {
+    fn json_columns_are_compact_utf8_and_old_rows_still_read() {
         let v = json!({"model": "codex:gpt-5.5", "n": [1, 2], "vi": "Tiếng Việt 😀"});
-        assert_eq!(py_json_dumps(&v), r#"{"model": "codex:gpt-5.5", "n": [1, 2], "vi": "Ti\u1ebfng Vi\u1ec7t \ud83d\ude00"}"#);
+        assert_eq!(json_db(Some(&v)), r#"{"model":"codex:gpt-5.5","n":[1,2],"vi":"Tiếng Việt 😀"}"#);
         assert_eq!(json_db(None), "null");
+        // Rows written by v2 / earlier v3 builds use Python's json.dumps style.
+        assert_eq!(json_col(Some(r#"{"model": "codex:gpt-5.5", "n": [1, 2], "vi": "Ti\u1ebfng Vi\u1ec7t \ud83d\ude00"}"#)), Some(v));
         assert_eq!(json_col(Some("null")), None);
         assert_eq!(json_col(None), None);
         assert_eq!(json_col(Some("{\"a\": 1}")), Some(json!({"a": 1})));
