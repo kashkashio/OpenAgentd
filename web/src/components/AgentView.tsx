@@ -48,6 +48,8 @@ import { applyTranscriptFindHighlight, clearTranscriptFindHighlight } from './Ag
 
 const INITIAL_RENDERED_TURNS = 80
 const TURN_RENDER_STEP = 80
+/** Older pages a reload may fetch on its own to reach a prompt (100 rows each). */
+const AUTO_PROMPT_SEEK_PAGES = 2
 /** How long a prompt jump is treated as still in flight. */
 const PROMPT_JUMP_MS = 700
 
@@ -487,7 +489,10 @@ export function AgentView({
   // fills it, no prompt is loaded at all, and reader mode folds the run into
   // a short view that may not scroll, so nothing ever asks for older pages.
   // Fetch back to the nearest prompt once per session so the run shows what
-  // it answers.
+  // it answers. The detailed transcript renders that run in full, so it
+  // scrolls and loads older pages on its own. The seek is capped well below
+  // the manual jump's budget: every page it lands renders at once, as one
+  // turn, before the reader asked for any of it.
   const hasMoreHistory = useAgentStore((s) => s.hasMore)
   const hasLoadedPrompt = useMemo(
     () => turnItems.some((item) => item.kind === 'user' && isDirectUserBlock(item.block)),
@@ -496,13 +501,13 @@ export function AgentView({
   const promptSeekedForRef = useRef<string | null>(null)
   const hasTurns = turnItems.length > 0
   useEffect(() => {
-    if (!hasMoreHistory || hasLoadedPrompt || !hasTurns) return
+    if (!readerTranscript || !hasMoreHistory || hasLoadedPrompt || !hasTurns) return
     const state = useAgentStore.getState()
     // A page already on its way lands new turns, which runs this again.
     if (state._loadingOlder || promptSeekedForRef.current === (sessionId ?? '')) return
     promptSeekedForRef.current = sessionId ?? ''
-    void state.loadOlderUntilPrompt().catch(() => false)
-  }, [hasLoadedPrompt, hasMoreHistory, hasTurns, sessionId, turnItems])
+    void state.loadOlderUntilPrompt(AUTO_PROMPT_SEEK_PAGES).catch(() => false)
+  }, [hasLoadedPrompt, hasMoreHistory, hasTurns, readerTranscript, sessionId, turnItems])
   const finalizedMCPAppResources = useMemo(() => latestMCPAppResources(blocks), [blocks])
   const latestMCPAppBlockIds = useMemo(
     () => latestMCPAppResourceBlockIdsFromParts(finalizedMCPAppResources, currentBlocks),
