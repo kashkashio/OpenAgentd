@@ -84,13 +84,14 @@ pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> R
     // `seq` is allocated inside the INSERT: SQLite takes the write lock for
     // the whole statement, so concurrent saves (a queued message while the
     // agent writes its reply) cannot read the same MAX(seq).
-    sqlx::query(
+    let row = sqlx::query_as::<_, SessionMessage>(
         r#"INSERT INTO session_messages
            (id, session_id, role, content, reasoning_content, tool_calls,
             tool_call_id, name, extra, created_at, seq, kind, pinned)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                    COALESCE(?, (SELECT COALESCE(MAX(seq), 0) + ? FROM session_messages WHERE session_id = ?)),
-                   ?, ?)"#,
+                   ?, ?)
+           RETURNING *"#,
     )
     .bind(&id)
     .bind(&sid)
@@ -107,12 +108,12 @@ pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> R
     .bind(&sid)
     .bind(&row_kind)
     .bind(pinned)
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
     if row_kind == kind::SUMMARY {
         bump_history_revision(pool, &sid, true).await?;
     }
-    Ok(get_message(pool, &id).await?.expect("row just inserted"))
+    Ok(row)
 }
 
 /// Update a row's content/extra in place (placeholder rewrites, usage).

@@ -37,6 +37,25 @@ async fn concurrent_saves_get_distinct_positions() {
 }
 
 #[tokio::test]
+async fn save_message_returns_the_stored_row() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let mut extra = serde_json::Map::new();
+    extra.insert("usage".into(), serde_json::json!({"input": 12, "note": "héllo"}));
+    let msg = NewMessage {
+        reasoning_content: Some("thinking…".into()),
+        tool_calls: Some(serde_json::json!([{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}])),
+        extra: Some(extra),
+        ..NewMessage::assistant(Some("naïve ✓".into()))
+    };
+    let saved = save_message(&pool, &s.id, msg).await.unwrap();
+    let stored = get_message(&pool, &saved.id).await.unwrap().unwrap();
+    assert_eq!(serde_json::to_value(&saved).unwrap(), serde_json::to_value(&stored).unwrap());
+    assert_eq!(saved.session_id, stored.session_id);
+    assert_eq!(saved.content.as_deref(), Some("naïve ✓"));
+}
+
+#[tokio::test]
 async fn sessions_by_ids_accepts_both_id_forms_and_skips_missing() {
     let (_d, pool) = fresh().await;
     let a = create_session(&pool, NewSession { workspace: "/w".into(), title: Some("Fix login".into()), ..Default::default() }).await.unwrap();
