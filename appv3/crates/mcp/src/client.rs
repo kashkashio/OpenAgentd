@@ -290,7 +290,8 @@ struct SseEvent {
 /// Incremental SSE parser (`httpx_sse` field rules).
 #[derive(Default)]
 struct SseParser {
-    buf: String,
+    // Splits on bytes, so a UTF-8 char split across chunks stays intact.
+    lines: appv3_providers::sse::LineBuf,
     event: Option<String>,
     data: Vec<String>,
     id: Option<String>,
@@ -299,11 +300,10 @@ struct SseParser {
 
 impl SseParser {
     fn feed(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        self.buf.push_str(&String::from_utf8_lossy(chunk));
+        let mut lines = Vec::new();
+        self.lines.push(chunk, &mut lines);
         let mut out = vec![];
-        while let Some(pos) = self.buf.find('\n') {
-            let line = self.buf[..pos].trim_end_matches('\r').to_string();
-            self.buf.drain(..=pos);
+        for line in lines {
             if line.is_empty() {
                 if self.event.is_none() && self.data.is_empty() && self.id.is_none() && self.retry.is_none() {
                     continue;
@@ -736,5 +736,26 @@ impl McpClient {
             Transport::Stdio(s) => s.close().await,
             Transport::Http(h) => h.close(false).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn events(chunks: &[&[u8]]) -> Vec<(String, String)> {
+        let mut p = SseParser::default();
+        chunks.iter().flat_map(|c| p.feed(c)).map(|e| (e.event, e.data)).collect()
+    }
+
+    #[test]
+    fn sse_keeps_a_multibyte_char_split_across_chunks() {
+        assert_eq!(events(&[b"data: {\"t\":\"\xC3", b"\xA9\"}\n\n"]), vec![("message".to_string(), "{\"t\":\"é\"}".to_string())]);
+    }
+
+    #[test]
+    fn sse_joins_data_lines_and_names_events() {
+        let got = events(&[b": ping\r\nevent: msg\r\nid: 7\r\ndata: a\r\nda", b"ta: b\r\n\r\n\ndata: c\n\n"]);
+        assert_eq!(got, vec![("msg".to_string(), "a\nb".to_string()), ("message".to_string(), "c".to_string())]);
     }
 }
