@@ -21,8 +21,8 @@ type Sub = Arc<SubQueue<Arc<WireEvent>>>;
 struct TurnState {
     is_streaming: bool,
     // IndexMap-like ordering: v2 dicts keep insertion order.
-    content: Vec<(String, Vec<String>)>,
-    thinking: Vec<(String, Vec<String>)>,
+    content: Vec<(String, String)>,
+    thinking: Vec<(String, String)>,
     tool_calls: Vec<Map<String, Value>>,
     agent_statuses: Vec<(String, String)>,
     agent_errors: HashMap<String, Value>,
@@ -119,21 +119,15 @@ fn match_tool_start(tcs: &mut Vec<Map<String, Value>>, id: Option<&str>, name: &
 
 /// `_tool_state.match_tool_end`.
 fn match_tool_end(tcs: &mut Vec<Map<String, Value>>, id: Option<&str>, name: &str, result: Value, agent: &str) {
-    let set = |tc: &mut Map<String, Value>| {
+    let by_id = id.filter(|s| !s.is_empty()).and_then(|i| tcs.iter().rposition(|tc| tc_str(tc, "tool_call_id") == Some(i)));
+    let hit = by_id.or_else(|| tcs.iter().rposition(|tc| tc_str(tc, "name") == Some(name) && !tc_bool(tc, "done")));
+    if let Some(i) = hit {
+        let tc = &mut tcs[i];
         tc.insert("done".into(), Value::Bool(true));
-        tc.insert("result".into(), result.clone());
+        tc.insert("result".into(), result);
         if !agent.is_empty() && tc_str(tc, "agent").map(|a| a.is_empty()).unwrap_or(true) {
             tc.insert("agent".into(), Value::String(agent.into()));
         }
-    };
-    if let Some(i) = id.filter(|s| !s.is_empty()) {
-        if let Some(tc) = tcs.iter_mut().rev().find(|tc| tc_str(tc, "tool_call_id") == Some(i)) {
-            set(tc);
-            return;
-        }
-    }
-    if let Some(tc) = tcs.iter_mut().rev().find(|tc| tc_str(tc, "name") == Some(name) && !tc_bool(tc, "done")) {
-        set(tc);
         return;
     }
     let mut m = Map::new();
@@ -208,12 +202,12 @@ impl StreamStore {
         match env.event.as_str() {
             "message" => {
                 if let Some(t) = get_str("text").filter(|t| !t.is_empty()) {
-                    entry(&mut state.content, agent).push(t.to_string());
+                    entry(&mut state.content, agent).push_str(t);
                 }
             }
             "thinking" => {
                 if let Some(t) = get_str("text").filter(|t| !t.is_empty()) {
-                    entry(&mut state.thinking, agent).push(t.to_string());
+                    entry(&mut state.thinking, agent).push_str(t);
                 }
             }
             "tool_call" => {
@@ -436,14 +430,14 @@ impl StreamStore {
         for qt in &state.queued_turns {
             replay.push(Envelope::from_parts("queued_turn_start", Value::Object(qt.clone())));
         }
-        for (agent, chunks) in &state.thinking {
-            if !chunks.is_empty() {
-                replay.push(events::thinking(agent, &chunks.concat(), None));
+        for (agent, text) in &state.thinking {
+            if !text.is_empty() {
+                replay.push(events::thinking(agent, text, None));
             }
         }
-        for (agent, chunks) in &state.content {
-            if !chunks.is_empty() {
-                replay.push(events::message(agent, &chunks.concat(), None));
+        for (agent, text) in &state.content {
+            if !text.is_empty() {
+                replay.push(events::message(agent, text, None));
             }
         }
         for tc in &state.tool_calls {
@@ -477,7 +471,7 @@ impl StreamStore {
         let s = turns.get(session_id)?;
         Some(json!({
             "is_streaming": s.is_streaming,
-            "content": s.content.iter().map(|(k, v)| (k.clone(), json!(v.concat()))).collect::<Map<_, _>>(),
+            "content": s.content.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<Map<_, _>>(),
             "tool_calls": s.tool_calls,
             "subscribers": s.subscribers.len(),
             "usage": s.usage,
@@ -572,5 +566,40 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, SUBSCRIBER_QUEUE_SIZE - 1);
+    }
+
+    #[tokio::test]
+    async fn replay_joins_many_chunks_per_agent_in_order() {
+        let s = leak();
+        s.init_turn("z", false);
+        for i in 0..500 {
+            s.push_event("z", &events::message("a", &format!("{i},"), None), false);
+            s.push_event("z", &events::thinking("a", "t", None), false);
+            s.push_event("z", &events::message("b", "é", None), false);
+        }
+        s.push_event("z", &events::message("a", "", None), false);
+        let mut sub = s.attach("z").unwrap();
+        let mut frames = vec![];
+        for _ in 0..3 {
+            frames.push(sub.next().await.unwrap());
+        }
+        let expected_a: String = (0..500).map(|i| format!("{i},")).collect();
+        assert_eq!(frames[0].data, events::thinking("a", &"t".repeat(500), None).to_wire().data);
+        assert_eq!(frames[1].data, events::message("a", &expected_a, None).to_wire().data);
+        assert_eq!(frames[2].data, events::message("b", &"é".repeat(500), None).to_wire().data);
+        assert_eq!(s.debug_state("z").unwrap()["content"]["a"], json!(expected_a));
+    }
+
+    #[tokio::test]
+    async fn tool_end_keeps_its_result_on_every_match_path() {
+        let s = leak();
+        s.init_turn("w", false);
+        s.push_event("w", &events::tool_call("a", Some("t1"), "read"), false);
+        s.push_event("w", &events::tool_end("a", Some("t1"), "read", Some("by-id"), None), false);
+        s.push_event("w", &events::tool_call("a", None, "grep"), false);
+        s.push_event("w", &events::tool_end("a", None, "grep", Some("by-name"), None), false);
+        s.push_event("w", &events::tool_end("a", Some("t9"), "glob", Some("orphan"), None), false);
+        let results: Vec<Value> = s.debug_state("w").unwrap()["tool_calls"].as_array().unwrap().iter().map(|tc| tc["result"].clone()).collect();
+        assert_eq!(results, vec![json!("by-id"), json!("by-name"), json!("orphan")]);
     }
 }
