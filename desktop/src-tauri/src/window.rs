@@ -150,13 +150,19 @@ pub fn emit_frontend_command(app: &AppHandle, command: &str) {
     });
 }
 
+/// The Vite dev server URL a debug build loads its UI from. Its origin is the
+/// only remote one granted IPC (`capabilities-dev/vite.json`).
+pub fn frontend_dev_url(app_id: &str, window_label: &str) -> String {
+    format!("http://localhost:5173/?oa-app-id={app_id}&oa-window-id={window_label}")
+}
+
 pub fn frontend_webview_url(app: &AppHandle, window_label: &str) -> Result<WebviewUrl> {
     // Desktop windows share a webview origin. Pass both identifiers so frontend
     // localStorage preferences remain scoped to the individual app window.
     let app_id = &app.config().identifier;
     if cfg!(debug_assertions) {
         Ok(WebviewUrl::External(
-            format!("http://localhost:5173/?oa-app-id={app_id}&oa-window-id={window_label}")
+            frontend_dev_url(app_id, window_label)
                 .parse()
                 .context("parse dev frontend url")?,
         ))
@@ -454,5 +460,31 @@ mod tests {
 
         assert!(script.contains(r#""main\"; alert(1); //""#));
         assert!(!script.contains(r#"value: "main";"#));
+    }
+
+    fn capability(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).expect("capability file is JSON")
+    }
+
+    // Release windows load the bundled UI (`frontend_webview_url`), so no
+    // other origin needs IPC. Each remote URL pattern is also compiled once
+    // per allowed command at launch: twelve of them cost ~380 ms.
+    #[test]
+    fn release_capability_grants_ipc_to_the_bundled_ui_only() {
+        let release = capability(include_str!("../capabilities/default.json"));
+        assert!(release.get("remote").is_none(), "remote origins in the release capability: {}", release["remote"]);
+    }
+
+    // Debug windows load the UI from Vite instead, a remote origin; it gets
+    // the same permissions and nothing else does.
+    #[test]
+    fn dev_server_capability_mirrors_the_release_one_for_vite_only() {
+        let release = capability(include_str!("../capabilities/default.json"));
+        let dev = capability(include_str!("../capabilities-dev/vite.json"));
+        assert_eq!(dev["windows"], release["windows"]);
+        assert_eq!(dev["permissions"], release["permissions"]);
+        assert_eq!(dev["local"], serde_json::json!(false));
+        assert_eq!(dev["remote"]["urls"], serde_json::json!(["http://localhost:5173"]));
+        assert!(frontend_dev_url("app", "main").starts_with("http://localhost:5173/"));
     }
 }

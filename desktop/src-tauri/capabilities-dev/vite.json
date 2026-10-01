@@ -1,13 +1,18 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Default capability set for the main window and the macOS tray popup. Grants IPC to the bundled UI only; debug builds add capabilities-dev/vite.json for the Vite dev server.",
+  "identifier": "vite-dev-server",
+  "description": "Debug builds only (added by `generate_context!` in main.rs): the same grants for the UI served by Vite on :5173. Release windows load the bundled UI and need no remote origin.",
   "windows": [
     "main",
     "main-*",
     "tray-popup"
   ],
-  "local": true,
+  "local": false,
+  "remote": {
+    "urls": [
+      "http://localhost:5173"
+    ]
+  },
   "permissions": [
     "core:default",
     "core:window:default",

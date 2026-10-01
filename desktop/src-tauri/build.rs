@@ -1,4 +1,6 @@
 fn main() {
+    // Read by `generate_context!` in debug builds (see src/main.rs).
+    println!("cargo:rerun-if-changed=capabilities-dev");
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(
             // Must mirror `generate_handler!` in src/main.rs exactly: this
