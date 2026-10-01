@@ -377,8 +377,8 @@ async fn obs_traces(State(st): State<AppState>, q: Qs) -> ApiResult<Response> {
 
 async fn obs_trace(AxPath(trace_id): AxPath<String>, q: Qs) -> ApiResult<Response> {
     let days = q.int("days", 30, Some(1), Some(90))?;
-    let re = regex::Regex::new(r"^(0x)?[0-9a-fA-F]{1,64}$").unwrap();
-    if !re.is_match(trace_id.strip_suffix('\n').unwrap_or(&trace_id)) {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^(0x)?[0-9a-fA-F]{1,64}$").unwrap());
+    if !RE.is_match(trace_id.strip_suffix('\n').unwrap_or(&trace_id)) {
         return Err(ApiError::unprocessable("Invalid trace_id: expected a hex string."));
     }
     let tid = trace_id.clone();

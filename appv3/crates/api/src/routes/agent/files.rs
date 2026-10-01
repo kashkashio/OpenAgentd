@@ -31,6 +31,7 @@ const MAX_UNTRACKED_DIFF_BYTES: u64 = 256 * 1024;
 /// add`/`commit` collides with them, and a killed call strands the lock.
 /// `git diff` ignores `--no-optional-locks`, hence `diff.autoRefreshIndex`.
 const READ_ONLY_GIT: [&str; 3] = ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false"];
+static SHA_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap());
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -640,7 +641,6 @@ async fn git_history(q: Qs) -> ApiResult<Response> {
     let all = q.bool("all", false)?;
     let resolved = validated(&workspace)?;
     static OFF_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^all:([0-9]{1,9})$").unwrap());
-    static SHA_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap());
     let off = cursor.as_deref().and_then(|c| OFF_RE.captures(c)).map(|c| c[1].parse::<i64>().unwrap_or(0));
     let offset = off.unwrap_or(0);
     if let Some(c) = cursor.as_deref().filter(|c| !c.is_empty()) {
@@ -763,7 +763,7 @@ async fn commit_diff(q: Qs) -> ApiResult<Response> {
     let workspace = q.req("workspace")?;
     let sha = q.req("sha")?;
     let resolved = validated(&workspace)?;
-    if !regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap().is_match(&sha) {
+    if !SHA_RE.is_match(&sha) {
         return Err(ApiError::unprocessable("Invalid commit SHA format."));
     }
     if !Path::new(&resolved).join(".git").exists() {
@@ -801,7 +801,7 @@ async fn git_revert(raw: Bytes) -> ApiResult<Response> {
     if workspace.is_empty() || sha.is_empty() {
         return Err(ApiError::bad_request("workspace and sha are required."));
     }
-    if !regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap().is_match(sha) {
+    if !SHA_RE.is_match(sha) {
         return Err(ApiError::unprocessable("Invalid commit SHA format."));
     }
     let resolved = validated(workspace)?;

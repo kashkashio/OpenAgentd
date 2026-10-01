@@ -179,7 +179,8 @@ pub fn body<T: DeserializeOwned>(bytes: &[u8]) -> ApiResult<T> {
 }
 
 fn serde_to_pydantic(msg: &str, input: &Value) -> ApiError {
-    let field_re = regex::Regex::new(r"`([^`]+)`").unwrap();
+    static FIELD_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"`([^`]+)`").unwrap());
+    let field_re = &*FIELD_RE;
     if let Some(rest) = msg.strip_prefix("missing field ") {
         let f = field_re.captures(rest).map(|c| c[1].to_string()).unwrap_or_default();
         return ApiError::validation(vec![verr("missing", &loc(&["body", &f]), "Field required", input.clone())]);
