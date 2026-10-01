@@ -1296,6 +1296,18 @@ describe("connectStream", () => {
     expect(mockTeamStream.mock.calls[0][0]).toBe("stream-sid")
   })
 
+  // Every store update re-runs every subscribed selector in the app.
+  it("opens a stream with a single store update, even over a pending reconnect", () => {
+    const pending = REAL_SET_TIMEOUT(() => {}, 60_000)
+    useAgentStore.setState({ sessionId: "stream-sid", isAgentWorking: true, _reconnectTimer: pending })
+    let notifications = 0
+    const unsubscribe = useAgentStore.subscribe(() => { notifications += 1 })
+    useAgentStore.getState().connectStream()
+    unsubscribe()
+    expect(notifications).toBe(1)
+    expect(useAgentStore.getState()).toMatchObject({ isConnected: true, _reconnectTimer: null })
+  })
+
   it("coalesces streaming text deltas into one store update per frame window", () => {
     let scheduled: (() => void) | null = null
     globalThis.setTimeout = ((callback: TimerHandler) => {

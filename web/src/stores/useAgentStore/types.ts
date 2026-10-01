@@ -182,6 +182,12 @@ export interface AgentStoreState {
   pendingDraft: { content: string; attachments?: MessageAttachment[] } | null
   _pendingMessages: PendingMessage[]
   _sessionGeneration: number
+  /**
+   * Session whose sidebar row was last patched to ``running: true``. Every
+   * member emits its own ``agent_status: working``, so this keeps a team turn
+   * to one patch; any ``running: false`` patch clears it.
+   */
+  _runningPatchedFor: string | null
   hasMore: boolean
   nextCursor: string | null
   _leadRevertTime: number | null

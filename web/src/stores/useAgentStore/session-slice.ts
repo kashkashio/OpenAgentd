@@ -405,6 +405,7 @@ export function resetSessionState(
   state._reconnectAttempts = 0
   state._sessionGeneration = (state._sessionGeneration ?? 0) + 1
   state.cacheInvalidations = []
+  state._runningPatchedFor = null
   state.hasMore = false
   state.nextCursor = null
   state._leadRevertTime = null
@@ -455,6 +456,7 @@ export type SessionSlice = Pick<
   | '_sessionSettingsVersion'
   | 'sessionFastMode'
   | '_sessionGeneration'
+  | '_runningPatchedFor'
   | 'hasMore'
   | 'nextCursor'
   | '_leadRevertTime'
@@ -814,6 +816,7 @@ export const createSessionSlice: StateCreator<
   _sessionSettingsVersion: 0,
   sessionFastMode: false,
   _sessionGeneration: 0,
+  _runningPatchedFor: null,
   hasMore: false,
   nextCursor: null,
   _leadRevertTime: null,

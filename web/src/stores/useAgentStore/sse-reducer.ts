@@ -678,8 +678,10 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
             // Only the sidebar's ``running`` badge depends on this. Patch that
             // one field rather than invalidating the whole list — an agent turn
             // emits one agent_status per member, so invalidating here used to
-            // cost (members × loaded pages) sequential refetches per turn.
-            if (draft.sessionId) {
+            // cost (members × loaded pages) sequential refetches per turn. Patch
+            // once per turn: later members find the row already marked running.
+            if (draft.sessionId && draft._runningPatchedFor !== draft.sessionId) {
+              draft._runningPatchedFor = draft.sessionId
               draft.cacheInvalidations.push({
                 kind: 'session_running',
                 sessionId: draft.sessionId,
@@ -835,6 +837,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
             }
           })
           if (draft.sessionId) {
+            draft._runningPatchedFor = null
             draft.cacheInvalidations.push({
               kind: 'session_running',
               sessionId: draft.sessionId,
@@ -857,6 +860,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
             ? { title, message, code, category, agent }
             : message
           draft.isAgentWorking = false
+          draft._runningPatchedFor = null
 
           const effectiveAgent = agent || draft.leadName || Object.keys(draft.agentStreams)[0] || 'lead'
           const isProvider = category === 'provider' ||
