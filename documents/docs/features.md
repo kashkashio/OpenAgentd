@@ -542,7 +542,7 @@ run from the terminal (the native Rust binary since v3.0.0).
   - A finished turn lists the files its `patch` calls changed, with line
     counts; each opens its git diff in the review dock. Since `[v3.1.0]` the list starts
     closed behind its "N files changed" header.
-- **The composer while the agent works** `[v3.0.0]`:
+- **The composer while the agent works** `[v3.0.0, updated v3.3.2]`:
   - Scrolled away from the live end, a "↓ N new" chip rides on the
     composer, wherever it is dragged, and counts what arrived since.
   - While a turn runs, Send splits in two. The pill steers: the agent reads
@@ -551,8 +551,21 @@ run from the terminal (the native Rust binary since v3.0.0).
     its own once the turn ends (`⌥Enter` / `Alt+Enter`), and Stop & send
     (`⌘Enter` / `Ctrl+Enter`). In the transcript, steering messages read
     "Read before the next step" and held ones "Sends when this turn ends".
-    Stopping, or a turn that fails, returns held messages to the composer.
-    They are lost on reload.
+  - Queued messages reach the agent in the order they go out: steers first,
+    then held messages, one turn each. A steer is read before the running
+    turn's next step, or starts the next turn if that turn makes no further
+    step. Its `@` mentions arrive with it `[v3.3.2]`. A steer sent while a
+    question or plan review waits replaces it and starts a new turn; a held
+    message waits until the question is answered or dismissed.
+  - Stop, or a turn that fails, returns what the agent has not read yet to
+    the composer: unread steers, then held messages `[v3.3.2]`. A steer the
+    agent read first stays in the transcript. A steer with files sent from
+    another window stays with the agent and goes out ahead of the next
+    message.
+  - Limits: held messages live only in this window and are lost on reload.
+    A steer sent late still goes out before an earlier held message. Steers
+    read together run with the model and thinking level of the last one
+    sent.
 - **Tool-call inspector** `[since v1.0]` — every tool call expands to show
   arguments, status, results, and inline Git-like diffs for file edits. Read
   results and file-change diffs keep line numbers visible while scrolling
