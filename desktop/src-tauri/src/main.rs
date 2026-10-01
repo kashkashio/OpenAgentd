@@ -405,7 +405,7 @@ async fn start_backend_and_window(app: AppHandle) -> Result<()> {
         .and_then(|config| config.active_base_url)
     {
         match crate::config::normalize_external_base_url(&active_base_url) {
-            Ok(base) => match wait_for_health(&base, 8, Duration::from_millis(250)).await {
+            Ok(base) => match crate::commands::probe_saved_backend(&base).await {
                 Ok(()) => {
                     state
                         .window_backend_base_urls
