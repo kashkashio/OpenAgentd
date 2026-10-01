@@ -896,7 +896,10 @@ export function AgentView({
       />
     )}
     <div className="group/transcript relative flex min-h-0 flex-1 flex-col">
-    <div ref={scrollRef} onWheel={cancelPromptJump} onTouchMove={cancelPromptJump} className="oa-chat-scroll flex-1 overflow-y-auto">
+    {/* Vertical only: ``overflow-y: auto`` alone turns ``overflow-x`` to auto, and
+        one over-wide row then let the whole transcript pan sideways on touch.
+        Code, tables and diagrams scroll inside their own boxes. */}
+    <div ref={scrollRef} onWheel={cancelPromptJump} onTouchMove={cancelPromptJump} className="oa-chat-scroll flex-1 overflow-x-hidden overflow-y-auto">
       <div ref={contentRef} className="mx-auto max-w-3xl px-3 py-5 sm:px-4 sm:py-6">
         {isEmpty && (
            emptyState ?? (
