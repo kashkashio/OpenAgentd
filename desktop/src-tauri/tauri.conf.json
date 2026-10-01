@@ -54,15 +54,6 @@
         "frame-src": "'self' about: data: blob: http: https:",
         "object-src": "'none'",
         "worker-src": "'self' blob:"
-      },
-      "assetProtocol": {
-        "enable": true,
-        "scope": [
-          "$APPDATA/*",
-          "$APPLOCALDATA/*",
-          "$APPCACHE/*",
-          "$APPLOG/*"
-        ]
       }
     }
   },
