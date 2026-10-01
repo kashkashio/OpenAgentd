@@ -2,7 +2,7 @@
 //! and `chat_service_queue.py`. Ordering is always `(seq, id)`.
 
 use crate::codec::{db_id, json_db, new_id, now_db, parse_dt, py_isoformat};
-use crate::models::{kind, ChatSession, SessionMessage, SEQ_STEP};
+use crate::models::{kind, ChatSession, SessionMessage, ToolPairRow, SEQ_STEP};
 use crate::pool::DbPool;
 use crate::queries::sessions::{bump_history_revision, get_session};
 use anyhow::Result;
@@ -163,35 +163,69 @@ pub async fn get_active_summary(pool: &DbPool, session_id: &str, boundary: Optio
 /// Derived LLM window (v2 `_llm_window_rows`): pinned rows + active summary +
 /// chat/note rows at/after it, before the undo boundary, `(seq, id)` order.
 pub async fn llm_window_rows(pool: &DbPool, session_id: &str, exclude_queued: bool) -> Result<Vec<SessionMessage>> {
-    let sid = db_id(session_id);
-    // v2 tolerates a missing session row (no revert boundary then).
-    let boundary = match get_session(pool, &sid).await? {
-        Some(session) => revert_boundary(pool, &session).await?,
-        None => None,
-    };
-    let summary = get_active_summary(pool, &sid, boundary.as_ref()).await?;
+    let w = LlmWindow::load(pool, session_id, exclude_queued).await?;
+    Ok(w.bind(sqlx::query_as::<_, SessionMessage>(&w.sql("*", ""))).fetch_all(pool).await?)
+}
 
-    let mut sql = String::from("SELECT * FROM session_messages WHERE session_id = ? AND kind != 'reverted'");
-    if exclude_queued {
-        sql.push_str(" AND kind != 'queued'");
+/// Assistant and tool rows of the LLM window, tool-pairing columns only.
+pub async fn llm_window_tool_pairs(pool: &DbPool, session_id: &str) -> Result<Vec<ToolPairRow>> {
+    let w = LlmWindow::load(pool, session_id, false).await?;
+    let sql = w.sql("session_id, role, tool_calls, tool_call_id, created_at, seq", " AND (role = 'tool' OR (role = 'assistant' AND tool_calls IS NOT NULL))");
+    Ok(w.bind(sqlx::query_as::<_, ToolPairRow>(&sql)).fetch_all(pool).await?)
+}
+
+/// Which rows the model sees: after the active summary, before the revert
+/// boundary. Shared so every reader agrees on the window.
+struct LlmWindow {
+    sid: String,
+    exclude_queued: bool,
+    summary: Option<SessionMessage>,
+    boundary: Option<SessionMessage>,
+}
+
+impl LlmWindow {
+    async fn load(pool: &DbPool, session_id: &str, exclude_queued: bool) -> Result<Self> {
+        let sid = db_id(session_id);
+        // v2 tolerates a missing session row (no revert boundary then).
+        let boundary = match get_session(pool, &sid).await? {
+            Some(session) => revert_boundary(pool, &session).await?,
+            None => None,
+        };
+        let summary = get_active_summary(pool, &sid, boundary.as_ref()).await?;
+        Ok(Self { sid, exclude_queued, summary, boundary })
     }
-    if summary.is_some() {
-        sql.push_str(" AND (pinned = 1 OR (seq, id) >= (?, ?)) AND (kind != 'summary' OR id = ?)");
-    } else {
-        sql.push_str(" AND kind != 'summary'");
+
+    fn sql(&self, columns: &str, extra_filter: &str) -> String {
+        let mut sql = format!("SELECT {columns} FROM session_messages WHERE session_id = ? AND kind != 'reverted'");
+        if self.exclude_queued {
+            sql.push_str(" AND kind != 'queued'");
+        }
+        if self.summary.is_some() {
+            sql.push_str(" AND (pinned = 1 OR (seq, id) >= (?, ?)) AND (kind != 'summary' OR id = ?)");
+        } else {
+            sql.push_str(" AND kind != 'summary'");
+        }
+        if self.boundary.is_some() {
+            sql.push_str(" AND (seq, id) < (?, ?)");
+        }
+        sql.push_str(extra_filter);
+        sql.push_str(" ORDER BY seq ASC, id ASC");
+        sql
     }
-    if boundary.is_some() {
-        sql.push_str(" AND (seq, id) < (?, ?)");
+
+    fn bind<'q, O>(
+        &'q self,
+        mut q: sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>> {
+        q = q.bind(&self.sid);
+        if let Some(s) = &self.summary {
+            q = q.bind(s.seq).bind(&s.id).bind(&s.id);
+        }
+        if let Some(b) = &self.boundary {
+            q = q.bind(b.seq).bind(&b.id);
+        }
+        q
     }
-    sql.push_str(" ORDER BY seq ASC, id ASC");
-    let mut q = sqlx::query_as::<_, SessionMessage>(&sql).bind(&sid);
-    if let Some(s) = &summary {
-        q = q.bind(s.seq).bind(&s.id).bind(&s.id);
-    }
-    if let Some(b) = &boundary {
-        q = q.bind(b.seq).bind(&b.id);
-    }
-    Ok(q.fetch_all(pool).await?)
 }
 
 // ── History (user-visible transcript) ────────────────────────────────────────
