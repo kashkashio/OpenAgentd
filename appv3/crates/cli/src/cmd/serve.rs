@@ -3,7 +3,7 @@
 
 use crate::cli::ServeArgs;
 use crate::cmd::server::DAEMON_ENV;
-use appv3_api::{create_app, AppState, ConnInfo, Policy};
+use appv3_api::{create_app, AppState, ConnInfo, NoDelayTcpListener, Policy};
 use serde_json::json;
 use std::io::Write;
 use std::sync::OnceLock;
@@ -135,7 +135,7 @@ pub fn serve(args: &ServeArgs) -> anyhow::Result<()> {
         // signal arrives (sse-starlette does the same); the timeout only
         // bounds requests that are still running.
         let (tx, mut rx) = tokio::sync::watch::channel(false);
-        let server = axum::serve(listener, app.into_make_service_with_connect_info::<ConnInfo>()).with_graceful_shutdown(async move {
+        let server = axum::serve(NoDelayTcpListener(listener), app.into_make_service_with_connect_info::<ConnInfo>()).with_graceful_shutdown(async move {
             shutdown_signal().await;
             tracing::info!("server_shutdown_requested");
             appv3_api::startup::close_event_streams();

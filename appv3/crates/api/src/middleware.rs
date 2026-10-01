@@ -32,6 +32,35 @@ impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, toki
     }
 }
 
+/// A TCP listener whose connections have Nagle's algorithm off. SSE frames
+/// (one per streamed token) are tiny writes; with Nagle on, the kernel can
+/// hold each one back until the previous write is ACKed, which adds delay
+/// and jitter to streaming. axum leaves `TCP_NODELAY` unset.
+pub struct NoDelayTcpListener(pub tokio::net::TcpListener);
+
+impl axum::serve::Listener for NoDelayTcpListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (io, addr) = axum::serve::Listener::accept(&mut self.0).await;
+        if let Err(e) = io.set_nodelay(true) {
+            tracing::debug!("tcp_nodelay_failed remote={} error={}", addr, e);
+        }
+        (io, addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, NoDelayTcpListener>> for ConnInfo {
+    fn connect_info(stream: axum::serve::IncomingStream<'_, NoDelayTcpListener>) -> Self {
+        ConnInfo { local: stream.io().local_addr().ok(), remote: Some(*stream.remote_addr()) }
+    }
+}
+
 fn is_ws_upgrade(req: &Request) -> bool {
     req.headers().get(header::UPGRADE).and_then(|v| v.to_str().ok()).map(|v| v.eq_ignore_ascii_case("websocket")).unwrap_or(false)
 }
@@ -374,6 +403,17 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
         assert_eq!(&body[..], b"Internal Server Error");
+    }
+
+    #[tokio::test]
+    async fn accepted_connections_have_nagle_off() {
+        use axum::serve::Listener;
+        let mut listener = NoDelayTcpListener(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::spawn(tokio::net::TcpStream::connect(addr));
+        let (io, _) = listener.accept().await;
+        assert!(io.nodelay().unwrap());
+        drop(client.await.unwrap().unwrap());
     }
 
     fn policy(token: &str, insecure_lan: bool) -> Policy {
