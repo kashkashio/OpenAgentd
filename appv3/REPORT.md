@@ -194,6 +194,20 @@ explicitly.
     then prepended twice. Member pages run concurrently, and the totals
     for the lead and all members come from one grouped scan. Covered by
     `history_paging_flow` in `api/tests/http_api.rs`.
+  - *JSON bytes* (`api/src/util.rs`, `db/src/codec.rs`). Responses and the
+    DB's JSON columns (`extra`, `tool_calls`, tool-call `arguments`) are
+    compact `serde_json`, with non-ASCII written as UTF-8. v2 used
+    Python's `json.dumps` style (`", "`/`": "` separators, `\uXXXX`
+    escapes), about 6× the bytes for non-ASCII text in rows and provider
+    requests. Rows written in the old style still parse. History messages
+    are serialized straight from the row (`db::api::MessageView`), so an
+    old row's `tool_calls`/`extra` keep their stored spacing and escapes;
+    JSON clients read both the same.
+  - *History and session-list cursors.* `before` is `seq[|id]` (history)
+    or `<created_at>|<uuid>` (sessions), and `since` is a uuid7 message
+    id: the forms the server hands out. v2's bare-timestamp cursors now
+    get 422. Covered by `history_paging_flow` and
+    `session_pages_follow_their_cursor` (`db/tests/v2_compat.rs`).
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and

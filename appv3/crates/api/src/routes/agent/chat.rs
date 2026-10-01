@@ -771,18 +771,6 @@ async fn session_subagents(State(st): State<AppState>, AxPath(raw): AxPath<Strin
 
 // ── history ─────────────────────────────────────────────────────────────────
 
-fn parse_iso(raw: &str, field: &str) -> ApiResult<String> {
-    if db::codec::parse_dt(raw).is_none() {
-        return Err(ApiError::unprocessable(format!("Invalid {field} cursor: {raw}")));
-    }
-    Ok(raw.to_string())
-}
-
-enum Since {
-    Id(String),
-    Legacy(String),
-}
-
 async fn ensure_agent_ready(root: &db::ChatSession) -> ApiResult<()> {
     if !root.workspace.is_empty() && root.parent_session_id.is_none() {
         get_or_start(&root.workspace, Some(&db::codec::api_uuid(&root.id))).await?;
@@ -870,15 +858,8 @@ async fn agent_history(State(st): State<AppState>, AxPath(raw): AxPath<String>, 
     }
     let pool = &st.pool;
     if let Some(since) = since {
-        let parsed = match py_uuid(&since) {
-            Some(u) => Since::Id(u),
-            None => Since::Legacy(parse_iso(&since, "since")?),
-        };
+        let since_id = py_uuid(&since).ok_or_else(|| ApiError::unprocessable(format!("Invalid since cursor: {since}")))?;
         let Some(root) = db::get_session(pool, &sid).await? else { return Err(ApiError::not_found("Lead session not found.")) };
-        let since_id = match parsed {
-            Since::Id(u) => u,
-            Since::Legacy(dt) => db::resolve_legacy_delta_cursor(pool, &sid, &dt).await?,
-        };
         const LIMIT: i64 = 100;
         let (lead_rows, mut truncated) = db::history_since(pool, &sid, &since_id, LIMIT).await?;
         let subs = db::list_child_sessions(pool, std::slice::from_ref(&sid)).await?;
@@ -898,26 +879,18 @@ async fn agent_history(State(st): State<AppState>, AxPath(raw): AxPath<String>, 
     }
 
     let mut cursor: Option<(i64, Option<String>)> = None;
-    let mut first_page = before.is_none();
+    let first_page = before.is_none();
     if let Some(b) = before.as_deref() {
+        let invalid = || ApiError::unprocessable(format!("Invalid before cursor: {b}"));
         let (head, raw_id) = match b.split_once('|') {
             Some((h, i)) => (h, Some(i)),
             None => (b, None),
         };
         let before_id = match raw_id.filter(|i| !i.is_empty()) {
-            Some(i) => Some(py_uuid(i).ok_or_else(|| ApiError::unprocessable(format!("Invalid before cursor: {b}")))?),
+            Some(i) => Some(py_uuid(i).ok_or_else(invalid)?),
             None => None,
         };
-        match head.trim().parse::<i64>() {
-            Ok(seq) => cursor = Some((seq, before_id)),
-            Err(_) => {
-                let dt = parse_iso(head, "before")?;
-                match db::resolve_legacy_history_cursor(pool, &sid, &dt, before_id.as_deref()).await? {
-                    Some((seq, id)) => cursor = Some((seq, Some(db::codec::api_uuid(&id)))),
-                    None => first_page = true,
-                }
-            }
-        }
+        cursor = Some((head.trim().parse::<i64>().map_err(|_| invalid())?, before_id));
     }
     let Some(root) = db::get_session(pool, &sid).await? else { return Err(ApiError::not_found("Lead session not found.")) };
     let (lead_rows, has_more, boundary) = db::history_page(pool, &sid, cursor.clone()).await?;

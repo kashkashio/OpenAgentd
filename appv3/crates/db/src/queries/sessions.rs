@@ -50,7 +50,7 @@ pub async fn get_session(pool: &DbPool, id: &str) -> Result<Option<ChatSession>>
 
 /// Cursor page of top-level sessions, newest first (v2 `list_sessions_page`).
 ///
-/// `before` is `"<iso created_at>|<uuid>"` or a legacy bare ISO timestamp.
+/// `before` is the `"<iso created_at>|<uuid>"` cursor this returns.
 /// `workspaces` keeps sessions in any of the listed paths; empty lists every
 /// workspace. (v2 takes a single workspace; the list is a v3 addition.)
 /// `title_query` (a v3 addition) keeps titles containing it, ignoring ASCII
@@ -74,23 +74,12 @@ pub async fn list_sessions_page(
         binds.push(format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
     }
     if let Some(cursor) = before.filter(|c| !c.is_empty()) {
-        let (raw_dt, raw_id) = match cursor.split_once('|') {
-            Some((d, i)) => (d, Some(i)),
-            None => (cursor, None),
-        };
+        let (raw_dt, raw_id) = cursor.split_once('|').ok_or_else(|| anyhow!("invalid before cursor"))?;
         let dt = parse_dt(raw_dt).ok_or_else(|| anyhow!("invalid before cursor"))?;
-        match raw_id {
-            Some(raw) => {
-                let id = parse_uuid(raw).ok_or_else(|| anyhow!("invalid before cursor"))?;
-                sql.push_str(" AND (created_at, id) < (?, ?)");
-                binds.push(dt_db(&dt));
-                binds.push(uuid_db(&id));
-            }
-            None => {
-                sql.push_str(" AND created_at < ?");
-                binds.push(dt_db(&dt));
-            }
-        }
+        let id = parse_uuid(raw_id).ok_or_else(|| anyhow!("invalid before cursor"))?;
+        sql.push_str(" AND (created_at, id) < (?, ?)");
+        binds.push(dt_db(&dt));
+        binds.push(uuid_db(&id));
     }
     sql.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
     let mut q = sqlx::query_as::<_, ChatSession>(&sql);

@@ -271,43 +271,6 @@ pub async fn history_since(pool: &DbPool, session_id: &str, since_id: &str, limi
     Ok((rows, truncated))
 }
 
-/// Translate a legacy `(created_at, id)` history cursor into `(seq, id)`.
-pub async fn resolve_legacy_history_cursor(pool: &DbPool, session_id: &str, before: &str, before_id: Option<&str>) -> Result<Option<(i64, String)>> {
-    let sid = db_id(session_id);
-    if let Some(bid) = before_id {
-        if let Some(row) = get_message(pool, bid).await? {
-            if row.session_id == sid {
-                return Ok(Some((row.seq, row.id)));
-            }
-        }
-    }
-    let Some(dt) = parse_dt(before) else { return Ok(None) };
-    Ok(sqlx::query_as::<_, (i64, String)>(
-        "SELECT seq, id FROM session_messages WHERE session_id = ? AND created_at >= ? \
-         ORDER BY seq ASC, id ASC LIMIT 1",
-    )
-    .bind(&sid)
-    .bind(crate::codec::dt_db(&dt))
-    .fetch_optional(pool)
-    .await?)
-}
-
-/// Legacy timestamp delta watermark → uuid7 cursor (v2 `resolve_legacy_delta_cursor`).
-pub async fn resolve_legacy_delta_cursor(pool: &DbPool, root_id: &str, since: &str) -> Result<String> {
-    let Some(dt) = parse_dt(since) else { return Ok("0".repeat(32)) };
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM session_messages WHERE session_id IN \
-         (SELECT id FROM chat_sessions WHERE id = ? OR parent_session_id = ?) \
-         AND created_at <= ? ORDER BY created_at DESC, id DESC LIMIT 1",
-    )
-    .bind(db_id(root_id))
-    .bind(db_id(root_id))
-    .bind(crate::codec::dt_db(&dt))
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.unwrap_or_else(|| "0".repeat(32)))
-}
-
 /// `(estimated_cost_usd, completion_tokens)` over user-visible rows.
 pub async fn session_usage_totals(pool: &DbPool, session_id: &str) -> Result<(f64, i64)> {
     let sql = format!(

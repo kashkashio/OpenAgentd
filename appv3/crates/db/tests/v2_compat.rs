@@ -87,6 +87,25 @@ async fn sessions_by_ids_accepts_both_id_forms_and_skips_missing() {
 }
 
 #[tokio::test]
+async fn session_pages_follow_their_cursor() {
+    let (_d, pool) = fresh().await;
+    let mut ids = vec![];
+    for i in 0..3 {
+        ids.push(create_session(&pool, NewSession { workspace: "/tmp/ws".into(), title: Some(format!("s{i}")), ..Default::default() }).await.unwrap().id);
+    }
+    let (first, cursor, more) = list_sessions_page(&pool, None, 2, &[], None).await.unwrap();
+    assert!(more);
+    assert_eq!(first.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), [ids[2].clone(), ids[1].clone()]);
+    let cursor = cursor.expect("next cursor");
+    let (rest, _, more) = list_sessions_page(&pool, Some(&cursor), 2, &[], None).await.unwrap();
+    assert!(!more);
+    assert_eq!(rest.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), [ids[0].clone()]);
+    // Only the `<created_at>|<uuid>` form the server hands out is accepted.
+    let bare = cursor.split('|').next().unwrap();
+    assert!(list_sessions_page(&pool, Some(bare), 2, &[], None).await.is_err());
+}
+
+#[tokio::test]
 async fn released_queued_messages_move_to_the_tail() {
     let (_d, pool) = fresh().await;
     let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();

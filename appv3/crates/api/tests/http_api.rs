@@ -507,6 +507,19 @@ async fn history_paging_flow(c: &Client, pool: &appv3_db::DbPool, ws: &std::path
     assert_eq!(older["members"], json!([]), "older pages must not re-send member rows");
     assert!(older["lead"]["estimated_cost_usd"].is_null(), "older pages skip the session-wide totals: {older}");
 
+    // Cursors are `seq[|id]` and uuid7 ids; v2-era timestamp cursors are gone.
+    let seq_only = cursor.split('|').next().unwrap();
+    let (st, by_seq) = c.json("GET", &format!("/api/agent/{lid}/history?before={seq_only}"), None).await;
+    assert_eq!(st, StatusCode::OK, "{by_seq}");
+    let newest_id = newest["lead"]["messages"][99]["id"].as_str().unwrap();
+    let (st, delta) = c.json("GET", &format!("/api/agent/{lid}/history?since={newest_id}"), None).await;
+    assert_eq!(st, StatusCode::OK, "{delta}");
+    assert_eq!(delta["lead"]["messages"], json!([]));
+    for q in ["before=2026-09-23T06:56:28Z", "since=2026-09-23T06:56:28Z", "before=2026-09-23T06:56:28Z|"] {
+        let (st, body) = c.json("GET", &format!("/api/agent/{lid}/history?{}", q.replace(':', "%3A").replace('|', "%7C")), None).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{q}: {body}");
+    }
+
     for id in [&member.id, &lead.id] {
         let (st, _) = c.json("DELETE", &format!("/api/agent/sessions/{}", appv3_db::codec::api_uuid(id)), None).await;
         assert!(st == StatusCode::NO_CONTENT || st == StatusCode::NOT_FOUND, "{st}");
