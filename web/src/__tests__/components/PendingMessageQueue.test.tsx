@@ -331,6 +331,25 @@ describe('PendingMessageQueue', () => {
     expect(screen.getByText('After the turn')).toBeTruthy()
   })
 
+  // A steer left queued after a failed turn (its files are on another
+  // device) has no running turn to read it.
+  it('says a steer left queued after a failed turn goes with the next message', () => {
+    useAgentStore.setState({
+      sessionId: 'session-1',
+      leadName: 'lead',
+      isAgentWorking: false,
+      agentStreams: {
+        lead: { blocks: [], currentBlocks: [], status: 'error', usage: { promptTokens: 0, completionTokens: 0, cachedTokens: 0 } } as never,
+      },
+      _pendingMessages: [{ id: 'q1', sessionId: 'session-1', content: 'see attached' }],
+    })
+
+    render(<PendingMessageQueue />)
+
+    expect(screen.getByText('Sends with your next message')).toBeTruthy()
+    expect(screen.queryByText('Read before the next step')).toBeNull()
+  })
+
   it('edits a held message by moving it back into the composer, with its files', async () => {
     const user = userEvent.setup()
     const file = new File(['data'], 'doc.txt', { type: 'text/plain' })

@@ -121,7 +121,7 @@ describe('useReleaseHeldMessages', () => {
     expect(held()).toEqual([])
   })
 
-  it('returns held messages to the composer instead of following a failed turn', () => {
+  it('returns held messages to the composer instead of following a failed turn', async () => {
     const sendMessage = sendThatStartsATurn()
     useAgentStore.setState({
       sendMessage,
@@ -131,10 +131,89 @@ describe('useReleaseHeldMessages', () => {
     const composer = fakeComposer()
 
     renderHook(() => useReleaseHeldMessages({ workspace: '/repo', sessionId: 's1', composerRef: composer.ref }))
-    act(() => { useAgentStore.setState({ isAgentWorking: false }) })
+    await act(async () => { useAgentStore.setState({ isAgentWorking: false }) })
 
     expect(sendMessage).not.toHaveBeenCalled()
     expect(composer.appended).toEqual([{ text: 'then do this', paragraph: true }])
+  })
+
+  // Steers the failed turn never read come back too, ahead of the held
+  // messages (that is the order they would have gone out in).
+  it('returns unread steers to the composer after a failed turn, ahead of held messages', async () => {
+    const steerFile = new File(['z'], 'spec.md', { type: 'text/markdown' })
+    const removePendingMessage = mock(async (...args: unknown[]) => {
+      const id = String(args[0])
+      useAgentStore.setState((s) => ({ _pendingMessages: s._pendingMessages.filter((m) => m.id !== id) }))
+      return 'cancelled' as const
+    })
+    useAgentStore.setState({
+      sendMessage: sendThatStartsATurn(),
+      removePendingMessage,
+      agentStreams: { lead: { ...createDefaultAgentStream(), status: 'error' } },
+      _pendingMessages: [
+        { id: 'q1', sessionId: 's1', content: 'steer it', submittedAt: 1, files: [steerFile], attachments: [{ original_name: 'spec.md', media_type: 'text/markdown', category: 'document' }] },
+        { id: 'q-other', sessionId: 's2', content: 'elsewhere', submittedAt: 2 },
+      ],
+    })
+    useHeldMessagesStore.getState().hold({ sessionId: 's1', content: 'then do this' })
+    const composer = fakeComposer()
+
+    renderHook(() => useReleaseHeldMessages({ workspace: '/repo', sessionId: 's1', composerRef: composer.ref }))
+    await act(async () => { useAgentStore.setState({ isAgentWorking: false }) })
+
+    expect(removePendingMessage.mock.calls.map((c) => c[0])).toEqual(['q1'])
+    expect(composer.appended).toEqual([{ text: 'steer it\n\nthen do this', paragraph: true }])
+    expect(composer.added).toEqual([steerFile])
+    expect(held()).toEqual([])
+  })
+
+  it('returns a failed turn\'s steers when nothing is held', async () => {
+    const removePendingMessage = mock(async () => 'cancelled' as const)
+    useAgentStore.setState({
+      removePendingMessage,
+      agentStreams: { lead: { ...createDefaultAgentStream(), status: 'error' } },
+      _pendingMessages: [{ id: 'q1', sessionId: 's1', content: 'steer it', submittedAt: 1 }],
+    })
+    const composer = fakeComposer()
+
+    renderHook(() => useReleaseHeldMessages({ workspace: '/repo', sessionId: 's1', composerRef: composer.ref }))
+    await act(async () => { useAgentStore.setState({ isAgentWorking: false }) })
+
+    expect(composer.appended).toEqual([{ text: 'steer it', paragraph: true }])
+  })
+
+  // Cancelling deletes a queued message's uploads, and this browser has no
+  // copy of files sent from elsewhere: such a steer stays queued and goes out
+  // with the next message instead.
+  it('leaves a steer queued after a failed turn when its files are not in this browser', async () => {
+    const removePendingMessage = mock(async () => 'cancelled' as const)
+    useAgentStore.setState({
+      removePendingMessage,
+      agentStreams: { lead: { ...createDefaultAgentStream(), status: 'error' } },
+      _pendingMessages: [{ id: 'q1', sessionId: 's1', content: 'see attached', submittedAt: 1, attachments: [{ original_name: 'a.png', media_type: 'image/png', category: 'image' }] }],
+    })
+    const composer = fakeComposer()
+
+    renderHook(() => useReleaseHeldMessages({ workspace: '/repo', sessionId: 's1', composerRef: composer.ref }))
+    await act(async () => { useAgentStore.setState({ isAgentWorking: false }) })
+
+    expect(removePendingMessage).not.toHaveBeenCalled()
+    expect(composer.appended).toEqual([])
+  })
+
+  it('does not return a steer the agent read before it could be called off', async () => {
+    const removePendingMessage = mock(async () => 'sent' as const)
+    useAgentStore.setState({
+      removePendingMessage,
+      agentStreams: { lead: { ...createDefaultAgentStream(), status: 'error' } },
+      _pendingMessages: [{ id: 'q1', sessionId: 's1', content: 'too late', submittedAt: 1 }],
+    })
+    const composer = fakeComposer()
+
+    renderHook(() => useReleaseHeldMessages({ workspace: '/repo', sessionId: 's1', composerRef: composer.ref }))
+    await act(async () => { useAgentStore.setState({ isAgentWorking: false }) })
+
+    expect(composer.appended).toEqual([])
   })
 })
 

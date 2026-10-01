@@ -153,6 +153,11 @@ export const PendingMessageQueue = memo(function PendingMessageQueue() {
     })
   }, [allMessages, sessionId, agentStreams])
   const removePendingMessage = useAgentStore((s) => s.removePendingMessage)
+  // A steer still queued after a failed turn (its files are on another
+  // device, so it was not handed back) has no running turn to read it.
+  const turnFailed = useAgentStore((s) => (
+    !s.isAgentWorking && Boolean(s.leadName) && s.agentStreams?.[s.leadName as string]?.status === 'error'
+  ))
   const allHeld = useHeldMessagesStore((s) => s.messages)
   const held = useMemo(() => allHeld.filter((msg) => msg.sessionId === sessionId), [allHeld, sessionId])
 
@@ -165,8 +170,9 @@ export const PendingMessageQueue = memo(function PendingMessageQueue() {
           key={msg.id}
           content={msg.content}
           attachments={msg.attachments}
-          // The backend hands it to the agent before its next model call.
-          label="Read before the next step"
+          // The backend hands it to the agent before its next model call, or
+          // ahead of the next message once the turn has failed.
+          label={turnFailed ? 'Sends with your next message' : 'Read before the next step'}
           onEdit={async () => {
             const outcome = await removePendingMessage(msg.id)
             if (outcome === 'cancelled') restoreDraft(msg.content, msg.files)

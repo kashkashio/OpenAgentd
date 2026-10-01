@@ -477,6 +477,13 @@ impl AgentSession {
             extra.insert("snapshot".into(), Value::String(snap));
         }
         db::cleanup_reverted_tail(&self.pool, &sid).await?;
+        // Steers still queued (a failed turn, another device, a question that
+        // was superseded) go first: saved after this message, the next model
+        // call would promote them behind it, and the agent would read the
+        // older text last.
+        if let Err(e) = crate::snapshot::release_queued(&self.pool, &sid).await {
+            tracing::warn!("release_queued_before_message_failed session_id={} error={}", sid, e);
+        }
         let mut nm = NewMessage::user(m.content.clone());
         nm.extra = Some(extra);
         let persisted = db::save_message(&self.pool, &sid, nm).await?;
