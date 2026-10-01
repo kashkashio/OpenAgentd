@@ -6,7 +6,7 @@
  * across all views.
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from '@tanstack/markdown/react'
 import { streamingMarkdownExtension } from '@tanstack/markdown/extensions/streaming'
 import { ImageOff, FileVideo, Check, Copy } from 'lucide-react'
@@ -616,76 +616,6 @@ export const MarkdownBlock = memo(function MarkdownBlock({
   const smoothedContent = useSmoothStream(content, isStreaming)
   const displayContent = isStreaming ? smoothedContent : content
 
-  // Me: the ``components`` map MUST be referentially stable across renders.
-  // If we rebuild it inline every render, the renderer treats each call
-  // as a new custom-component type and unmounts+remounts every ``<img>`` /
-  // ``<MarkdownVideo>`` subtree — which restarts ``<video>`` buffering and
-  // causes a visible flicker whenever the parent re-renders (e.g. on every
-  // wheel/touchmove tick from ``AgentView``'s scroll-position tracker).
-  // Memoizing on ``sessionId`` — the only captured value — keeps the same
-  // function identities as long as the session doesn't change.
-  const components = useMemo(
-    () => ({
-      // The renderer hands ``pre`` the fence language on ``data-lang`` and the
-      // raw source as the ``<code>`` element's single string child — no
-      // highlighter is configured, so nothing has wrapped it in spans yet.
-      pre: (props: React.HTMLAttributes<HTMLPreElement> & { 'data-lang'?: string }) => {
-        const codeEl = props.children as React.ReactElement<{ children?: unknown }>
-        const codeText = typeof codeEl?.props?.children === 'string' ? codeEl.props.children : ''
-        // ``data-lang`` falls back to "plaintext" for a bare fence, where the
-        // old pipeline left the language undefined — and CodeBlock keys its
-        // header row off exactly that.
-        const rawLanguage = props['data-lang']
-        const language = !rawLanguage || rawLanguage === 'plaintext' ? undefined : rawLanguage
-        const normalizedLanguage = language?.toLowerCase()
-        const isMermaid = normalizedLanguage === 'mermaid'
-          || normalizedLanguage === STREAMING_MERMAID_LANGUAGE
-        if (isMermaid && (!isStreaming || normalizedLanguage === STREAMING_MERMAID_LANGUAGE)) {
-          return <MermaidBlock source={codeText} highlightedCode={codeText} />
-        }
-        if (normalizedLanguage === 'math' || normalizedLanguage === 'katex') {
-          return <MathBlock math={codeText} />
-        }
-        return <HighlightedCode code={codeText} language={language} isStreaming={isStreaming} />
-      },
-      'math-block': (props: React.HTMLAttributes<HTMLElement> & { 'data-math'?: string }) => (
-        <MathBlock math={props['data-math'] ?? ''} />
-      ),
-      code: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => {
-        if (typeof children === 'string') {
-          if (children.startsWith(MATH_INLINE_SENTINEL)) {
-            return <MathSpan math={children.slice(MATH_INLINE_SENTINEL.length)} />
-          }
-          if (children.startsWith(MATH_BLOCK_SENTINEL)) {
-            return <MathBlock math={children.slice(MATH_BLOCK_SENTINEL.length)} />
-          }
-          return <FileRefCode {...props}>{children}</FileRefCode>
-        }
-        return <code {...props}>{children}</code>
-      },
-      table: MarkdownTable,
-      td: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
-        <td {...props}>{renderCellWithBr(children)}</td>
-      ),
-      th: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
-        <th {...props}>{renderCellWithBr(children)}</th>
-      ),
-      a: MarkdownLink,
-      img: ({ src, alt, title }: React.ImgHTMLAttributes<HTMLImageElement>) => (
-        <MarkdownImage
-          rawSrc={typeof src === 'string' ? src : undefined}
-          src={resolveImageSrc(typeof src === 'string' ? src : undefined, sessionId)}
-          alt={alt ?? ''}
-          title={typeof title === 'string' ? title : undefined}
-        />
-      ),
-      'proposed-plan': ({ children }: { children?: React.ReactNode }) => (
-        <ProposedPlanCard>{children}</ProposedPlanCard>
-      ),
-    }),
-    [isStreaming, sessionId],
-  )
-
   // Me: fixNestedFences is pure; memoize so we don't re-walk the whole
   // string on scroll-triggered parent re-renders either.
   const fixedContent = useMemo(
@@ -698,18 +628,109 @@ export const MarkdownBlock = memo(function MarkdownBlock({
   )
 
   return (
-    <div className="oa-prose text-sm">
-      <Markdown
-        extensions={_EXTENSIONS}
-        frontmatter={false}
-        headingIds={false}
-        components={components}
-      >
-        {renderedContent}
-      </Markdown>
-    </div>
+    <MarkdownStreamingContext.Provider value={isStreaming}>
+      <MarkdownSessionContext.Provider value={sessionId}>
+        <div className="oa-prose text-sm">
+          <Markdown
+            extensions={_EXTENSIONS}
+            frontmatter={false}
+            headingIds={false}
+            components={MARKDOWN_COMPONENTS}
+          >
+            {renderedContent}
+          </Markdown>
+        </div>
+      </MarkdownSessionContext.Provider>
+    </MarkdownStreamingContext.Provider>
   )
 })
+
+// The renderer creates each ``components`` entry as a component type, so the
+// map MUST keep its identities: a rebuilt map unmounts and remounts every
+// code block, table cell, image and plan card it rendered. Rebuilt on every
+// render, that restarted ``<video>`` buffering on each scroll tick; rebuilt
+// when ``isStreaming`` flipped, it reset them all the moment a message
+// finished. So the map is a module constant, and the per-message values it
+// needs arrive through these contexts instead.
+const MarkdownStreamingContext = createContext(false)
+const MarkdownSessionContext = createContext<string | undefined>(undefined)
+
+// The renderer hands ``pre`` the fence language on ``data-lang`` and the raw
+// source as the ``<code>`` element's single string child — no highlighter is
+// configured, so nothing has wrapped it in spans yet.
+function MarkdownPre(props: React.HTMLAttributes<HTMLPreElement> & { 'data-lang'?: string }) {
+  const isStreaming = useContext(MarkdownStreamingContext)
+  const codeEl = props.children as React.ReactElement<{ children?: unknown }>
+  const codeText = typeof codeEl?.props?.children === 'string' ? codeEl.props.children : ''
+  // ``data-lang`` falls back to "plaintext" for a bare fence, where the
+  // old pipeline left the language undefined — and CodeBlock keys its
+  // header row off exactly that.
+  const rawLanguage = props['data-lang']
+  const language = !rawLanguage || rawLanguage === 'plaintext' ? undefined : rawLanguage
+  const normalizedLanguage = language?.toLowerCase()
+  const isMermaid = normalizedLanguage === 'mermaid'
+    || normalizedLanguage === STREAMING_MERMAID_LANGUAGE
+  if (isMermaid && (!isStreaming || normalizedLanguage === STREAMING_MERMAID_LANGUAGE)) {
+    return <MermaidBlock source={codeText} highlightedCode={codeText} />
+  }
+  if (normalizedLanguage === 'math' || normalizedLanguage === 'katex') {
+    return <MathBlock math={codeText} />
+  }
+  return <HighlightedCode code={codeText} language={language} isStreaming={isStreaming} />
+}
+
+function MarkdownMathBlock(props: React.HTMLAttributes<HTMLElement> & { 'data-math'?: string }) {
+  return <MathBlock math={props['data-math'] ?? ''} />
+}
+
+function MarkdownCode({ children, ...props }: React.HTMLAttributes<HTMLElement>) {
+  if (typeof children === 'string') {
+    if (children.startsWith(MATH_INLINE_SENTINEL)) {
+      return <MathSpan math={children.slice(MATH_INLINE_SENTINEL.length)} />
+    }
+    if (children.startsWith(MATH_BLOCK_SENTINEL)) {
+      return <MathBlock math={children.slice(MATH_BLOCK_SENTINEL.length)} />
+    }
+    return <FileRefCode {...props}>{children}</FileRefCode>
+  }
+  return <code {...props}>{children}</code>
+}
+
+function MarkdownTd({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) {
+  return <td {...props}>{renderCellWithBr(children)}</td>
+}
+
+function MarkdownTh({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) {
+  return <th {...props}>{renderCellWithBr(children)}</th>
+}
+
+function MarkdownImg({ src, alt, title }: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const sessionId = useContext(MarkdownSessionContext)
+  return (
+    <MarkdownImage
+      rawSrc={typeof src === 'string' ? src : undefined}
+      src={resolveImageSrc(typeof src === 'string' ? src : undefined, sessionId)}
+      alt={alt ?? ''}
+      title={typeof title === 'string' ? title : undefined}
+    />
+  )
+}
+
+function MarkdownProposedPlan({ children }: { children?: React.ReactNode }) {
+  return <ProposedPlanCard>{children}</ProposedPlanCard>
+}
+
+const MARKDOWN_COMPONENTS = {
+  pre: MarkdownPre,
+  'math-block': MarkdownMathBlock,
+  code: MarkdownCode,
+  table: MarkdownTable,
+  td: MarkdownTd,
+  th: MarkdownTh,
+  a: MarkdownLink,
+  img: MarkdownImg,
+  'proposed-plan': MarkdownProposedPlan,
+}
 
 // Me: module-level constant so every ``MarkdownBlock`` instance shares one
 // extension array identity across renders.
