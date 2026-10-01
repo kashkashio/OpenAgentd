@@ -1,8 +1,8 @@
 //! Port of `app/core/middlewares.py` + `app/core/desktop_auth.py`.
 //!
 //! Layer order mirrors v2's `add_middleware` sequence (last added =
-//! outermost): CORS → SecurityHeaders → DesktopToken → GZip →
-//! RequestSizeLimit → NetworkBindGuard → router.
+//! outermost): CORS → SecurityHeaders → DesktopToken → SkipGzipForLoopback →
+//! GZip → RequestSizeLimit → NetworkBindGuard → router.
 
 use crate::util::json_status;
 use appv3_core::auth::{
@@ -404,6 +404,22 @@ pub fn gzip_layer() -> tower_http::compression::CompressionLayer<impl tower_http
         .compress_when(SizeAbove::new(1000).and(NotForContentType::SSE).and(NotForContentType::GRPC).and(worth_compressing))
 }
 
+/// Sends identity bodies to clients on this machine. On loopback, gzip at
+/// Fastest nearly doubles a 1.3 MB history page's latency (4.6 → 8.2 ms) and
+/// server CPU, and the client still has to inflate it. A request with
+/// proxy headers came through a local reverse proxy or tunnel for a remote
+/// user, so it keeps gzip. Runs outside `gzip_layer`, which then sees no
+/// `Accept-Encoding` and leaves the body alone.
+pub async fn skip_gzip_for_loopback(mut req: Request, next: Next) -> Response {
+    let loopback = req.extensions().get::<ConnectInfo<ConnInfo>>().and_then(|c| c.0.remote).is_some_and(|a| a.ip().to_canonical().is_loopback());
+    let h = req.headers();
+    let proxied = h.contains_key(header::FORWARDED) || h.contains_key("x-forwarded-for") || h.contains_key(header::VIA);
+    if loopback && !proxied {
+        req.headers_mut().remove(header::ACCEPT_ENCODING);
+    }
+    next.run(req).await
+}
+
 // ── Panics ──────────────────────────────────────────────────────────────────
 
 fn panic_response(payload: Box<dyn std::any::Any + Send + 'static>) -> Response {
@@ -457,6 +473,43 @@ mod tests {
     async fn gzip_leaves_partial_content_alone() {
         // Content-Range counts identity bytes; encoding the slice breaks seeking.
         assert_eq!(encoding_for("application/json", true).await, None);
+    }
+
+    /// `Content-Encoding` for a 4 KB JSON body sent from `peer`, through the
+    /// same layer order as `create_app`, with optional extra request headers.
+    async fn encoding_from(peer: Option<&str>, extra: &[(&'static str, &'static str)]) -> Option<String> {
+        let app = axum::Router::new()
+            .route("/f", axum::routing::get(|| async { ([(header::CONTENT_TYPE, "application/json")], "a".repeat(4096)) }))
+            .layer(gzip_layer())
+            .layer(axum::middleware::from_fn(skip_gzip_for_loopback));
+        let mut req = Request::get("/f").header(header::ACCEPT_ENCODING, "gzip");
+        for (k, v) in extra {
+            req = req.header(*k, *v);
+        }
+        let mut req = req.body(Body::empty()).unwrap();
+        if let Some(p) = peer {
+            req.extensions_mut().insert(ConnectInfo(ConnInfo { local: None, remote: Some(p.parse().unwrap()) }));
+        }
+        let resp = app.oneshot(req).await.unwrap();
+        resp.headers().get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn loopback_clients_get_identity_responses() {
+        assert_eq!(encoding_from(Some("127.0.0.1:50000"), &[]).await, None);
+        assert_eq!(encoding_from(Some("[::1]:50000"), &[]).await, None);
+        assert_eq!(encoding_from(Some("[::ffff:127.0.0.1]:50000"), &[]).await, None);
+    }
+
+    #[tokio::test]
+    async fn remote_and_proxied_clients_keep_gzip() {
+        assert_eq!(encoding_from(Some("192.168.1.20:50000"), &[]).await.as_deref(), Some("gzip"));
+        assert_eq!(encoding_from(None, &[]).await.as_deref(), Some("gzip"));
+        // A reverse proxy or tunnel on this machine connects from loopback but
+        // relays to remote users, who still need the smaller body.
+        for h in [("x-forwarded-for", "203.0.113.7"), ("forwarded", "for=203.0.113.7"), ("via", "1.1 proxy")] {
+            assert_eq!(encoding_from(Some("127.0.0.1:50000"), &[h]).await.as_deref(), Some("gzip"), "{}", h.0);
+        }
     }
 
     #[tokio::test]
