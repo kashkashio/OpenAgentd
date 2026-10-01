@@ -272,6 +272,15 @@ pub fn next_window_label(app: &AppHandle) -> String {
     unreachable!("unbounded window-label iterator should always return")
 }
 
+/// The boot page's background (`web/index.html`) for `theme`. The window
+/// shows it until the page paints, so a dark launch does not flash light.
+pub fn window_background(theme: tauri::Theme) -> tauri::window::Color {
+    match theme {
+        tauri::Theme::Dark => tauri::window::Color(0x15, 0x11, 0x0d, 0xff),
+        _ => tauri::window::Color(0xfa, 0xf6, 0xec, 0xff),
+    }
+}
+
 pub async fn build_app_window(
     app: &AppHandle,
     label: String,
@@ -331,9 +340,15 @@ pub async fn build_app_window(
     // OpenAgentd/File/Edit/View/Window bar duplicates the in-app chrome.
     #[cfg(target_os = "windows")]
     win.hide_menu().context("hide Windows application menu")?;
+    // The UI follows the system theme unless the user picked one, so the
+    // system appearance is the best guess before the page has painted.
+    let theme = win.theme().ok();
+    if let Some(theme) = theme {
+        win.set_background_color(Some(window_background(theme))).ok();
+    }
     win.show().context("show window")?;
     win.set_focus().ok();
-    log::info!("startup: window shown window={} at_ms={}", win.label(), crate::launch_ms());
+    log::info!("startup: window shown window={} theme={theme:?} at_ms={}", win.label(), crate::launch_ms());
     Ok(win)
 }
 
@@ -487,5 +502,18 @@ mod tests {
             "{} is outside devUrl {dev_url}, so the dev window would get no IPC",
             frontend_dev_url("app", "main")
         );
+    }
+
+    // The page paints ~150 ms after the window shows; until then the window
+    // shows its own background, so it must be the boot page's in each theme.
+    #[test]
+    fn window_background_matches_the_boot_page_in_both_themes() {
+        let html = include_str!("../../../web/index.html").to_ascii_lowercase();
+        let hex = |c: tauri::window::Color| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
+        let light = hex(window_background(tauri::Theme::Light));
+        let dark = hex(window_background(tauri::Theme::Dark));
+        assert!(html.contains(&format!("background: {light};")), "light {light} is not the boot page's");
+        assert!(html.contains(&format!("background: {dark};")), "dark {dark} is not the boot page's");
+        assert_ne!(light, dark);
     }
 }
