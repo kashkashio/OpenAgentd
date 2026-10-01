@@ -1,7 +1,7 @@
 //! `session_messages` — ports `chat_service.py`, `chat_service_revert.py`
 //! and `chat_service_queue.py`. Ordering is always `(seq, id)`.
 
-use crate::codec::{db_id, json_db, new_id, now_db, parse_dt, py_isoformat};
+use crate::codec::{db_id, json_col, json_db, new_id, now_db, parse_dt, py_isoformat};
 use crate::models::{kind, ChatSession, SessionMessage, ToolPairRow, SEQ_STEP};
 use crate::pool::DbPool;
 use crate::queries::sessions::{bump_history_revision, get_session};
@@ -519,6 +519,7 @@ pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snaps
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let max: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ?").bind(&sid).fetch_one(&mut *tx).await?;
     let base = max.unwrap_or(0) + SEQ_STEP;
+    let mut out = Vec::with_capacity(queued.len());
     for (i, row) in queued.iter().enumerate() {
         let mut extra = match row.extra_json() {
             Some(Value::Object(m)) => m,
@@ -531,22 +532,19 @@ pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snaps
         }
         let extra_v = if extra.is_empty() { None } else { Some(Value::Object(extra)) };
         let created = released + chrono::Duration::microseconds(i as i64);
-        sqlx::query("UPDATE session_messages SET kind = 'chat', seq = ?, created_at = ?, extra = ? WHERE id = ?")
+        // A row cancelled since the read above updates nothing and is skipped.
+        let promoted = sqlx::query_as::<_, SessionMessage>("UPDATE session_messages SET kind = 'chat', seq = ?, created_at = ?, extra = ? WHERE id = ? RETURNING *")
             .bind(base + i as i64 * SEQ_STEP)
             .bind(crate::codec::dt_db(&created))
             .bind(json_db(extra_v.as_ref()))
             .bind(&row.id)
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
+        out.extend(promoted);
     }
+    // Same transaction: readers never see promoted rows under the old revision.
+    bump_history_revision(&mut *tx, &sid, true).await?;
     tx.commit().await?;
-    bump_history_revision(pool, &sid, true).await?;
-    let mut out = Vec::with_capacity(queued.len());
-    for row in &queued {
-        if let Some(r) = get_message(pool, &row.id).await? {
-            out.push(r);
-        }
-    }
     Ok(out)
 }
 
@@ -590,20 +588,22 @@ pub async fn list_queued_messages(pool: &DbPool, session_id: &str) -> Result<Vec
         .await?)
 }
 
-/// v2 `_mark_last_assistant_interrupted`: newest assistant row by
-/// `created_at` gets `extra.interrupted = true`.
+/// The newest assistant row by `(seq, id)` gets `extra.interrupted = true`.
+/// `seq` is transcript order and walks the `(session_id, seq, id)` index;
+/// `created_at` sorted the whole session and can step back with the clock.
 pub async fn mark_last_assistant_interrupted(pool: &DbPool, session_id: &str) -> Result<()> {
-    let row = sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE session_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1")
-        .bind(db_id(session_id))
-        .fetch_optional(pool)
-        .await?;
-    if let Some(row) = row {
-        let mut extra = match row.extra_json() {
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, extra FROM session_messages WHERE session_id = ? AND role = 'assistant' ORDER BY seq DESC, id DESC LIMIT 1")
+            .bind(db_id(session_id))
+            .fetch_optional(pool)
+            .await?;
+    if let Some((id, extra)) = row {
+        let mut extra = match json_col(extra.as_deref()) {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
         };
         extra.insert("interrupted".into(), Value::Bool(true));
-        sqlx::query("UPDATE session_messages SET extra = ? WHERE id = ?").bind(json_db(Some(&Value::Object(extra)))).bind(&row.id).execute(pool).await?;
+        sqlx::query("UPDATE session_messages SET extra = ? WHERE id = ?").bind(json_db(Some(&Value::Object(extra)))).bind(&id).execute(pool).await?;
     }
     Ok(())
 }

@@ -36,6 +36,23 @@ async fn concurrent_saves_get_distinct_positions() {
     assert_eq!(seqs.len(), n, "duplicate seq values");
 }
 
+/// Transcript order is `seq`; `created_at` can step back with the clock.
+#[tokio::test]
+async fn interrupt_marks_the_last_assistant_row_by_position() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let earlier = save_message(&pool, &s.id, NewMessage::assistant(Some("first".into()))).await.unwrap();
+    let last = save_message(&pool, &s.id, NewMessage::assistant(Some("second".into()))).await.unwrap();
+    sqlx::query("UPDATE session_messages SET created_at = '2000-01-01 00:00:00.000000' WHERE id = ?").bind(&last.id).execute(&pool).await.unwrap();
+    mark_last_assistant_interrupted(&pool, &s.id).await.unwrap();
+    let interrupted = |id: String| {
+        let pool = pool.clone();
+        async move { get_message(&pool, &id).await.unwrap().unwrap().extra_json().and_then(|e| e.get("interrupted").cloned()) }
+    };
+    assert_eq!(interrupted(last.id.clone()).await, Some(serde_json::json!(true)));
+    assert_eq!(interrupted(earlier.id.clone()).await, None);
+}
+
 #[tokio::test]
 async fn save_message_returns_the_stored_row() {
     let (_d, pool) = fresh().await;
@@ -75,11 +92,18 @@ async fn released_queued_messages_move_to_the_tail() {
     let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
     let queued = save_message(&pool, &s.id, NewMessage { kind: Some("queued".into()), ..NewMessage::user("later") }).await.unwrap();
     let reply = save_message(&pool, &s.id, NewMessage::user("meanwhile")).await.unwrap();
+    let revision = |pool: appv3_db::DbPool, id: String| async move { get_session(&pool, &id).await.unwrap().unwrap().history_structure_revision };
+    let before = revision(pool.clone(), s.id.clone()).await;
     let released = release_queued_user_messages(&pool, &s.id, Some("abc")).await.unwrap();
     assert_eq!(released.len(), 1);
     assert_eq!(released[0].id, queued.id);
     assert_eq!(released[0].kind, "chat");
     assert!(released[0].seq > reply.seq, "{} <= {}", released[0].seq, reply.seq);
+    // The returned row is the stored one.
+    assert_eq!(released[0].snapshot().as_deref(), Some("abc"));
+    let stored = get_message(&pool, &queued.id).await.unwrap().unwrap();
+    assert_eq!((stored.seq, &stored.created_at, &stored.extra), (released[0].seq, &released[0].created_at, &released[0].extra));
+    assert!(revision(pool.clone(), s.id.clone()).await > before);
 }
 
 #[tokio::test]

@@ -219,14 +219,14 @@ pub async fn update_session(pool: &DbPool, id: &str, upd: SessionUpdate) -> Resu
 
 /// v2 `bump_history_revision`. SQLAlchemy's `onupdate=_utcnow` also fires for
 /// this Core UPDATE, so `updated_at` moves too.
-pub async fn bump_history_revision(pool: &DbPool, id: &str, structural: bool) -> Result<()> {
+pub async fn bump_history_revision<'e, E: sqlx::SqliteExecutor<'e>>(ex: E, id: &str, structural: bool) -> Result<()> {
     let sql = if structural {
         "UPDATE chat_sessions SET history_revision = history_revision + 1, \
          history_structure_revision = history_structure_revision + 1, updated_at = ? WHERE id = ?"
     } else {
         "UPDATE chat_sessions SET history_revision = history_revision + 1, updated_at = ? WHERE id = ?"
     };
-    sqlx::query(sql).bind(now_db()).bind(db_id(id)).execute(pool).await?;
+    sqlx::query(sql).bind(now_db()).bind(db_id(id)).execute(ex).await?;
     Ok(())
 }
 
