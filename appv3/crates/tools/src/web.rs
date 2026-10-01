@@ -221,15 +221,18 @@ async fn fetch(url: reqwest::Url, fmt: &str, timeout: f64) -> Result<Fetched, Fe
                 None => http_error(status),
             });
         }
+        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(String::from);
+        if let Some(e) = reject_before_body(content_type.as_deref(), fmt) {
+            return Err(e);
+        }
         if let Some(len) = resp.content_length() {
             if len as usize > MAX_RESPONSE_BYTES {
                 return Err(too_large(len as usize));
             }
         }
         let headers = resp.headers().clone();
-        let content_type = headers.get("content-type").and_then(|v| v.to_str().ok()).map(String::from);
         let content = read_body(resp, MAX_RESPONSE_BYTES, false).await?;
-        let html = matches!(parse_ct(content_type.as_deref()).0.as_deref(), Some("text/html" | "application/xhtml+xml"));
+        let html = is_html(parse_ct(content_type.as_deref()).0.as_deref());
         if let Some(vendor) = bot_wall(status, &headers, &content).filter(|_| html) {
             return Err(blocked(vendor));
         }
@@ -294,6 +297,44 @@ fn sniff_mime(content: &[u8]) -> Option<String> {
 fn is_textual(m: Option<&str>) -> bool {
     matches!(m, Some(m) if m.starts_with("text/") || ["application/json", "application/xml", "application/xhtml+xml", "application/markdown", "application/javascript"].contains(&m))
 }
+
+fn is_html(m: Option<&str>) -> bool {
+    matches!(m, Some("text/html" | "application/xhtml+xml"))
+}
+
+/// Types that say nothing about the body; the real type is sniffed from it.
+fn is_generic_mime(m: Option<&str>) -> bool {
+    matches!(m, None | Some("" | "application/octet-stream" | "binary/octet-stream"))
+}
+
+/// `raw` needs text and `html` needs HTML; other formats convert anything.
+fn format_mismatch(mime: Option<&str>, fmt: &str) -> Option<FetchError> {
+    match fmt {
+        "raw" if !is_textual(mime) => {
+            Some(fe("Cannot return raw binary content.", Some(format!("The response is {}. Use format=\"markdown\" or format=\"text\" instead.", mime.unwrap_or("binary data")))))
+        }
+        "html" if !is_html(mime) => Some(fe(
+            "Cannot return HTML for this content type.",
+            Some(format!("The response is {}. Use format=\"markdown\" or format=\"text\" instead.", mime.unwrap_or("unknown content"))),
+        )),
+        _ => None,
+    }
+}
+
+/// Rejects a `raw`/`html` request from the declared type alone, so a large
+/// binary body is never downloaded just to be refused.
+fn reject_before_body(ct: Option<&str>, fmt: &str) -> Option<FetchError> {
+    let (declared, _) = parse_ct(ct);
+    if is_generic_mime(declared.as_deref()) {
+        return None;
+    }
+    format_mismatch(declared.as_deref(), fmt)
+}
+
+/// HTML beyond this is converted from its head only: extraction costs about
+/// 0.5 s of CPU per MB, and 5 MB already yields ~2.5 MB of text, far more
+/// than a model reads. `format="html"` still returns the whole page.
+const MAX_HTML_CONVERT_BYTES: usize = 5 * 1024 * 1024;
 
 // ── HTML → Markdown / text ──────────────────────────────────────────────────
 
@@ -580,11 +621,12 @@ pub fn convert_document(data: &[u8]) -> Result<String, anydoc::ConvertError> {
 }
 
 fn process(content: &[u8], ct: Option<&str>, fmt: &str) -> Result<String, FetchError> {
+    process_capped(content, ct, fmt, MAX_HTML_CONVERT_BYTES)
+}
+
+fn process_capped(content: &[u8], ct: Option<&str>, fmt: &str, html_cap: usize) -> Result<String, FetchError> {
     let (declared, charset) = parse_ct(ct);
-    let mime = match declared.as_deref() {
-        None | Some("") | Some("application/octet-stream") | Some("binary/octet-stream") => sniff_mime(content),
-        _ => declared.clone(),
-    };
+    let mime = if is_generic_mime(declared.as_deref()) { sniff_mime(content) } else { declared.clone() };
     let textual = is_textual(mime.as_deref());
     let decoded = if textual {
         let enc = charset.as_deref().and_then(|c| encoding_rs::Encoding::for_label(c.as_bytes())).unwrap_or(encoding_rs::UTF_8);
@@ -597,30 +639,30 @@ fn process(content: &[u8], ct: Option<&str>, fmt: &str) -> Result<String, FetchE
     } else {
         None
     };
-    let html = matches!(mime.as_deref(), Some("text/html") | Some("application/xhtml+xml"));
+    if let Some(e) = format_mismatch(mime.as_deref(), fmt) {
+        return Err(e);
+    }
+    let html = is_html(mime.as_deref());
     match fmt {
-        "raw" => {
-            if !textual {
-                return Err(fe(
-                    "Cannot return raw binary content.",
-                    Some(format!("The response is {}. Use format=\"markdown\" or format=\"text\" instead.", mime.as_deref().unwrap_or("binary data"))),
-                ));
-            }
-            Ok(decoded.unwrap_or_default())
-        }
-        "html" => {
-            if !html {
-                return Err(fe(
-                    "Cannot return HTML for this content type.",
-                    Some(format!("The response is {}. Use format=\"markdown\" or format=\"text\" instead.", mime.as_deref().unwrap_or("unknown content"))),
-                ));
-            }
-            Ok(decoded.unwrap_or_default())
-        }
+        "raw" | "html" => Ok(decoded.unwrap_or_default()),
         _ => {
             if textual && html {
-                let d = decoded.unwrap_or_default();
-                Ok(if fmt == "markdown" { html_to_markdown(&d) } else { html_to_text(&d) })
+                let mut d = decoded.unwrap_or_default();
+                let full_len = d.len();
+                if full_len > html_cap {
+                    let mut cut = html_cap;
+                    while !d.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    d.truncate(cut);
+                }
+                let mut out = if fmt == "markdown" { html_to_markdown(&d) } else { html_to_text(&d) };
+                if full_len > html_cap && !out.trim().is_empty() {
+                    out.push_str(&format!(
+                        "\n\n[Truncated: the page has {full_len} bytes of HTML; only the first {html_cap} were converted. Use format=\"html\" for the full page.]"
+                    ));
+                }
+                Ok(out)
             } else if textual {
                 Ok(decoded.unwrap_or_default())
             } else {
@@ -953,6 +995,33 @@ verify the installation by printing its version number as shown.</p>
             .contains("Hello from DOCX"));
         let err = process(b"\x89PNG\r\n\x1a\n\x00\x00", Some("image/png"), "markdown").unwrap_err();
         assert_eq!(err.message, "Content conversion failed.");
+    }
+
+    #[test]
+    fn oversized_html_is_converted_from_a_capped_prefix_with_a_note() {
+        let page = format!("<html><body><p>{}</p><p>LATE_MARKER</p></body></html>", "word ".repeat(400));
+        let out = process_capped(page.as_bytes(), Some("text/html"), "text", 1000).unwrap();
+        assert!(out.starts_with("word word"), "{out}");
+        assert!(!out.contains("LATE_MARKER"), "{out}");
+        assert!(
+            out.ends_with(&format!("[Truncated: the page has {} bytes of HTML; only the first 1000 were converted. Use format=\"html\" for the full page.]", page.len())),
+            "{out}"
+        );
+        let whole = process_capped(page.as_bytes(), Some("text/html"), "text", page.len()).unwrap();
+        assert!(whole.contains("LATE_MARKER") && !whole.contains("[Truncated:"), "{whole}");
+    }
+
+    #[test]
+    fn raw_and_html_mismatches_are_rejected_before_the_body() {
+        assert_eq!(reject_before_body(Some("image/png"), "raw").unwrap().message, "Cannot return raw binary content.");
+        assert_eq!(reject_before_body(Some("application/json; charset=utf-8"), "html").unwrap().message, "Cannot return HTML for this content type.");
+        // Generic or missing types are sniffed from the body, so they must be read.
+        assert!(reject_before_body(Some("application/octet-stream"), "raw").is_none());
+        assert!(reject_before_body(None, "html").is_none());
+        assert!(reject_before_body(Some("text/html"), "html").is_none());
+        assert!(reject_before_body(Some("text/plain"), "raw").is_none());
+        // Binary documents are converted for markdown/text.
+        assert!(reject_before_body(Some("application/pdf"), "markdown").is_none());
     }
 
     #[test]
