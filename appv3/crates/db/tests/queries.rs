@@ -1,4 +1,5 @@
-//! Compatibility with databases written by the v2 (Python) backend.
+//! Query behaviour against a fresh database, plus reading databases that the
+//! v2 (Python) backend wrote (data compat, kept until a migration retires it).
 //!
 //! `fresh_db_*` tests always run. `real_v2_db_*` run against a copy of a real
 //! v2 database when `OAD_V2_DB` points at one (never the original file).

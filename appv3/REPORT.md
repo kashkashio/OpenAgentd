@@ -207,7 +207,7 @@ explicitly.
     or `<created_at>|<uuid>` (sessions), and `since` is a uuid7 message
     id: the forms the server hands out. v2's bare-timestamp cursors now
     get 422. Covered by `history_paging_flow` and
-    `session_pages_follow_their_cursor` (`db/tests/v2_compat.rs`).
+    `session_pages_follow_their_cursor` (`db/tests/queries.rs`).
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and

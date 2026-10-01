@@ -75,8 +75,11 @@ Use the native subtree Makefiles for desktop/mobile packages
   focused on transport validation and response shaping. Durable behavior
   belongs in the owning runtime crate (`appv3/crates/agent/`, `tools/`,
   `providers/`, `db/`) or, for v2, `app/services/` and `app/agent/`.
-- v3 must keep v2's wire format and on-disk formats (DB schema, YAML, snapshot
-  repos). Record every deliberate deviation in `appv3/REPORT.md`.
+- v2 format parity is not a goal. v3 may change its wire and on-disk
+  formats (JSON spacing, field order, Python-style renderings) when the web
+  client changes in the same commit, but it must keep reading data that v2
+  installs wrote (DB schema and rows, YAML configs and frontmatter, snapshot
+  repos). Record every wire or on-disk change in `appv3/REPORT.md`.
 - In the UI, TanStack Query owns server state and Zustand owns client/stream
   state. Keep backend wire handling in `web/src/api/`, queries in
   `web/src/queries/`, and route registration in `web/src/router.ts`.
