@@ -1,5 +1,53 @@
 import { describe, it, expect } from "bun:test";
-import { formatTokens, formatRelativeDate, formatCompactRelative, formatCompactUpcoming, formatDate, isSleepMessage, extractSleepPrefix, shortId, shortModelName, formatTime, formatFullDateTime, lastTurnText, finalAnswerBlocks } from "@/utils/format";
+import { formatTokens, formatRelativeDate, formatCompactRelative, formatCompactUpcoming, formatDate, isSleepMessage, extractSleepPrefix, shortId, shortModelName, formatTime, formatFullDateTime, lastTurnText, finalAnswerBlocks, getTimezoneOffsetMinutes, wallClockToISO, isoToWallClock, formatInTimezone } from "@/utils/format";
+import { formatCommitTime } from "@/components/WorkspacePanel/diff-helpers";
+
+// ---------------------------------------------------------------------------
+// IANA timezone helpers (formatters are cached per zone; results must not mix)
+// ---------------------------------------------------------------------------
+
+describe("timezone helpers", () => {
+  const instant = new Date("2024-07-01T12:00:00Z");
+
+  it("reports each zone's own offset, also when zones alternate", () => {
+    expect(getTimezoneOffsetMinutes("Asia/Ho_Chi_Minh", instant)).toBe(420);
+    expect(getTimezoneOffsetMinutes("America/New_York", instant)).toBe(-240);
+    expect(getTimezoneOffsetMinutes("Asia/Ho_Chi_Minh", instant)).toBe(420);
+    expect(getTimezoneOffsetMinutes("America/New_York", new Date("2024-01-01T12:00:00Z"))).toBe(-300);
+  });
+
+  it("falls back to UTC for an unknown zone, every time", () => {
+    expect(getTimezoneOffsetMinutes("Not/AZone", instant)).toBe(0);
+    expect(getTimezoneOffsetMinutes("Not/AZone", instant)).toBe(0);
+  });
+
+  it("round-trips wall-clock time through a zone", () => {
+    expect(wallClockToISO("2024-07-01T09:30", "Asia/Ho_Chi_Minh")).toBe("2024-07-01T09:30:00+07:00");
+    expect(isoToWallClock("2024-07-01T02:30:00Z", "Asia/Ho_Chi_Minh")).toBe("2024-07-01T09:30");
+    expect(isoToWallClock("2024-07-01T02:30:00Z", "America/New_York")).toBe("2024-06-30T22:30");
+  });
+
+  it("formats an instant in a zone as dd/MM/yyyy HH:mm", () => {
+    expect(formatInTimezone("2024-07-01T02:30:00Z", "Asia/Ho_Chi_Minh")).toBe("01/07/2024 09:30");
+    expect(formatInTimezone("2024-07-01T02:30:00Z", "UTC")).toBe("01/07/2024 02:30");
+  });
+});
+
+describe("formatCommitTime", () => {
+  it("matches the locale rendering it replaced", () => {
+    const ts = 1_719_800_000;
+    const date = new Date(ts * 1000);
+    const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+    expect(formatCommitTime(ts)).toBe(`${date.toLocaleDateString("en-GB")} ${time}`);
+  });
+});
+
+describe("formatTime matches toLocaleTimeString", () => {
+  it("renders the same string as the per-call locale call", () => {
+    const date = new Date(2024, 0, 15, 7, 3, 0);
+    expect(formatTime(date)).toBe(date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: false }));
+  });
+});
 
 // ---------------------------------------------------------------------------
 // formatTokens

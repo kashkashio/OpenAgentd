@@ -28,11 +28,15 @@ export function safeDecodeURIComponent(val: string): string {
   }
 }
 
+let commitDateFormatter: Intl.DateTimeFormat | undefined
+let commitTimeFormatter: Intl.DateTimeFormat | undefined
+
 /** ``dd/mm/yyyy HH:mm`` for a git commit's unix timestamp (seconds). */
 export function formatCommitTime(timestamp: number): string {
   const date = new Date(timestamp * 1000)
-  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
-  return `${date.toLocaleDateString('en-GB')} ${time}`
+  commitDateFormatter ??= new Intl.DateTimeFormat('en-GB')
+  commitTimeFormatter ??= new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  return `${commitDateFormatter.format(date)} ${commitTimeFormatter.format(date)}`
 }
 
 export function collectChangedFiles(diff?: WorkspaceGitDiffResponse): ChangedFileInfo[] {

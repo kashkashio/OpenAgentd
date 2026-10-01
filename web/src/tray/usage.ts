@@ -99,8 +99,10 @@ export function formatResetIn(resetsAt?: number | null): string | null {
   return remHours === 0 ? `Resets in ${days}d` : `Resets in ${days}d ${remHours}h`
 }
 
+const amountFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+
 export function formatAmount(value: number): string {
-  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value)
+  return amountFormatter.format(value)
 }
 
 export function formatCheckedAt(checkedAt: number): string | null {
