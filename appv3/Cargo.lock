@@ -446,6 +446,7 @@ dependencies = [
  "pdf-inspector",
  "rayon",
  "regex",
+ "regex-syntax",
  "reqwest",
  "scraper",
  "serde",

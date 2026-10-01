@@ -58,7 +58,14 @@ pub fn is_gitignored(gi: &Gitignore, rel: &str, is_dir: bool) -> bool {
 /// lookaround or backreferences fall back to `fancy_regex`, whose
 /// backtracking is bounded by its step limit.
 pub enum Matcher {
-    Linear { line: regex::Regex, prefilter: Option<regex::bytes::Regex> },
+    /// `needs_nl`: the pattern can match the line's own `\n` (see
+    /// [`can_use_trailing_newline`]), so a line that fails is tried again
+    /// with it.
+    Linear {
+        line: regex::Regex,
+        prefilter: Option<regex::bytes::Regex>,
+        needs_nl: bool,
+    },
     Fancy(fancy_regex::Regex),
 }
 
@@ -67,6 +74,13 @@ impl Matcher {
         match self {
             Matcher::Linear { line, .. } => line.is_match(text),
             Matcher::Fancy(rx) => rx.is_match(text).unwrap_or(false),
+        }
+    }
+
+    fn needs_trailing_newline(&self) -> bool {
+        match self {
+            Matcher::Linear { needs_nl, .. } => *needs_nl,
+            Matcher::Fancy(_) => true,
         }
     }
 
@@ -89,9 +103,30 @@ pub fn compile_pattern(pattern: &str) -> Result<Matcher, ToolError> {
         // "start/end of text", which then skip the prefilter.
         let anchored = ["\\A", "\\z", "\\Z"].iter().any(|a| pattern.contains(a));
         let prefilter = if anchored { None } else { regex::bytes::Regex::new(&format!("(?m:{pattern})")).ok() };
-        return Ok(Matcher::Linear { line, prefilter });
+        return Ok(Matcher::Linear { line, prefilter, needs_nl: can_use_trailing_newline(pattern) });
     }
     fancy_regex::Regex::new(pattern).map(Matcher::Fancy).map_err(|e| ToolError::Execution(format!("Invalid regex: {e}")))
+}
+
+/// Whether matching `line + "\n"` can succeed where `line` alone fails:
+/// only if the pattern can match a `\n` itself (a literal, `\s`, a negated
+/// class, `(?s).`) or uses multi-line `^`/`$`, which can match around it.
+/// Other assertions see `\n` and end-of-text alike. Unparsable: assume yes.
+fn can_use_trailing_newline(pattern: &str) -> bool {
+    use regex_syntax::hir::{Class, Hir, HirKind, Look};
+    fn walk(h: &Hir) -> bool {
+        match h.kind() {
+            HirKind::Empty => false,
+            HirKind::Literal(l) => l.0.contains(&b'\n'),
+            HirKind::Class(Class::Unicode(c)) => c.ranges().iter().any(|r| r.start() <= '\n' && '\n' <= r.end()),
+            HirKind::Class(Class::Bytes(c)) => c.ranges().iter().any(|r| r.start() <= b'\n' && b'\n' <= r.end()),
+            HirKind::Look(l) => matches!(l, Look::StartLF | Look::EndLF | Look::StartCRLF | Look::EndCRLF),
+            HirKind::Repetition(r) => walk(&r.sub),
+            HirKind::Capture(c) => walk(&c.sub),
+            HirKind::Concat(hs) | HirKind::Alternation(hs) => hs.iter().any(walk),
+        }
+    }
+    regex_syntax::parse(pattern).map(|h| walk(&h)).unwrap_or(true)
 }
 
 /// Python universal newlines: `\r\n` and lone `\r` become `\n`.
@@ -179,7 +214,7 @@ fn scan_reader(m: &Matcher, mut r: impl Read, display: &str, max: usize, chunk: 
                 // `$` in Python also matches before the final `\n`; patterns
                 // that consume the newline (`\s$`, `\n`) need the line with it.
                 let hit = m.is_match(line)
-                    || (has_nl && {
+                    || (has_nl && m.needs_trailing_newline() && {
                         with_nl.clear();
                         with_nl.push_str(line);
                         with_nl.push('\n');
@@ -434,6 +469,28 @@ mod tests {
                 }
                 assert_eq!(scan_reader(&m, data, "f", 1, 2), whole.into_iter().take(1).collect::<Vec<_>>());
             }
+        }
+    }
+
+    #[test]
+    fn newline_check_is_kept_only_for_patterns_that_can_use_it() {
+        for p in ["foo", "foo$", "^foo", "^$", "a.b", "\\bfoo\\b", "[a-z]+", "(?i)todo|fixme", "x\\z"] {
+            assert!(!can_use_trailing_newline(p), "{p}");
+        }
+        for p in ["foo\\s$", "[^a]", "\\n", "(?m)^$", "(?m)foo$", "(?s)a.b", "\\W", "\\D", "a[\\s,]b", "(unclosed"] {
+            assert!(can_use_trailing_newline(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn skipping_the_newline_check_never_changes_hits() {
+        let data: &[u8] = b"foo\r\nbar \nold\rmac\nx foo \nTi\xe1\xba\xbfng\n\nlast foo";
+        for pattern in ["foo", "foo$", "^foo", "^$", "a.b", "\\bfoo\\b", "t$", "ac$", "^\\w+$"] {
+            let fast = compile_pattern(pattern).unwrap();
+            assert!(matches!(fast, Matcher::Linear { needs_nl: false, .. }), "{pattern}");
+            let Matcher::Linear { line, prefilter, .. } = compile_pattern(pattern).unwrap() else { unreachable!() };
+            let always = Matcher::Linear { line, prefilter, needs_nl: true };
+            assert_eq!(scan_reader(&fast, data, "f", 100, 7), scan_reader(&always, data, "f", 100, 7), "{pattern}");
         }
     }
 
