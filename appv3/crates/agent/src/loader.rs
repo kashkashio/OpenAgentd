@@ -433,8 +433,6 @@ pub fn detect_drift(stamp: &ConfigStamp) -> Vec<PathBuf> {
 // ── Build ────────────────────────────────────────────────────────────────────
 
 const CONTEXT_INJECTED_TOOLS: &[&str] = &["skill", "todo_manage", "schedule_task", "lsp", "ask_user", "plan", "submit_plan"];
-/// v2 registry names that v3 does not implement (skipped, never pruned).
-const V2_ONLY_TOOLS: &[&str] = &[];
 
 /// `_default_tool_registry` (built-ins + MCP tools by name).
 pub fn default_tool_registry() -> HashMap<String, ToolRef> {
@@ -528,11 +526,7 @@ pub fn build_agent(mut cfg: AgentConfig, registry: &HashMap<String, ToolRef>, fa
             continue;
         }
         let Some(t) = registry.get(name) else {
-            if V2_ONLY_TOOLS.contains(&name.as_str()) {
-                tracing::warn!("agent_tool_unavailable_in_v3 agent={} tool={}", cfg.name, name);
-            } else {
-                unknown_tools.push(name.clone());
-            }
+            unknown_tools.push(name.clone());
             continue;
         };
         if seen.insert(name.clone()) {
