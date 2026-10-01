@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import gzip
 import urllib.parse
 import urllib.request
 
@@ -53,11 +54,20 @@ def stop(p):
         p.kill()
 
 
+# OAD_PERF_GZIP=1 asks for gzip like a browser does; reported bytes are
+# then the compressed size on the wire.
+GZIP = os.environ.get("OAD_PERF_GZIP") == "1"
+
+
 def get(url):
+    """(milliseconds, decoded body, bytes on the wire)."""
     t = time.perf_counter()
-    with urllib.request.urlopen(url, timeout=60) as r:
-        body = r.read()
-    return (time.perf_counter() - t) * 1e3, body
+    req = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"} if GZIP else {})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        raw = r.read()
+        encoded = r.headers.get("Content-Encoding") == "gzip"
+    ms = (time.perf_counter() - t) * 1e3
+    return ms, gzip.decompress(raw) if encoded else raw, len(raw)
 
 
 def is_prompt(m):
@@ -71,18 +81,18 @@ def median(xs):
 
 
 def reopen(base, lead):
-    ms, body = get(f"{base}/api/agent/{lead}/history")
+    ms, body, wire = get(f"{base}/api/agent/{lead}/history")
     page = json.loads(body)
-    reqs, total_ms, total_bytes = 1, ms, len(body)
+    reqs, total_ms, total_bytes = 1, ms, wire
     member_ids = [m["id"] for mem in page.get("members", []) for m in mem.get("messages", [])]
     lead_rows = len(page["lead"]["messages"])
     found = any(is_prompt(m) for m in page["lead"]["messages"])
     cursor = page.get("next_cursor") if page.get("has_more") else None
     pages = 0
     while cursor and not found and pages < older_pages:
-        ms, body = get(f"{base}/api/agent/{lead}/history?before={urllib.parse.quote(cursor)}")
+        ms, body, wire = get(f"{base}/api/agent/{lead}/history?before={urllib.parse.quote(cursor)}")
         page = json.loads(body)
-        reqs, total_ms, total_bytes, pages = reqs + 1, total_ms + ms, total_bytes + len(body), pages + 1
+        reqs, total_ms, total_bytes, pages = reqs + 1, total_ms + ms, total_bytes + wire, pages + 1
         member_ids += [m["id"] for mem in page.get("members", []) for m in mem.get("messages", [])]
         lead_rows += len(page["lead"]["messages"])
         found = any(is_prompt(m) for m in page["lead"]["messages"])
