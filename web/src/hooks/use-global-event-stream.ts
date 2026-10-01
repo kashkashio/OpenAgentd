@@ -13,6 +13,13 @@ import { useUnreadStore } from '@/stores/useUnreadStore'
 
 const notifiedIds = new Set<string>()
 const MAX_NOTIFIED_IDS = 200
+/**
+ * How long a reconnected global stream must stay up before it resyncs. A proxy
+ * or server that accepts the stream and drops it at once would otherwise
+ * refetch every loaded session-list page and the whole current session on
+ * every attempt.
+ */
+export const GLOBAL_RECONNECT_SETTLE_MS = 1_000
 
 export function resetGlobalNotificationDedupe(): void {
   notifiedIds.clear()
@@ -296,7 +303,17 @@ export async function reconcileCurrentSession(
   const after = useAgentStore.getState()
   if (connectionGeneration !== currentConnectionGeneration()) return
   if (after.sessionId !== sessionId || after._sessionGeneration !== sessionGeneration) return
-  if (after.isAgentWorking) after.connectStream()
+  if (!after.isAgentWorking) return
+  // A turn suspended on the user (ask_user, plan review) produces nothing to
+  // replay, so a stream that is still attached stays as it is. Re-attaching
+  // it tore the stream down on every resync while the question stayed open.
+  if (after.isConnected && waitsOnlyOnUser(after)) return
+  after.connectStream()
+}
+
+/** An open question, and no agent still producing output. */
+function waitsOnlyOnUser(state: ReturnType<typeof useAgentStore.getState>): boolean {
+  return state.pendingQuestion !== null && !Object.values(state.agentStreams).some((s) => s.status === 'working')
 }
 
 /** App-lifetime feed for session changes occurring outside this window. */
@@ -311,6 +328,20 @@ export function useGlobalEventStream(): void {
     let controller: AbortController | null = null
     // True between onOpen and the next onError/onDone: the socket is known live.
     let opened = false
+    // The first connection resyncs at once (it may follow a startup gap);
+    // later ones wait for ``settleTimer`` so a flapping link stays quiet.
+    let everOpened = false
+    let settleTimer: ReturnType<typeof setTimeout> | null = null
+    const clearSettleTimer = () => {
+      if (settleTimer) {
+        clearTimeout(settleTimer)
+        settleTimer = null
+      }
+    }
+    const resync = (generation: number) => {
+      invalidateGlobalEventQueries(queryClient)
+      void reconcileCurrentSession(generation, () => connectionGeneration)
+    }
 
     const connect = (): number | null => {
       if (disposed) return null
@@ -319,6 +350,7 @@ export function useGlobalEventStream(): void {
         clearTimeout(retryTimer)
         retryTimer = null
       }
+      clearSettleTimer()
       controller?.abort()
       controller = new AbortController()
       opened = false
@@ -326,9 +358,19 @@ export function useGlobalEventStream(): void {
         onOpen: () => {
           if (disposed || generation !== connectionGeneration) return
           opened = true
-          attempts = 0
-          invalidateGlobalEventQueries(queryClient)
-          void reconcileCurrentSession(generation, () => connectionGeneration)
+          // The backoff resets on the first real event, or once the link has
+          // stayed up — never merely because the response opened.
+          if (!everOpened) {
+            everOpened = true
+            resync(generation)
+            return
+          }
+          settleTimer = setTimeout(() => {
+            settleTimer = null
+            if (disposed || generation !== connectionGeneration || !opened) return
+            attempts = 0
+            resync(generation)
+          }, GLOBAL_RECONNECT_SETTLE_MS)
         },
         onEvent: (type, data) => {
           void handleGlobalEvent(queryClient, type, data, generation, () => connectionGeneration)
@@ -337,6 +379,7 @@ export function useGlobalEventStream(): void {
         onError: (error) => {
           if (disposed || generation !== connectionGeneration) return
           opened = false
+          clearSettleTimer()
           // Old servers do not have this optional endpoint; leave them alone.
           if (/GET \/events\/stream failed: 404/.test(error.message)) return
           const delay = Math.min(30_000, 1_500 * 2 ** attempts++)
@@ -345,6 +388,7 @@ export function useGlobalEventStream(): void {
         onDone: () => {
           if (disposed || generation !== connectionGeneration) return
           opened = false
+          clearSettleTimer()
           const delay = Math.min(30_000, 1_500 * 2 ** attempts++)
           retryTimer = setTimeout(connect, delay)
         },
@@ -373,6 +417,7 @@ export function useGlobalEventStream(): void {
       connectionGeneration += 1
       controller?.abort()
       if (retryTimer) clearTimeout(retryTimer)
+      clearSettleTimer()
       unsubscribeApiBaseUrl()
       window.removeEventListener('online', resume)
       window.removeEventListener('pageshow', resume)
