@@ -887,13 +887,15 @@ impl AgentSession {
 
         let ws_path = session_workspace_dir(&sid, Some(&workspace));
         let denied = Arc::new(DeniedPaths::new(&ws_path, Some(sid.clone())));
+        // Reads every memory page; keep that disk walk off the async worker.
+        let memory = tokio::task::spawn_blocking(appv3_memory::memory_context).await.unwrap_or_default();
         let mut hooks: Vec<HookRef> = vec![
             Arc::new(CurrentDateHook),
             Arc::new(StreamPublisherHook::new(&sid, &name, true)),
             Arc::new(crate::hooks::otel::OtelHook::new(&name, effective_model.as_deref())),
             Arc::new(crate::hooks::lsp::LspHook { enabled: agent_mode == "coding", denied: denied.clone() }),
             Arc::new(RuntimeProtocolHook),
-            Arc::new(MemoryContextHook { content: appv3_memory::memory_context(), lead: is_lead }),
+            Arc::new(MemoryContextHook { content: memory, lead: is_lead }),
         ];
         if is_lead {
             hooks.push(Arc::new(QueuedInjectionHook {
