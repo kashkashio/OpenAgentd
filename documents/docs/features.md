@@ -2,7 +2,7 @@
 title: Features
 description: Canonical, version-cited catalogue of shipped user-visible OpenAgentd features.
 status: stable
-updated: 2026-09-30
+updated: 2026-10-01
 ---
 
 # Features
@@ -14,7 +14,7 @@ release that introduced it (where known). When you ship something new, **add it 
 > double-clickable app that runs an agent on your machine, with a
 > real UI to watch every step. Open source (Apache 2.0). 16 providers. Your keys.
 
-**Latest release:** v3.3.1 · September 30, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.3.1)
+**Latest release:** v3.4.0 · October 1, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.4.0)
 
 ---
 
