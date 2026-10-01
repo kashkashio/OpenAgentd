@@ -130,15 +130,12 @@ export const PendingMessageQueue = memo(function PendingMessageQueue() {
     const allBlocks = agentStreams
       ? Object.values(agentStreams).flatMap((s) => [...s.blocks, ...s.currentBlocks])
       : []
+    // By id only: a queued message always has its server id, and matching
+    // text hid any steer the session had already sent once ("continue").
     const activeIds = new Set(allBlocks.map((b) => b.id))
-    const activeUserContents = new Set(
-      allBlocks.filter((b) => b.type === 'user').map((b) => b.content.trim()),
-    )
     return allMessages.filter((msg) => {
       if (msg.sessionId && sessionId && msg.sessionId !== sessionId) return false
-      if (activeIds.has(msg.id)) return false
-      if (activeUserContents.has((msg.content || '').trim())) return false
-      return true
+      return !activeIds.has(msg.id)
     })
   }, [allMessages, sessionId, agentStreams])
   const removePendingMessage = useAgentStore((s) => s.removePendingMessage)

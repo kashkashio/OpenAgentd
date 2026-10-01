@@ -122,6 +122,26 @@ describe('PendingMessageQueue', () => {
     expect(screen.queryByText('Injected on member stream')).toBeNull()
   })
 
+  it('shows a queued steer even when an earlier message used the same text', () => {
+    useAgentStore.setState({
+      sessionId: 'session-1',
+      leadName: 'openagentd',
+      agentStreams: {
+        openagentd: {
+          blocks: [{ id: 'earlier', type: 'user', content: 'continue' }],
+          currentBlocks: [],
+          status: 'working',
+          usage: { promptTokens: 0, completionTokens: 0, cachedTokens: 0 },
+        } as never,
+      },
+      _pendingMessages: [{ id: 'queued', sessionId: 'session-1', content: 'continue' }],
+    })
+
+    render(<PendingMessageQueue />)
+
+    expect(screen.getByText('continue')).toBeTruthy()
+  })
+
   it('allows queued messages to span full width on mobile and caps width from md up', () => {
     useAgentStore.setState({
       sessionId: 'session-1',

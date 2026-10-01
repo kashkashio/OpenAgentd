@@ -986,6 +986,33 @@ describe('queued messages mid-turn injection and reconciliation', () => {
     expect(pending.some((m) => m.id === 'pm-2')).toBe(true)
   })
 
+  it('keeps a queued steer whose text an earlier, confirmed message also used', async () => {
+    await seedLoadedSession()
+
+    useAgentStore.setState((state) => {
+      state._syncedThrough = 'msg-watermark-1'
+      state._pendingMessages = [{ id: 'pm-yes', sessionId: 'lead-sess', content: 'yes' }]
+      return state
+    })
+
+    mockSessionHistorySince.mockImplementation(() => Promise.resolve({
+      truncated: false,
+      lead: {
+        agent_name: 'lead',
+        running: true,
+        messages: [
+          { id: 'u-yes', role: 'user', content: 'yes' },
+          { id: 'pm-yes', role: 'user', kind: 'queued', content: 'yes', extra: { queue_status: 'queued' } },
+        ],
+      },
+      members: [],
+    }))
+
+    await useAgentStore.getState().reconcileTurnTail('lead-sess')
+
+    expect(useAgentStore.getState()._pendingMessages.map((m) => m.id)).toEqual(['pm-yes'])
+  })
+
   it('prunes confirmed user messages from _pendingMessages during loadSession (F5 refresh)', async () => {
     const now = Date.now()
     useAgentStore.setState((state) => {

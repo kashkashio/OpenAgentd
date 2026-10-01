@@ -613,8 +613,11 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
               continue
             }
 
+            // By id, or by text only against a ``user-<ts>`` bubble whose POST
+            // has not answered yet. Any wider text match hid a steer the
+            // session had already sent once ("yes").
             const existsInBlocks = stream.blocks.some(
-              (b) => b.id === msg.id || (b.type === 'user' && !b.extra?.from_agent && b.content === msg.content),
+              (b) => b.id === msg.id || (b.type === 'user' && !b.extra?.from_agent && b.id.startsWith('user-') && b.content === msg.content),
             )
             if (existsInBlocks) {
               continue
@@ -639,12 +642,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
           for (const ev of eventMessages) {
             removedIds.add(ev.id)
           }
-          const splicedContents = new Set(messages.map((m) => m.content.trim()))
-          draft._pendingMessages = draft._pendingMessages.filter((msg) => {
-            if (removedIds.has(msg.id)) return false
-            if (splicedContents.has((msg.content || '').trim())) return false
-            return true
-          })
+          draft._pendingMessages = draft._pendingMessages.filter((msg) => !removedIds.has(msg.id))
         })
         break
       }
