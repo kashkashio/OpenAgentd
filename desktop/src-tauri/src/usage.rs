@@ -167,7 +167,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// pays a TLS handshake for external backends) every 5 minutes for the
 /// lifetime of the app — a single lazily-built client keeps connections
 /// warm. Also reused by ``commands.rs::wait_for_health`` via
-/// [`shared_client`].
+/// [`shared_client`] for a saved external server.
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// Lazily-built shared client. Falls back to ``reqwest::Client::new()``
@@ -177,6 +177,22 @@ pub fn shared_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(FETCH_TIMEOUT)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+static LOOPBACK_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// Client for the bundled sidecar on 127.0.0.1 (plain HTTP). Built without
+/// the system root certificates: loading them reads the keychain (~190 ms on
+/// macOS), and the launch's first health check would wait on it.
+pub fn loopback_client() -> &'static reqwest::Client {
+    LOOPBACK_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .tls_built_in_root_certs(false)
+            .no_proxy()
             .build()
             .unwrap_or_default()
     })

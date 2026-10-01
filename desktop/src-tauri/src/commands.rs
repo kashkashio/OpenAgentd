@@ -562,11 +562,14 @@ pub async fn app_new_window(app: AppHandle, initial_path: Option<String>) -> Res
         .map_err(|e| format!("{e:#}"))
 }
 
+/// Wait until the bundled sidecar at `base` (loopback) answers its health check.
 pub async fn wait_for_health(base: &str, attempts: u32, delay: Duration) -> Result<()> {
-    // Shared process-wide client (see `usage::shared_client`); the short
-    // per-attempt deadline is applied per-request rather than baking a
-    // dedicated 2s client just for health checks.
-    let client = crate::usage::shared_client();
+    wait_for_health_with(crate::usage::loopback_client(), base, attempts, delay).await
+}
+
+async fn wait_for_health_with(client: &reqwest::Client, base: &str, attempts: u32, delay: Duration) -> Result<()> {
+    // The short per-attempt deadline is applied per request rather than
+    // baking a dedicated 2 s client just for health checks.
     let url = format!("{base}/api/health/live");
     for i in 0..attempts {
         match client
@@ -590,7 +593,7 @@ pub async fn wait_for_health(base: &str, attempts: u32, delay: Duration) -> Resu
 /// bundled backend waits on it, and falling back keeps the saved choice for
 /// the next launch (the Server connection dialog switches back any time).
 pub async fn probe_saved_backend(base: &str) -> Result<()> {
-    wait_for_health(base, 1, Duration::ZERO).await
+    wait_for_health_with(crate::usage::shared_client(), base, 1, Duration::ZERO).await
 }
 
 #[cfg(test)]
