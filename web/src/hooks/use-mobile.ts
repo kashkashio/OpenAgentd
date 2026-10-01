@@ -4,23 +4,29 @@ const MOBILE_BREAKPOINT = 768
 /** Shared media query used by both `useIsMobile` and `useMobileViewportGuards` to ensure consistent breakpoint detection. */
 export const MOBILE_QUERY = `(max-width: ${MOBILE_BREAKPOINT - 1}px), (max-height: 580px)`
 
+// One MediaQueryList for every caller: every Tooltip uses this hook, so a long
+// transcript mounts hundreds of them. Keyed by the `matchMedia` function so a
+// test that swaps it gets a fresh list.
+let shared: { matchMedia: typeof window.matchMedia; mql: MediaQueryList } | null = null
+
+function mobileQueryList(): MediaQueryList {
+  if (!shared || shared.matchMedia !== window.matchMedia) {
+    shared = { matchMedia: window.matchMedia, mql: window.matchMedia(MOBILE_QUERY) }
+  }
+  return shared.mql
+}
+
+function subscribe(onChange: () => void): () => void {
+  const mql = mobileQueryList()
+  mql.addEventListener("change", onChange)
+  return () => mql.removeEventListener("change", onChange)
+}
+
+function getSnapshot(): boolean {
+  return typeof window !== "undefined" && mobileQueryList().matches
+}
+
+/** Read synchronously, so the first render already has the right layout. */
 export function useIsMobile() {
-  // Initialise synchronously so the first render already knows the correct
-  // value — avoids a one-frame flash of the desktop layout on mobile devices.
-  const [isMobile, setIsMobile] = React.useState<boolean>(() => {
-    if (typeof window === "undefined") return false
-    return window.matchMedia(MOBILE_QUERY).matches
-  })
-
-  React.useEffect(() => {
-    const mql = window.matchMedia(MOBILE_QUERY)
-    const onChange = () => setIsMobile(mql.matches)
-    mql.addEventListener("change", onChange)
-    // Sync in case the viewport changed between the initial render and the
-    // effect running (e.g. a fast orientation flip during hydration).
-    setIsMobile(mql.matches)
-    return () => mql.removeEventListener("change", onChange)
-  }, [])
-
-  return isMobile
+  return React.useSyncExternalStore(subscribe, getSnapshot, () => false)
 }
