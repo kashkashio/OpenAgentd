@@ -44,7 +44,20 @@ pub async fn create_pool(db_path: impl AsRef<Path>) -> Result<DbPool> {
     }
 
     let (max, min) = if in_memory { (1, 1) } else { (16, 1) };
-    let pool = SqlitePoolOptions::new().max_connections(max).min_connections(min).acquire_timeout(std::time::Duration::from_secs(10)).connect_with(opts).await?;
+    // sqlx's network-database defaults cost SQLite for nothing: a ping round
+    // trip to the connection's worker thread on every acquire, and recycling
+    // connections every 30 minutes, which throws away their page cache. The
+    // single in-memory connection *is* the database, so it is never reaped.
+    let idle_timeout = if in_memory { None } else { Some(std::time::Duration::from_secs(600)) };
+    let pool = SqlitePoolOptions::new()
+        .max_connections(max)
+        .min_connections(min)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .test_before_acquire(false)
+        .max_lifetime(None)
+        .idle_timeout(idle_timeout)
+        .connect_with(opts)
+        .await?;
 
     crate::migrations::run_migrations(&pool).await?;
 
@@ -74,4 +87,23 @@ pub async fn close_pool(pool: &DbPool) {
     let _ = sqlx::query("PRAGMA optimize=0x10002").execute(pool).await;
     let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(pool).await;
     pool.close().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connections_are_kept_and_not_pinged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = create_pool(dir.path().join("t.db")).await.unwrap();
+        let opts = file.options();
+        assert!(!opts.get_test_before_acquire(), "a ping per acquire buys nothing on SQLite");
+        assert_eq!(opts.get_max_lifetime(), None, "recycling drops each connection's page cache");
+
+        // The single in-memory connection *is* the database: never reap it.
+        let mem = create_pool(":memory:").await.unwrap();
+        assert_eq!(mem.options().get_idle_timeout(), None);
+        assert_eq!(mem.options().get_max_lifetime(), None);
+    }
 }
