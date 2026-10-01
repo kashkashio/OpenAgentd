@@ -10,8 +10,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
 
 /// Compact JSON with non-ASCII kept verbatim.
-pub fn json_status(status: StatusCode, v: &Value) -> Response {
-    let body = serde_json::to_vec(v).expect("serde_json::Value always serializes");
+pub fn json_status<T: serde::Serialize + ?Sized>(status: StatusCode, v: &T) -> Response {
+    // Response bodies are Values or structs with string keys: never fails.
+    let body = serde_json::to_vec(v).expect("response bodies always serialize");
     let mut r = (status, body).into_response();
     r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
     r
