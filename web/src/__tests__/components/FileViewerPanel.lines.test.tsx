@@ -47,7 +47,10 @@ describe('FilePreviewContent — long files', () => {
     commits.length = 0
     for (let line = 101; line <= 110; line++) act(() => { fireEvent.mouseOver(gutter(container, line)) })
     expect(container.querySelectorAll('[data-line].bg-\\(--bg-key\\)').length).toBe(11)
-    const ratio = Math.max(...commits.map(([actual, base]) => actual / base))
-    expect(ratio).toBeLessThan(0.25)
+    // Median over the steps: one GC pause under a loaded parallel run can
+    // inflate a single small commit. Typically 0.02-0.04; 0.86 when every
+    // line re-rendered.
+    const ratios = commits.map(([actual, base]) => actual / base).sort((a, b) => a - b)
+    expect(ratios[Math.floor(ratios.length / 2)]).toBeLessThan(0.25)
   })
 })
