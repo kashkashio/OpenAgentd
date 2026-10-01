@@ -12,6 +12,7 @@ BENCH lines. A second fresh server sits idle for 60 s to measure CPU time.
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,14 @@ import urllib.request
 
 binary, seeded_db, label, older_pages = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 runs = int(sys.argv[5]) if len(sys.argv) > 5 else 7
+
+
+def seeded_lead(db):
+    """API id (hyphenated) of the seeded lead session."""
+    with sqlite3.connect(db) as c:
+        (hex_id,) = c.execute("SELECT id FROM chat_sessions WHERE parent_session_id IS NULL LIMIT 1").fetchone()
+    h = hex_id.replace("-", "")
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
 
 def start(root):
@@ -87,7 +96,7 @@ try:
     shutil.copy(seeded_db, os.path.join(root, "data", "openagentd.db"))
     p, base = start(root)
     try:
-        lead = os.environ["OAD_LEAD"]
+        lead = os.environ.get("OAD_LEAD") or seeded_lead(seeded_db)
         reopen(base, lead)  # warm-up: starts the agent session, fills caches
         results = [reopen(base, lead) for _ in range(runs)]
     finally:
