@@ -200,7 +200,7 @@ fn merge_question_calls(primary: &mut ToolCall, dups: &[ToolCall]) {
     qs.truncate(4);
     if let Some(o) = merged.as_object_mut() {
         o.insert("questions".into(), Value::Array(qs));
-        primary.function.arguments = appv3_core::pyjson::dumps(&merged);
+        primary.function.arguments = merged.to_string();
     }
 }
 
@@ -736,5 +736,18 @@ impl Agent {
         );
         let metadata = state.metadata.lock().unwrap().clone();
         Ok(RunOutcome { messages: state.messages, metadata })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merged_question_calls_keep_non_ascii_text_verbatim() {
+        let mut primary = ToolCall::new("a", "ask_user", r#"{"questions":[{"question":"Chọn màu?"}]}"#);
+        let dup = ToolCall::new("b", "ask_user", r#"{"questions": [{"question": "Größe?"}]}"#);
+        merge_question_calls(&mut primary, &[dup]);
+        assert_eq!(primary.function.arguments, r#"{"questions":[{"question":"Chọn màu?"},{"question":"Größe?"}]}"#);
     }
 }

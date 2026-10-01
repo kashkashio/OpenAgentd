@@ -484,7 +484,7 @@ impl AnthropicProvider {
                 ToolCall::new(
                     b["id"].as_str().unwrap_or(""),
                     b["name"].as_str().unwrap_or(""),
-                    appv3_core::pyjson::dumps(b.get("input").filter(|v| !v.is_null()).unwrap_or(&json!({}))),
+                    b.get("input").filter(|v| !v.is_null()).map(Value::to_string).unwrap_or_else(|| "{}".into()),
                 )
             })
             .collect();
@@ -690,5 +690,12 @@ mod tests {
         let mut text = json!({"type": "text"});
         append_block_text(&mut text, "text", "hi");
         assert_eq!(text["text"], "hi");
+    }
+
+    #[test]
+    fn tool_use_input_becomes_compact_utf8_arguments() {
+        let p = AnthropicProvider::new("k", "claude-sonnet-4-5", "http://127.0.0.1:9", Kwargs::new()).unwrap();
+        let msg = p.parse_response(&json!({"content": [{"type": "tool_use", "id": "t1", "name": "patch", "input": {"note": "Cài đặt ✓", "n": 1}}]}));
+        assert_eq!(msg.tool_calls.unwrap()[0].function.arguments, r#"{"note":"Cài đặt ✓","n":1}"#);
     }
 }

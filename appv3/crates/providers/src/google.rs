@@ -23,6 +23,12 @@ pub fn sanitize_schema(v: &Value) -> Value {
     }
 }
 
+/// A `functionCall`'s `args` as the tool-call argument string (`{}` when
+/// absent): compact, non-ASCII verbatim.
+fn function_call_args(fc: &Value) -> String {
+    fc.get("args").map(Value::to_string).unwrap_or_else(|| "{}".into())
+}
+
 fn text_part(t: &str) -> Value {
     json!({"text": t})
 }
@@ -365,7 +371,7 @@ impl LlmProvider for GoogleGenAiProvider {
             if let Some(fc) = p.get("functionCall") {
                 let name = fc["name"].as_str().unwrap_or("");
                 let id = fc.get("id").and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| format!("call_{name}_{}", now_ts()));
-                let mut tc = ToolCall::new(id, name, appv3_core::pyjson::dumps(fc.get("args").unwrap_or(&json!({}))));
+                let mut tc = ToolCall::new(id, name, function_call_args(fc));
                 tc.function.thought_signature = p.get("thoughtSignature").and_then(|v| v.as_str()).map(String::from);
                 tcs.push(tc);
             }
@@ -419,7 +425,7 @@ impl LlmProvider for GoogleGenAiProvider {
                         let first = emitted.insert(id.clone());
                         dtc.push(ToolCallDelta { index: Some(idx), id: Some(id), function: Some(FunctionCallDelta {
                             name: if first { Some(name) } else { None },
-                            arguments: if first { Some(appv3_core::pyjson::dumps(fc.get("args").unwrap_or(&json!({})))) } else { None },
+                            arguments: if first { Some(function_call_args(fc)) } else { None },
                             thought_signature: p.get("thoughtSignature").and_then(|v| v.as_str()).map(String::from),
                             ..Default::default()
                         }) });
@@ -444,6 +450,12 @@ impl LlmProvider for GoogleGenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_call_args_are_compact_utf8() {
+        assert_eq!(function_call_args(&json!({"name": "search", "args": {"q": "Tiếng Việt", "k": [1, 2]}})), r#"{"q":"Tiếng Việt","k":[1,2]}"#);
+        assert_eq!(function_call_args(&json!({"name": "search"})), "{}");
+    }
 
     #[test]
     fn vertex_urls_match_v2() {
