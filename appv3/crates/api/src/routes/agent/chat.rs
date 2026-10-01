@@ -802,14 +802,29 @@ fn member_json(statuses: &[(String, String)], sub: &db::ChatSession, msgs: &[db:
     let name = sub.agent_name.clone().unwrap_or_else(|| db::codec::api_uuid(&sub.id));
     let (cost, completion) = totals.get(&sub.id).copied().unwrap_or((0.0, 0));
     let running = statuses.iter().any(|(n, s)| *n == name && s == "working");
-    json!({
-        "name": name,
-        "session_id": db::codec::api_uuid(&sub.id),
-        "messages": msgs.iter().map(message_response).collect::<Vec<_>>(),
-        "running": running,
-        "estimated_cost_usd": cost,
-        "completion_tokens": completion,
-    })
+    // Built by hand: `json!` runs every value through `to_value`, which
+    // would deep-copy all the member's messages once more.
+    let mut m = Map::new();
+    m.insert("name".into(), Value::String(name));
+    m.insert("session_id".into(), Value::String(db::codec::api_uuid(&sub.id)));
+    m.insert("messages".into(), Value::Array(msgs.iter().map(message_response).collect()));
+    m.insert("running".into(), Value::Bool(running));
+    m.insert("estimated_cost_usd".into(), json!(cost));
+    m.insert("completion_tokens".into(), json!(completion));
+    Value::Object(m)
+}
+
+/// The `/history` envelope. `lead` and `members` are moved in: `json!`
+/// would deep-copy the whole page through `to_value`.
+fn history_body(lead: Value, members: Vec<Value>, has_more: bool, next_cursor: Option<String>, truncated: bool, pending_question: Option<Value>) -> Value {
+    let mut m = Map::new();
+    m.insert("lead".into(), lead);
+    m.insert("members".into(), Value::Array(members));
+    m.insert("has_more".into(), Value::Bool(has_more));
+    m.insert("next_cursor".into(), next_cursor.map(Value::String).unwrap_or(Value::Null));
+    m.insert("truncated".into(), Value::Bool(truncated));
+    m.insert("pending_question".into(), pending_question.unwrap_or(Value::Null));
+    Value::Object(m)
 }
 
 /// The lead's part of a history response. `totals` is `None` on older pages:
@@ -872,7 +887,7 @@ async fn agent_history(State(st): State<AppState>, AxPath(raw): AxPath<String>, 
             }
             members.push(member_json(&statuses, sub, rows, &totals));
         }
-        return Ok(json(json!({"lead": lead, "members": members, "has_more": false, "next_cursor": null, "truncated": truncated, "pending_question": null})));
+        return Ok(json(history_body(lead, members, false, None, truncated, None)));
     }
 
     let mut cursor: Option<(i64, Option<String>)> = None;
@@ -915,14 +930,7 @@ async fn agent_history(State(st): State<AppState>, AxPath(raw): AxPath<String>, 
     };
     let next_cursor = boundary.map(|b| format!("{}|{}", b.seq, db::codec::api_uuid(&b.id)));
     let pending = if first_page { db::get_pending_question(pool, &sid).await?.map(|q| db::api::pending_question_response(&q)) } else { None };
-    Ok(json(json!({
-        "lead": lead,
-        "members": members,
-        "has_more": has_more,
-        "next_cursor": next_cursor,
-        "truncated": false,
-        "pending_question": pending,
-    })))
+    Ok(json(history_body(lead, members, has_more, next_cursor, false, pending)))
 }
 
 #[cfg(test)]
@@ -943,5 +951,13 @@ mod tests {
         assert_eq!(info["model"], "mock:mock");
         assert_eq!(info["thinking_level"], "high");
         assert_eq!(serialize_agent(&agent(None), None, None)["thinking_level"], Value::Null);
+    }
+
+    #[test]
+    fn history_body_keeps_its_wire_shape() {
+        let body = history_body(json!({"id": "l"}), vec![json!({"name": "m"})], true, Some("5|x".into()), false, None);
+        assert_eq!(body.to_string(), r#"{"lead":{"id":"l"},"members":[{"name":"m"}],"has_more":true,"next_cursor":"5|x","truncated":false,"pending_question":null}"#);
+        let delta = history_body(json!({}), vec![], false, None, true, Some(json!({"id": "q"})));
+        assert_eq!(delta.to_string(), r#"{"lead":{},"members":[],"has_more":false,"next_cursor":null,"truncated":true,"pending_question":{"id":"q"}}"#);
     }
 }
