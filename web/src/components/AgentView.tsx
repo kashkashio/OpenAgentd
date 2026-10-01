@@ -25,7 +25,7 @@ import { ToolCall } from './ToolCall'
 import { MCPAppResult } from './MCPAppResult'
 import { TimelineScrubber } from './AgentView/TimelineScrubber'
 import { CompactionDivider } from './CompactionDivider'
-import { AssistantTurn } from './AssistantTurnFooter'
+import { AssistantTurn, type AssistantTurnProps } from './AssistantTurnFooter'
 import { PendingMessageQueue } from './PendingMessageQueue'
 import { appendCurrentTurns, getVisibleTurnWindow, partitionTurns, promptModels } from '@/utils/turns'
 import { countBlocksAfter, liveBlockTail } from '@/utils/blocks'
@@ -510,10 +510,33 @@ export function AgentView({
     void state.loadOlderUntilPrompt(AUTO_PROMPT_SEEK_PAGES).catch(() => false)
   }, [hasLoadedPrompt, hasMoreHistory, hasTurns, readerTranscript, sessionId, turnItems])
   const finalizedMCPAppResources = useMemo(() => latestMCPAppResources(blocks), [blocks])
+  // Rebuilt per token from the live blocks, but keyed on its contents so the
+  // Set (and every renderer holding it) only changes when an app's latest
+  // result does. Block ids never contain a newline.
+  const latestMCPAppKey = [...latestMCPAppResourceBlockIdsFromParts(finalizedMCPAppResources, currentBlocks)].join('\n')
   const latestMCPAppBlockIds = useMemo(
-    () => latestMCPAppResourceBlockIdsFromParts(finalizedMCPAppResources, currentBlocks),
-    [currentBlocks, finalizedMCPAppResources],
+    () => new Set(latestMCPAppKey ? latestMCPAppKey.split('\n') : []),
+    [latestMCPAppKey],
   )
+  // One renderer for every turn, so a finished turn's memo holds while the
+  // live one streams. Inline in the turns' ``.map`` it was a new closure per
+  // turn per render, which the React Compiler cannot cache either.
+  const renderTurnBlock = useCallback<AssistantTurnProps['renderBlock']>(({ block, isStreaming }) => (
+    <div
+      data-block-id={block.id}
+      data-find-block={isTranscriptFindableBlock(block.type) ? block.id : undefined}
+    >
+      <BlockRenderer
+        block={block}
+        isStreaming={isStreaming}
+        sessionId={sessionId}
+        onRetry={block.id === endingErrorId ? errorRetry : undefined}
+        onSwitchModel={block.id === endingErrorId ? errorSwitchModel : undefined}
+        latestMCPAppBlockIds={mcpAppResourceUri(block) ? latestMCPAppBlockIds : undefined}
+        onMentionFileOpen={onMentionFileOpen}
+      />
+    </div>
+  ), [endingErrorId, errorRetry, errorSwitchModel, latestMCPAppBlockIds, onMentionFileOpen, sessionId])
   // The live tail follows the finalized blocks, so its newest wait wins; only
   // the (small) tail is rescanned per token.
   const finalizedQuotaWait = useMemo(() => latestQuotaWait(blocks), [blocks])
@@ -917,31 +940,19 @@ export function AgentView({
                      key={`turn-${item.blocks[0]?.id ?? item.startIndex}`}
                      blocks={item.blocks}
                      startIndex={item.startIndex}
-                     finalizedCount={blocks.length}
+                     // Only the trailing turn can hold the last or a streaming
+                     // block; a finished turn gets constants so its memo holds
+                     // as the transcript grows.
+                     finalizedCount={isTrailingTurn ? blocks.length : 0}
                      isWorking={isWorking}
                      isTurnOpen={isTurnOpen}
                      isTrailingTurn={isTrailingTurn}
-                      totalBlocks={totalLen}
+                      totalBlocks={isTrailingTurn ? totalLen : 0}
                       size="roomy"
                      reader={readerTranscript}
                      startedAt={turnStartedAt}
                      findHitBlockIds={readerTranscript ? findHitBlockIds : undefined}
-                      renderBlock={({ block, isStreaming }) => (
-                       <div
-                         data-block-id={block.id}
-                         data-find-block={isTranscriptFindableBlock(block.type) ? block.id : undefined}
-                       >
-                         <BlockRenderer
-                           block={block}
-                           isStreaming={isStreaming}
-                           sessionId={sessionId}
-                           onRetry={block.id === endingErrorId ? errorRetry : undefined}
-                           onSwitchModel={block.id === endingErrorId ? errorSwitchModel : undefined}
-                           latestMCPAppBlockIds={mcpAppResourceUri(block) ? latestMCPAppBlockIds : undefined}
-                           onMentionFileOpen={onMentionFileOpen}
-                         />
-                       </div>
-                     )}
+                      renderBlock={renderTurnBlock}
                    />
                  )
                 })}
