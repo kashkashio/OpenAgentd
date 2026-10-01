@@ -342,6 +342,13 @@ export function useGlobalEventStream(): void {
       invalidateGlobalEventQueries(queryClient)
       void reconcileCurrentSession(generation, () => connectionGeneration)
     }
+    // The health dot follows this connection instead of a fast poll: a drop
+    // rechecks at once, and an open rechecks only a failed check (the first
+    // open follows the dot's own startup fetch, so a healthy one is current).
+    const recheckHealth = () => { void queryClient.invalidateQueries({ queryKey: queryKeys.health() }) }
+    const recheckFailedHealth = () => {
+      if (queryClient.getQueryState(queryKeys.health())?.status === 'error') recheckHealth()
+    }
 
     const connect = (): number | null => {
       if (disposed) return null
@@ -358,6 +365,7 @@ export function useGlobalEventStream(): void {
         onOpen: () => {
           if (disposed || generation !== connectionGeneration) return
           opened = true
+          recheckFailedHealth()
           // The backoff resets on the first real event, or once the link has
           // stayed up — never merely because the response opened.
           if (!everOpened) {
@@ -380,6 +388,7 @@ export function useGlobalEventStream(): void {
           if (disposed || generation !== connectionGeneration) return
           opened = false
           clearSettleTimer()
+          recheckHealth()
           // Old servers do not have this optional endpoint; leave them alone.
           if (/GET \/events\/stream failed: 404/.test(error.message)) return
           const delay = Math.min(30_000, 1_500 * 2 ** attempts++)
@@ -389,6 +398,7 @@ export function useGlobalEventStream(): void {
           if (disposed || generation !== connectionGeneration) return
           opened = false
           clearSettleTimer()
+          recheckHealth()
           const delay = Math.min(30_000, 1_500 * 2 ** attempts++)
           retryTimer = setTimeout(connect, delay)
         },

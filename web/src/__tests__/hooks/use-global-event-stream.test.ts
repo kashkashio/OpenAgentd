@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { createElement } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query'
 import { cleanup, render, waitFor } from '@testing-library/react'
 import { setApiBaseUrl } from '@/api/base-url'
 
@@ -129,6 +129,57 @@ it('reconciles the active session whenever the global connection opens', async (
 
   await waitFor(() => expect(loadSession).toHaveBeenCalledWith('current', null))
   expect(connectStream).toHaveBeenCalledTimes(1)
+})
+
+/** The health dot follows the global connection instead of a fast poll. */
+describe('health follows the global connection', () => {
+  type Callbacks = GlobalCallbacks & { onError?: (error: Error) => void; onDone?: () => void }
+
+  /** Mounts the stream plus a live health query; returns its request count. */
+  async function mount(healthy: boolean) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    let requests = 0
+    const observer = new QueryObserver(client, {
+      queryKey: queryKeys.health(),
+      queryFn: async () => {
+        requests += 1
+        if (!healthy) throw new Error('down')
+        return { status: 'ok', version: 'x', capabilities: [] }
+      },
+      staleTime: Number.POSITIVE_INFINITY,
+    })
+    const unsubscribe = observer.subscribe(() => {})
+    await waitFor(() => expect(client.getQueryState(queryKeys.health())?.fetchStatus).toBe('idle'))
+    render(createElement(QueryClientProvider, { client }, createElement(GlobalEventStream)))
+    requests = 0
+    return { requests: () => requests, unsubscribe }
+  }
+
+  it('rechecks health as soon as the connection drops', async () => {
+    for (const drop of [(c: Callbacks) => c.onError?.(new Error('Failed to fetch')), (c: Callbacks) => c.onDone?.()]) {
+      cleanup()
+      const health = await mount(true)
+      ;(globalCallbacks as Callbacks).onOpen?.()
+      drop(globalCallbacks as Callbacks)
+      await waitFor(() => expect(health.requests()).toBe(1))
+      health.unsubscribe()
+    }
+  })
+
+  it('rechecks a failed health check the moment the connection opens', async () => {
+    const health = await mount(false)
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    await waitFor(() => expect(health.requests()).toBe(1))
+    health.unsubscribe()
+  })
+
+  it('leaves a healthy check alone when the connection opens', async () => {
+    const health = await mount(true)
+    ;(globalCallbacks as Callbacks).onOpen?.()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(health.requests()).toBe(0)
+    health.unsubscribe()
+  })
 })
 
 /**
