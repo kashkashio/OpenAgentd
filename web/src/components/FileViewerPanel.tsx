@@ -679,68 +679,80 @@ export function DiffPreview({ diff, autoScroll = true }: { diff: string; autoScr
     return result
   }, [diff])
 
+  // Rows wrap, so nothing scrolls sideways and the gutter needs no
+  // ``sticky``: a sticky cell on every row made scrolling ~6x costlier.
+  const rows: React.ReactNode[] = []
+  parsed.forEach((p, index) => {
+    if (p.kind === 'meta') return
+
+    if (p.kind === 'note') {
+      rows.push(
+        <div
+          key={index}
+          className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
+        >
+          <div className="shrink-0 border-r border-(--color-border)/40 bg-inherit">
+            <span className="block w-9 py-0.5" />
+          </div>
+          <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
+            {p.text}
+          </span>
+        </div>,
+      )
+      return
+    }
+
+    if (p.kind === 'hunk') {
+      // No skipped lines to report (e.g. the first hunk starts at the
+      // top of the file) — rendering the empty separator anyway left a
+      // blank bordered strip between the file header row and the
+      // first real diff line, reading as a stray gap.
+      if (p.skipped <= 0) return
+      rows.push(
+        <div
+          key={index}
+          className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
+        >
+          <div className="shrink-0 border-r border-(--color-border)/40 bg-inherit">
+            <span className="block w-9 py-0.5" />
+          </div>
+          <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
+            {p.skipped} line{p.skipped === 1 ? '' : 's'} unchanged
+          </span>
+        </div>,
+      )
+      return
+    }
+
+    const isAdded   = p.kind === 'add'
+    const isRemoved = p.kind === 'del'
+    rows.push(
+      <div
+        key={index}
+        ref={p.isFirstChange ? firstChangeRef : undefined}
+        className={cn(
+          'flex min-w-0 items-stretch whitespace-pre-wrap break-words text-(--color-text) [overflow-wrap:anywhere]',
+          isAdded   && 'bg-(--color-diff-add-bg) text-(--color-diff-add-text)',
+          isRemoved && 'bg-(--color-diff-del-bg) text-(--color-diff-del-text)',
+        )}
+      >
+        <div className="flex shrink-0 select-none border-r border-(--color-border)/40 bg-inherit text-right text-xs md:text-[11px] text-(--color-text-subtle)">
+          <span className="w-9 py-0.5 pr-1.5">{p.lineNo}</span>
+        </div>
+        <pre className="m-0 min-w-0 flex-1 whitespace-pre-wrap break-words px-2 py-0.5 [overflow-wrap:anywhere]">{p.text}</pre>
+      </div>,
+    )
+  })
+
   return (
     <div className="bg-(--bg-card) font-mono text-[11px] leading-relaxed">
       <div className="min-w-0">
-        {parsed.map((p, index) => {
-          if (p.kind === 'meta') return null
-
-          if (p.kind === 'note') {
-            return (
-              <div
-                key={index}
-                className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
-              >
-                <div className="sticky left-0 z-[1] shrink-0 border-r border-(--color-border)/40 bg-inherit">
-                  <span className="block w-9 py-0.5" />
-                </div>
-                <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
-                  {p.text}
-                </span>
-              </div>
-            )
-          }
-
-          if (p.kind === 'hunk') {
-            // No skipped lines to report (e.g. the first hunk starts at the
-            // top of the file) — rendering the empty separator anyway left a
-            // blank bordered strip between the file header row and the
-            // first real diff line, reading as a stray gap.
-            if (p.skipped <= 0) return null
-            return (
-              <div
-                key={index}
-                className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
-              >
-                <div className="sticky left-0 z-[1] shrink-0 border-r border-(--color-border)/40 bg-inherit">
-                  <span className="block w-9 py-0.5" />
-                </div>
-                <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
-                  {p.skipped} line{p.skipped === 1 ? '' : 's'} unchanged
-                </span>
-              </div>
-            )
-          }
-
-          const isAdded   = p.kind === 'add'
-          const isRemoved = p.kind === 'del'
-          return (
-            <div
-              key={index}
-              ref={p.isFirstChange ? firstChangeRef : undefined}
-              className={cn(
-                'flex min-w-0 items-stretch whitespace-pre-wrap break-words text-(--color-text) [overflow-wrap:anywhere]',
-                isAdded   && 'bg-(--color-diff-add-bg) text-(--color-diff-add-text)',
-                isRemoved && 'bg-(--color-diff-del-bg) text-(--color-diff-del-text)',
-              )}
-            >
-              <div className="sticky left-0 z-[1] flex shrink-0 select-none border-r border-(--color-border)/40 bg-inherit text-right text-xs md:text-[11px] text-(--color-text-subtle)">
-                <span className="w-9 py-0.5 pr-1.5">{p.lineNo}</span>
-              </div>
-              <pre className="m-0 min-w-0 flex-1 whitespace-pre-wrap break-words px-2 py-0.5 [overflow-wrap:anywhere]">{p.text}</pre>
-            </div>
-          )
-        })}
+        {blockStarts(rows.length).map((start) => (
+          // 11px text at leading-relaxed plus the row's 4px padding.
+          <LineBlock key={start} lines={Math.min(LINES_PER_BLOCK, rows.length - start)} lineHeightPx={22}>
+            {rows.slice(start, start + LINES_PER_BLOCK)}
+          </LineBlock>
+        ))}
       </div>
     </div>
   )
