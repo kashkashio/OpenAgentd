@@ -85,23 +85,18 @@ fn validate_answers(questions: &[Value], answers: &[Vec<String>], max_chars: usi
                 labels.push(l);
             }
         }
-        let allows_custom = match q.get("custom") {
-            None => true,
-            Some(v) => *v == Value::Bool(true),
-        };
         if selected.len() > 1 && q.get("multiple") != Some(&Value::Bool(true)) {
             return Err(ApiError::unprocessable(format!("Question {i} accepts a single answer.")));
         }
-        let max = labels.len() + usize::from(allows_custom);
+        // Every question also takes one typed answer, including rows stored
+        // with `custom: false` before that was unconditional.
+        let max = labels.len() + 1;
         if selected.len() > max {
             return Err(ApiError::unprocessable(format!("Question {i} accepts at most {max} answers.")));
         }
         for v in selected {
             if v.chars().count() > max_chars {
                 return Err(ApiError::unprocessable(format!("Answer to question {i} exceeds {max_chars} characters.")));
-            }
-            if !labels.contains(v) && !allows_custom {
-                return Err(ApiError::unprocessable(format!("Question {i} does not accept a custom answer; choose one of its options.")));
             }
         }
     }
@@ -339,7 +334,6 @@ mod tests {
         let check = |a: &[Vec<String>]| validate_answers(&qs, a, MAX_ANSWER_CHARS);
         assert!(check(&[vec!["A".into()]]).is_ok());
         assert_eq!(check(&[vec!["A".into(), "B".into()]]).unwrap_err().detail, json!("Question 0 accepts a single answer."));
-        assert_eq!(check(&[vec!["Z".into()]]).unwrap_err().detail, json!("Question 0 does not accept a custom answer; choose one of its options."));
         assert_eq!(check(&[vec![], vec![]]).unwrap_err().detail, json!("Expected at most 1 answer groups, got 2."));
 
         // Plan-review feedback may be longer than an `ask_user` answer.
@@ -349,5 +343,16 @@ mod tests {
         assert!(validate_answers(&review, &long, plan::PLAN_REVIEW_MAX_ANSWER_CHARS).is_ok());
         let too_long = vec![vec!["x".repeat(plan::PLAN_REVIEW_MAX_ANSWER_CHARS + 1)]];
         assert_eq!(validate_answers(&review, &too_long, plan::PLAN_REVIEW_MAX_ANSWER_CHARS).unwrap_err().detail, json!("Answer to question 0 exceeds 8000 characters."));
+    }
+
+    // Every question takes a typed answer, including rows stored before that
+    // was unconditional (`custom: false`): the client always offers one.
+    #[test]
+    fn typed_answers_are_accepted_even_where_a_stored_question_said_custom_false() {
+        let qs = vec![json!({"question": "q", "options": [{"label": "A"}, {"label": "B"}], "multiple": true, "custom": false})];
+        let check = |a: &[Vec<String>]| validate_answers(&qs, a, MAX_ANSWER_CHARS);
+        assert!(check(&[vec!["Z".into()]]).is_ok());
+        assert!(check(&[vec!["A".into(), "B".into(), "Z".into()]]).is_ok());
+        assert_eq!(check(&[vec!["A".into(), "B".into(), "Y".into(), "Z".into()]]).unwrap_err().detail, json!("Question 0 accepts at most 3 answers."));
     }
 }

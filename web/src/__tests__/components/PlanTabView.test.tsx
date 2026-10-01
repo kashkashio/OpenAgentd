@@ -41,7 +41,6 @@ const REVIEW: PendingQuestion = {
       question: 'Review plan revision 2.',
       header: 'Plan review',
       multiple: false,
-      custom: true,
       options: [
         { label: 'Approve', description: null, recommended: false },
         { label: 'Request changes', description: null, recommended: false },

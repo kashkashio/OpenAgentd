@@ -208,6 +208,12 @@ explicitly.
     id: the forms the server hands out. v2's bare-timestamp cursors now
     get 422. Covered by `history_paging_flow` and
     `session_pages_follow_their_cursor` (`db/tests/queries.rs`).
+- **`ask_user` free text is unconditional.** The model-facing schema has no
+  `custom` flag, and a `custom` arg from an older schema is ignored. The
+  question payload still carries `custom: true`, because clients on an
+  earlier web build only offer free text when it is set. The answer route
+  takes one typed answer per question even for rows stored with
+  `custom: false` (`tools/ask_user.rs`, `api/src/routes/agent/questions.rs`).
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and

@@ -54,7 +54,6 @@ export function normalizeQuestions(raw: unknown): QuestionItem[] {
       question: typeof q.question === 'string' ? q.question : '',
       header: typeof q.header === 'string' ? q.header : '',
       multiple: q.multiple === true,
-      custom: q.custom === true,
       options: options.map((opt) => {
         const o = (opt ?? {}) as Record<string, unknown>
         return {

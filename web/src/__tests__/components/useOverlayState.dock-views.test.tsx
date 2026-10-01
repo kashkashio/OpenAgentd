@@ -49,7 +49,7 @@ const planReview = (id: string): PendingQuestion => ({
   toolCallId: `call-${id}`,
   kind: 'plan_review',
   planRevision: 1,
-  questions: [{ question: 'Review plan revision 1.', header: 'Plan review', multiple: false, custom: true, options: [] }],
+  questions: [{ question: 'Review plan revision 1.', header: 'Plan review', multiple: false, options: [] }],
 })
 
 describe('useOverlayState dock views', () => {

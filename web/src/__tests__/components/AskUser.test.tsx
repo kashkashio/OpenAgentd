@@ -45,7 +45,6 @@ const QUESTION: PendingQuestion = {
       question: 'Which package manager?',
       header: 'Package manager',
       multiple: false,
-      custom: false,
       options: [
         { label: 'pnpm', description: null, recommended: true },
         { label: 'bun', description: null, recommended: false },

@@ -24,7 +24,7 @@ const REVIEW: PendingQuestion = {
   toolCallId: 'call-1',
   kind: 'plan_review',
   planRevision: 3,
-  questions: [{ question: 'Review plan revision 3.', header: 'Plan review', multiple: false, custom: true, options: [] }],
+  questions: [{ question: 'Review plan revision 3.', header: 'Plan review', multiple: false, options: [] }],
 }
 
 beforeEach(() => {

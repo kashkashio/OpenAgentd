@@ -1280,8 +1280,9 @@ MCP.
   **coding mode** `[v2.1.0]`, the agent can stop mid-turn and ask you 1–4 questions rather
   than guessing on a decision that would cost real work to undo. Each question
   carries up to 5 options with optional descriptions, single- or multi-select,
-  a "Recommended" badge on the agent's preferred choice, and an optional
-  free-text answer. Multi-question cards are stepped through one at a time —
+  a "Recommended" badge on the agent's preferred choice, and a free-text
+  answer. **Type your own answer** is on every question `[v3.3.2]`; the agent
+  can no longer turn it off. Multi-question cards are stepped through one at a time —
   **Back** replaces **Dismiss** past the first question — and the whole set is
   submitted together at the end. The card renders **inline in the transcript**, in place of
   the tool call that raised it, with exactly two states: waiting (the questions

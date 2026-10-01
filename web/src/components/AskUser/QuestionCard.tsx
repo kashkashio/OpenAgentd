@@ -7,6 +7,9 @@
  * Shape of the reply it produces: ``string[][]``, index-matched to the questions
  * that were asked, with an empty entry meaning "skipped". The backend validates
  * against exactly that, so nothing here may reorder or omit a group.
+ *
+ * Every question offers "Type your own answer". The server sends ``custom`` for
+ * older clients only; it no longer lets the model turn free text off.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check } from 'lucide-react'
@@ -43,7 +46,7 @@ interface QuestionCardProps {
 function toAnswers(questions: QuestionItem[], draft: QuestionDraft): string[][] {
   return questions.map((item, index) => {
     const selected = draft.selected[index] ?? []
-    if (!item.custom || !draft.customActive[index]) return selected
+    if (!draft.customActive[index]) return selected
     const text = (draft.customText[index] ?? '').trim()
     // A chosen-but-blank free-text answer is a skip, not an empty string: the
     // backend would otherwise show the model an answer the user never gave.
@@ -79,7 +82,7 @@ export function QuestionCard({
   const current = questions[step]
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const isCustomActive = Boolean(current?.custom && draft.customActive[step])
+  const isCustomActive = draft.customActive[step] === true
 
   useEffect(() => {
     if (isCustomActive && textareaRef.current) {
@@ -216,20 +219,18 @@ export function QuestionCard({
               )
             })}
 
-            {current.custom && (
-              <OptionRow
-                multiple={current.multiple}
-                checked={draft.customActive[step] === true}
-                onToggle={() => chooseCustom(step, current)}
-                label={CUSTOM_LABEL}
-                description={null}
-                recommended={false}
-                plainLabel
-              />
-            )}
+            <OptionRow
+              multiple={current.multiple}
+              checked={isCustomActive}
+              onToggle={() => chooseCustom(step, current)}
+              label={CUSTOM_LABEL}
+              description={null}
+              recommended={false}
+              plainLabel
+            />
           </div>
 
-          {current.custom && draft.customActive[step] && (
+          {isCustomActive && (
             <Textarea
               ref={textareaRef}
               autoFocus
