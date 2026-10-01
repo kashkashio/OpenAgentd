@@ -23,14 +23,6 @@ pub fn dumps_compact(value: &Value) -> String {
     out
 }
 
-/// Starlette `JSONResponse.render`: `json.dumps(ensure_ascii=False,
-/// separators=(",", ":"))`.
-pub fn dumps_response(value: &Value) -> String {
-    let mut out = String::new();
-    write(value, &mut out, ",", ":", false);
-    out
-}
-
 /// Python `repr(float)`.
 pub fn float_repr(f: f64) -> String {
     if f.is_nan() {

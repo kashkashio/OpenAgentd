@@ -1,5 +1,5 @@
-//! Request/response plumbing shared by the route modules: Python-compatible
-//! JSON rendering, FastAPI-style query/body/path validation.
+//! Request/response plumbing shared by the route modules: JSON rendering,
+//! FastAPI-style query/body/path validation.
 
 use crate::error::{loc, verr, verr_ctx, ApiError, ApiResult};
 use axum::extract::FromRequestParts;
@@ -9,9 +9,9 @@ use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
 
-/// `JSONResponse(content)` — compact, non-ASCII verbatim, Python float repr.
+/// Compact JSON with non-ASCII kept verbatim.
 pub fn json_status(status: StatusCode, v: &Value) -> Response {
-    let body = appv3_core::pyjson::dumps_response(v);
+    let body = serde_json::to_vec(v).expect("serde_json::Value always serializes");
     let mut r = (status, body).into_response();
     r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
     r
@@ -280,4 +280,24 @@ pub fn token_urlsafe() -> String {
         chunk.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     }
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body_of(r: Response) -> String {
+        String::from_utf8(axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn json_responses_are_compact_and_round_trip() {
+        let v = json!({"text": "héllo \"q\"\n", "n": [1, 2.5, 1e16, 0.00001], "none": null});
+        let r = json_status(StatusCode::CREATED, &v);
+        assert_eq!(r.status(), StatusCode::CREATED);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/json");
+        let body = body_of(r).await;
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), v);
+        assert!(body.starts_with(r#"{"text":"héllo \"q\"\n","n":[1,2.5,"#), "compact, keys in order, non-ASCII verbatim: {body}");
+    }
 }
