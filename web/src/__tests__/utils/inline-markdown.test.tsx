@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, afterEach } from 'bun:test'
 import '@testing-library/jest-dom'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import { InlineMarkdown } from '@/utils/inline-markdown'
 
 afterEach(cleanup)
@@ -105,11 +105,11 @@ describe('InlineMarkdown', () => {
     expect(container.textContent).toBe('use snake_case_names here')
   })
 
-  it('renders inline math $\\rightarrow$', () => {
+  it('renders inline math $\\rightarrow$', async () => {
     const { container } = render(<InlineMarkdown text={'Choose A $\\rightarrow$ B'} />)
     const math = container.querySelector('.oa-math-inline')
     expect(math).not.toBeNull()
-    expect(math?.querySelector('.katex')).not.toBeNull()
+    await waitFor(() => expect(math?.querySelector('.katex')).not.toBeNull())
     expect(math?.textContent).toContain('→')
   })
 
