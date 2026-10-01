@@ -778,7 +778,7 @@ async fn exa_search(query: &str, max: usize) -> Result<Value, String> {
         serde_json::from_str(&text).unwrap_or(json!({}))
     };
     if let Some(e) = payload.get("error") {
-        return Err(format!("Error: {}", py_repr_value(e)));
+        return Err(format!("Error: {}", model_json(e)));
     }
     match payload.get("result") {
         Some(Value::Object(r)) => {
@@ -800,8 +800,10 @@ async fn exa_search(query: &str, max: usize) -> Result<Value, String> {
     }
 }
 
-fn py_repr_value(v: &Value) -> String {
-    appv3_core::pyjson::dumps(v)
+/// JSON text handed to the model: compact with non-ASCII verbatim, since
+/// `\uXXXX` escapes cost several tokens per character.
+fn model_json(v: &Value) -> String {
+    v.to_string()
 }
 
 pub struct WebSearchTool;
@@ -820,10 +822,10 @@ impl Tool for WebSearchTool {
         a.finish()?;
         let results = ddg_search(&query, max, page, &safesearch).await;
         if !results.is_empty() {
-            return Ok(ToolOutput::Text(appv3_core::pyjson::dumps(&Value::Array(results))));
+            return Ok(ToolOutput::Text(model_json(&Value::Array(results))));
         }
         Ok(ToolOutput::Text(match exa_search(&query, max).await {
-            Ok(v) => appv3_core::pyjson::dumps(&v),
+            Ok(v) => model_json(&v),
             Err(s) => s,
         }))
     }
@@ -832,6 +834,12 @@ impl Tool for WebSearchTool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn search_results_reach_the_model_as_compact_utf8() {
+        let results = json!([{"title": "Hướng dẫn cài đặt", "href": "https://example.vn/a", "body": "日本語のテキスト"}]);
+        assert_eq!(model_json(&results), r#"[{"title":"Hướng dẫn cài đặt","href":"https://example.vn/a","body":"日本語のテキスト"}]"#);
+    }
 
     /// A valid single-page PDF with a text layer (exact xref offsets), as in
     /// v2's `test_document_conversion._minimal_pdf`. `encrypt` adds a
