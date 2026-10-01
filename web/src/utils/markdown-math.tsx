@@ -50,8 +50,10 @@ function useKatex(): Katex | null {
 export const MATH_INLINE_SENTINEL = '\uE000math:inline:'
 export const MATH_BLOCK_SENTINEL = '\uE000math:block:'
 
+// No lookbehind (a parse error before Safari 16.4): an inline `$…$` body ends
+// on a character that is not whitespace or a backslash via `[^\s\\$]`.
 const MATH_REGEX =
-  /(?:\\\$)|(?:\$\$([\s\S]+?)\$\$)|(?:\\\[([\s\S]+?)\\\])|(?:\\\(([\s\S]+?)\\\))|(?:\$(?!\s)([^$\n]+?)(?<![\s\\])\$)/g
+  /(?:\\\$)|(?:\$\$([\s\S]+?)\$\$)|(?:\\\[([\s\S]+?)\\\])|(?:\\\(([\s\S]+?)\\\))|(?:\$(?!\s)([^$\n]*?[^\s\\$])\$)/g
 
 const htmlCache = new Map<string, string>()
 const MAX_CACHE_SIZE = 500
