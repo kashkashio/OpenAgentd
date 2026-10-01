@@ -27,10 +27,15 @@ use appv3_core::pymath::py_round;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+
+/// A parsed span, shared between a span file's parse and every window that
+/// selects it.
+type Span = Arc<Map<String, Value>>;
 
 const CACHE_BUCKET_SECONDS: i64 = 5;
 const CACHE_MAXSIZE: usize = 64;
@@ -305,37 +310,45 @@ impl WindowBounds {
     }
 }
 
-fn load_spans_in_window(files: &[PathBuf], window_start: DateTime<Utc>, window_end: DateTime<Utc>) -> (Vec<Map<String, Value>>, WindowBounds) {
+/// Every span in one file that has an `end_time`, with that time.
+fn parse_span_file(path: &std::path::Path) -> Vec<(f64, Span)> {
+    let Ok(bytes) = std::fs::read(path) else { return vec![] };
+    let mut out = vec![];
+    for line in bytes.split(|b| *b == b'\n') {
+        if line.iter().all(|b| b.is_ascii_whitespace()) {
+            continue;
+        }
+        let Ok(Value::Object(s)) = serde_json::from_slice::<Value>(line) else { continue };
+        if let Some(et) = num(s.get("end_time")) {
+            out.push((et, Arc::new(s)));
+        }
+    }
+    out
+}
+
+fn select_window<'a>(files: impl IntoIterator<Item = &'a [(f64, Span)]>, window_start: DateTime<Utc>, window_end: DateTime<Utc>) -> (Vec<Span>, WindowBounds) {
     let (start_ns, end_ns) = (window_ns(window_start), window_ns(window_end));
     let mut spans = vec![];
     let mut bounds = WindowBounds::default();
-    for path in files {
-        let Ok(bytes) = std::fs::read(path) else { continue };
-        for line in bytes.split(|b| *b == b'\n') {
-            if line.iter().all(|b| b.is_ascii_whitespace()) {
-                continue;
-            }
-            let Ok(Value::Object(s)) = serde_json::from_slice::<Value>(line) else { continue };
-            if let Some(et) = num(s.get("end_time")) {
-                if et < start_ns {
-                    bounds.before = bounds.before.max(et);
-                } else if et > end_ns {
-                    bounds.after = bounds.after.min(et);
-                } else {
-                    bounds.first = bounds.first.min(et);
-                    bounds.last = bounds.last.max(et);
-                    spans.push(s);
-                }
-            }
+    for &(et, ref s) in files.into_iter().flatten() {
+        if et < start_ns {
+            bounds.before = bounds.before.max(et);
+        } else if et > end_ns {
+            bounds.after = bounds.after.min(et);
+        } else {
+            bounds.first = bounds.first.min(et);
+            bounds.last = bounds.last.max(et);
+            spans.push(s.clone());
         }
     }
     (spans, bounds)
 }
 
-fn attrs_of(s: &Map<String, Value>) -> Map<String, Value> {
+fn attrs_of(s: &Map<String, Value>) -> &Map<String, Value> {
+    static EMPTY: LazyLock<Map<String, Value>> = LazyLock::new(Map::new);
     match s.get("attributes") {
-        Some(Value::Object(m)) => m.clone(),
-        _ => Map::new(),
+        Some(Value::Object(m)) => m,
+        _ => &EMPTY,
     }
 }
 
@@ -392,18 +405,18 @@ struct TurnIndex {
 }
 
 impl TurnIndex {
-    fn build(spans: &[Map<String, Value>]) -> Self {
+    fn build<S: Borrow<Map<String, Value>>>(spans: &[S]) -> Self {
         let mut index = Self::default();
-        for s in spans.iter().filter(|s| is_run_span(s)) {
+        for s in spans.iter().map(Borrow::borrow).filter(|s| is_run_span(s)) {
             let Some(tid) = trace_id_of(s) else { continue };
             let attrs = attrs_of(s);
-            let workspace = workspace_attr(&attrs);
-            let session = conversation_attr(&attrs);
+            let workspace = workspace_attr(attrs);
+            let session = conversation_attr(attrs);
             if let (Some(ws), Some(conv)) = (&workspace, &session) {
                 index.session_workspace.insert(conv.clone(), ws.clone());
             }
             let agent = attrs.get("gen_ai.agent.name").filter(|v| truthy(v)).map(py_str);
-            index.by_trace.insert(tid, TurnKey { model: turn_model(&attrs), workspace, session, agent });
+            index.by_trace.insert(tid, TurnKey { model: turn_model(attrs), workspace, session, agent });
         }
         index
     }
@@ -416,7 +429,7 @@ impl TurnIndex {
         if let Some(ws) = self.turn(s).and_then(|t| t.workspace.clone()) {
             return Some(ws);
         }
-        let conv = conversation_attr(&attrs_of(s))?;
+        let conv = conversation_attr(attrs_of(s))?;
         self.session_workspace.get(&conv).cloned()
     }
 
@@ -425,7 +438,7 @@ impl TurnIndex {
     fn session_of(&self, s: &Map<String, Value>) -> Option<String> {
         match self.turn(s) {
             Some(t) => t.session.clone(),
-            None => conversation_attr(&attrs_of(s)),
+            None => conversation_attr(attrs_of(s)),
         }
     }
 
@@ -435,7 +448,7 @@ impl TurnIndex {
     fn model_of(&self, s: &Map<String, Value>) -> String {
         match self.turn(s) {
             Some(t) => t.model.clone(),
-            None => turn_model(&attrs_of(s)),
+            None => turn_model(attrs_of(s)),
         }
     }
 
@@ -457,24 +470,25 @@ impl TurnIndex {
     }
 }
 
-fn apply_filters<'a>(spans: &'a [Map<String, Value>], index: &TurnIndex, f: &Filters) -> Vec<&'a Map<String, Value>> {
+fn apply_filters<'a, S: Borrow<Map<String, Value>>>(spans: &'a [S], index: &TurnIndex, f: &Filters) -> Vec<&'a Map<String, Value>> {
+    let spans = spans.iter().map(Borrow::borrow);
     if f.is_empty() {
-        return spans.iter().collect();
+        return spans.collect();
     }
-    spans.iter().filter(|s| index.matches(s, f)).collect()
+    spans.filter(|s| index.matches(s, f)).collect()
 }
 
 /// Filter options for the whole window, independent of the active filters,
 /// most-used first.
-fn facets(spans: &[Map<String, Value>]) -> Value {
+fn facets<S: Borrow<Map<String, Value>>>(spans: &[S]) -> Value {
     let mut workspaces: IndexMap<String, i64> = IndexMap::new();
     let mut models: IndexMap<String, i64> = IndexMap::new();
-    for s in spans.iter().filter(|s| is_run_span(s)) {
+    for s in spans.iter().map(Borrow::borrow).filter(|s| is_run_span(s)) {
         let attrs = attrs_of(s);
-        if let Some(ws) = workspace_attr(&attrs) {
+        if let Some(ws) = workspace_attr(attrs) {
             *workspaces.entry(ws).or_default() += 1;
         }
-        *models.entry(turn_model(&attrs)).or_default() += 1;
+        *models.entry(turn_model(attrs)).or_default() += 1;
     }
     let ranked = |m: IndexMap<String, i64>| {
         let mut v: Vec<(String, i64)> = m.into_iter().collect();
@@ -513,10 +527,6 @@ fn sig_key(kind: &str, parts: &[String], bucket: i64, dir: &str, sigs: &Signatur
     json!([kind, parts, bucket, dir, sigs.iter().map(|(p, s, m, i)| json!([p, s, m.to_string(), i])).collect::<Vec<_>>()]).to_string()
 }
 
-fn sig_paths(sigs: &Signatures) -> Vec<PathBuf> {
-    sigs.iter().map(|(p, ..)| PathBuf::from(p)).collect()
-}
-
 // ── parsed span windows ─────────────────────────────────────────────────────
 
 /// One window's parsed spans and their turn index. A page's summary, trace
@@ -526,27 +536,52 @@ fn sig_paths(sigs: &Signatures) -> Vec<PathBuf> {
 struct SpanWindow {
     key: String,
     bounds: WindowBounds,
-    spans: Vec<Map<String, Value>>,
+    spans: Vec<Span>,
     index: TurnIndex,
 }
 
-/// Keeps only the latest window, so the parsed spans held between requests
-/// stay bounded to one window.
+/// One span file's parse, valid while its `(size, mtime_ns, inode)` holds.
+struct ParsedFile {
+    sig: (u64, i128, u64),
+    spans: Arc<Vec<(f64, Span)>>,
+}
+
+/// The latest window, plus the parse of each file it read. While an agent
+/// runs only the live hour's file changes, so a new window re-reads that
+/// file and reuses the rest. Files outside the latest window are dropped,
+/// so what is held stays bounded to one window's files.
 #[derive(Default)]
-struct SpanWindowCache(Mutex<Option<Arc<SpanWindow>>>);
+struct SpanCacheState {
+    window: Option<Arc<SpanWindow>>,
+    files: HashMap<String, ParsedFile>,
+}
+
+#[derive(Default)]
+struct SpanWindowCache(Mutex<SpanCacheState>);
 
 impl SpanWindowCache {
     fn get(&self, dir: &str, sigs: &Signatures, start: DateTime<Utc>, end: DateTime<Utc>) -> Arc<SpanWindow> {
         let key = sig_key("spans", &[], 0, dir, sigs);
         // Held while loading, so requests sent together wait for one parse
         // instead of each starting their own.
-        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(w) = slot.as_ref().filter(|w| w.key == key && w.bounds.selects_same(window_ns(start), window_ns(end))) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(w) = state.window.as_ref().filter(|w| w.key == key && w.bounds.selects_same(window_ns(start), window_ns(end))) {
             return w.clone();
         }
-        let (spans, bounds) = load_spans_in_window(&sig_paths(sigs), start, end);
+        let mut parsed = Vec::with_capacity(sigs.len());
+        let mut files = HashMap::with_capacity(sigs.len());
+        for (path, size, mtime, ino) in sigs {
+            let sig = (*size, *mtime, *ino);
+            let spans = match state.files.remove(path) {
+                Some(f) if f.sig == sig => f.spans,
+                _ => Arc::new(parse_span_file(std::path::Path::new(path))),
+            };
+            parsed.push(spans.clone());
+            files.insert(path.clone(), ParsedFile { sig, spans });
+        }
+        let (spans, bounds) = select_window(parsed.iter().map(|f| f.as_slice()), start, end);
         let window = Arc::new(SpanWindow { key, bounds, index: TurnIndex::build(&spans), spans });
-        *slot = Some(window.clone());
+        *state = SpanCacheState { window: Some(window.clone()), files };
         window
     }
 }
@@ -1030,7 +1065,7 @@ pub fn get_trace(trace_id: &str, days: i64) -> Option<Value> {
             return None;
         }
         let w = span_windows().get(&dir, &sigs, start, now);
-        let mut matching: Vec<&Map<String, Value>> = w.spans.iter().filter(|s| py_str(s.get("trace_id").unwrap_or(&Value::Null)).to_lowercase() == tid).collect();
+        let mut matching: Vec<&Map<String, Value>> = w.spans.iter().map(|s| &**s).filter(|s| py_str(s.get("trace_id").unwrap_or(&Value::Null)).to_lowercase() == tid).collect();
         if matching.is_empty() {
             return None;
         }
@@ -1345,5 +1380,36 @@ mod tests {
         let fresh = cache.get(&dir, &grown, at(base - 60e9), at(base + 300e9));
         assert_eq!(fresh.spans.len(), 6);
         assert!(fresh.index.by_trace.contains_key("0xc"));
+    }
+
+    /// While an agent runs, only the live hour's file changes; the closed
+    /// hours (a week of them on the telemetry page) must not be re-parsed.
+    #[test]
+    fn only_changed_span_files_are_parsed_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let (closed, live) = (tmp.path().join("2023-11-14-21.jsonl"), tmp.path().join("2023-11-14-22.jsonl"));
+        let base = 1_700_000_000e9;
+        let mut live_spans = turn("0xb", None, "openai:gpt", "OK", base, 0.25);
+        let closed_sig = write_spans(&closed, &turn("0xa", None, "openai:gpt", "OK", base - 1800e9, 0.5));
+        let sigs = [closed_sig.clone(), write_spans(&live, &live_spans)].concat();
+        let cache = SpanWindowCache::default();
+        let (start, end) = (at(base - 7200e9), at(base + 300e9));
+        let first = cache.get(&dir, &sigs, start, end);
+        assert_eq!(first.spans.len(), 4);
+
+        live_spans.extend(turn("0xc", None, "openai:gpt", "OK", base + 60e9, 0.125));
+        let grown = [closed_sig.clone(), write_spans(&live, &live_spans)].concat();
+        let next = cache.get(&dir, &grown, start, end);
+        assert_eq!(next.spans.len(), 6);
+        assert!(next.index.by_trace.contains_key("0xc"));
+        let span_of = |w: &SpanWindow, trace: &str| w.spans.iter().find(|s| s.get("trace_id") == Some(&json!(trace))).unwrap().clone();
+        assert!(Arc::ptr_eq(&span_of(&first, "0xa"), &span_of(&next, "0xa")), "the closed file was parsed again");
+        assert!(!Arc::ptr_eq(&span_of(&first, "0xb"), &span_of(&next, "0xb")), "the live file was not re-read");
+
+        // A file that leaves the window is dropped from the cache.
+        let live_only = [write_spans(&live, &live_spans)].concat();
+        let _ = cache.get(&dir, &live_only, at(base - 60e9), end);
+        assert_eq!(cache.0.lock().unwrap().files.len(), 1);
     }
 }
