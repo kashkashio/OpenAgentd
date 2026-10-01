@@ -156,6 +156,110 @@ const HighlightedCode = memo(function HighlightedCode({ html }: { html: string }
   return <span className="min-w-0 flex-1" dangerouslySetInnerHTML={{ __html: html || ' ' }} />
 })
 
+/** Lines per ``LineBlock``: big enough to keep blocks few, small to skip. */
+const LINES_PER_BLOCK = 200
+
+/** Start indexes of the ``LineBlock`` chunks for ``count`` lines. */
+function blockStarts(count: number): number[] {
+  return Array.from({ length: Math.ceil(count / LINES_PER_BLOCK) }, (_, i) => i * LINES_PER_BLOCK)
+}
+
+/** A run of lines the browser may skip while offscreen (``.oa-line-block``). */
+function LineBlock({ lines, lineHeightPx, children }: { lines: number; lineHeightPx: number; children: React.ReactNode }) {
+  return (
+    <div data-line-block className="oa-line-block" style={{ '--oa-line-block-height': `${lines * lineHeightPx}px` } as React.CSSProperties}>
+      {children}
+    </div>
+  )
+}
+
+/** One file line. Memoized: a selection change re-renders only lines it flips. */
+const FileLine = memo(function FileLine({
+  lineNo,
+  html,
+  selected,
+  comment,
+}: {
+  lineNo: number
+  html: string
+  selected: boolean
+  /** Set on the last selected line: shows the add-comment button. */
+  comment: { start: number; end: number; onAdd: (start: number, end: number) => void } | null
+}) {
+  return (
+    <div
+      data-line={lineNo}
+      className={cn(
+        'relative flex w-full items-start gap-3 whitespace-pre-wrap break-words px-3 text-left text-(--color-text-2)',
+        selected && 'bg-(--bg-key)',
+      )}
+    >
+      {comment ? (
+        <Tooltip className="absolute left-[calc(0.75rem+4ch+0.25rem)] top-1 z-10">
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  comment.onAdd(comment.start, comment.end)
+                }}
+                className="flex h-4 w-4 items-center justify-center rounded-xs border border-(--color-border-strong) bg-(--bg-card) text-(--color-text-muted) shadow hover:bg-(--bg-key) hover:text-(--color-text)"
+                aria-label={comment.start === comment.end ? `Add comment for line ${comment.start}` : `Add comment for lines ${comment.start}-${comment.end}`}
+              >
+                <Plus size={13} aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent>{comment.start === comment.end ? `Comment line ${comment.start}` : `Comment lines ${comment.start}-${comment.end}`}</TooltipContent>
+        </Tooltip>
+      ) : null}
+      {/* Mouse handling is delegated to the scroller (``data-select-line``). */}
+      <button type="button" data-select-line={lineNo} className="shrink-0" aria-label={`Select line ${lineNo}`}>
+        <LineGutter value={lineNo} />
+      </button>
+      <HighlightedCode html={html} />
+    </div>
+  )
+})
+
+/**
+ * ``LINES_PER_BLOCK`` lines. Memoized on its slice of the selection, so a
+ * drag re-renders only the blocks whose selected lines change.
+ */
+const FileLineBlock = memo(function FileLineBlock({
+  lines,
+  start,
+  selStart,
+  selEnd,
+  comment,
+}: {
+  lines: string[]
+  start: number
+  /** Selected 1-based line range clipped to this block; 0 when none. */
+  selStart: number
+  selEnd: number
+  comment: { start: number; end: number; onAdd: (start: number, end: number) => void } | null
+}) {
+  const end = Math.min(start + LINES_PER_BLOCK, lines.length)
+  const rows: React.ReactNode[] = []
+  for (let index = start; index < end; index++) {
+    const lineNo = index + 1
+    rows.push(
+      <FileLine
+        key={index}
+        lineNo={lineNo}
+        html={lines[index]}
+        selected={lineNo >= selStart && lineNo <= selEnd}
+        comment={comment && lineNo === comment.end ? comment : null}
+      />,
+    )
+  }
+  // 12px text at leading-relaxed.
+  return <LineBlock lines={end - start} lineHeightPx={19.5}>{rows}</LineBlock>
+})
+
 function findLineElement(node: Node | null): HTMLElement | null {
   let curr: Node | null = node
   while (curr && curr !== document.body) {
@@ -299,64 +403,48 @@ function TextPreview({
   if (content === null) return null
   const selectedStart = selection ? Math.min(selection.anchor, selection.focus) : null
   const selectedEnd = selection ? Math.max(selection.anchor, selection.focus) : null
-  const selectLine = (line: number) => {
+  const gutterLine = (target: EventTarget) => {
+    const button = (target as HTMLElement).closest?.('[data-select-line]')
+    return button ? Number(button.getAttribute('data-select-line')) : null
+  }
+  // Delegated from every line's gutter button, so lines carry no handlers.
+  const handleMouseDown = (event: React.MouseEvent) => {
+    const line = gutterLine(event.target)
+    if (line === null) return
+    event.preventDefault()
     setSelection({ anchor: line, focus: line })
     setDragging(true)
   }
-  const extendSelection = (line: number) => {
+  const handleMouseOver = (event: React.MouseEvent) => {
     if (!dragging) return
-    setSelection((prev) => prev ? { ...prev, focus: line } : prev)
+    const line = gutterLine(event.target)
+    if (line !== null) setSelection((prev) => (prev && prev.focus !== line ? { ...prev, focus: line } : prev))
   }
+  const comment = selectedStart !== null && selectedEnd !== null
+    ? { start: selectedStart, end: selectedEnd, onAdd: (start: number, end: number) => onAddComment?.(file.path, start, end) }
+    : null
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col" onMouseLeave={() => setDragging(false)} onMouseUp={() => setDragging(false)}>
-      <div className="min-h-0 flex-1 overflow-auto overscroll-contain touch-pan-y font-mono text-xs leading-relaxed" data-scroll-capture="true" data-select-container tabIndex={-1}>
-        {highlightedLines.map((lineHtml, index) => {
-          const lineNo = index + 1
-          const selected = selectedStart !== null && selectedEnd !== null && lineNo >= selectedStart && lineNo <= selectedEnd
+      <div
+        className="min-h-0 flex-1 overflow-auto overscroll-contain touch-pan-y font-mono text-xs leading-relaxed"
+        data-scroll-capture="true"
+        data-select-container
+        tabIndex={-1}
+        onMouseDown={handleMouseDown}
+        onMouseOver={handleMouseOver}
+      >
+        {blockStarts(highlightedLines.length).map((start) => {
+          const end = start + LINES_PER_BLOCK
+          const overlaps = selectedStart !== null && selectedEnd !== null && selectedStart <= end && selectedEnd > start
           return (
-            <div
-              key={index}
-              data-line={lineNo}
-              className={cn(
-                'relative flex w-full items-start gap-3 whitespace-pre-wrap break-words px-3 text-left text-(--color-text-2)',
-                selected && 'bg-(--bg-key)',
-              )}
-            >
-              {selected && lineNo === selectedEnd && selectedStart !== null ? (
-                <Tooltip className="absolute left-[calc(0.75rem+4ch+0.25rem)] top-1 z-10">
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onAddComment?.(file.path, selectedStart, selectedEnd)
-                        }}
-                        className="flex h-4 w-4 items-center justify-center rounded-xs border border-(--color-border-strong) bg-(--bg-card) text-(--color-text-muted) shadow hover:bg-(--bg-key) hover:text-(--color-text)"
-                        aria-label={selectedStart === selectedEnd ? `Add comment for line ${selectedStart}` : `Add comment for lines ${selectedStart}-${selectedEnd}`}
-                      >
-                        <Plus size={13} aria-hidden="true" />
-                      </button>
-                    }
-                  />
-                  <TooltipContent>{selectedStart === selectedEnd ? `Comment line ${selectedStart}` : `Comment lines ${selectedStart}-${selectedEnd}`}</TooltipContent>
-                </Tooltip>
-              ) : null}
-              <button
-                type="button"
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  selectLine(lineNo)
-                }}
-                onMouseEnter={() => extendSelection(lineNo)}
-                className="shrink-0"
-                aria-label={`Select line ${lineNo}`}
-              >
-                <LineGutter value={lineNo} />
-              </button>
-              <HighlightedCode html={lineHtml} />
-            </div>
+            <FileLineBlock
+              key={start}
+              lines={highlightedLines}
+              start={start}
+              selStart={overlaps ? Math.max(selectedStart, start + 1) : 0}
+              selEnd={overlaps ? Math.min(selectedEnd, end) : 0}
+              comment={comment && comment.end > start && comment.end <= end ? comment : null}
+            />
           )
         })}
       </div>

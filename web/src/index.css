@@ -749,6 +749,16 @@ html[data-mobile-shell][data-vp-anim] .settings-modal-shell {
   overflow-anchor: none;
 }
 
+/* Long line lists (file viewer, diffs) render in blocks of lines. Offscreen
+ * blocks skip layout and paint: 8k rows lay out in ~10 ms instead of
+ * ~120 ms in Chrome. ``auto`` keeps each block's real size once rendered;
+ * the variable is only the first estimate. Find-in-page and copy still
+ * reach skipped content. */
+.oa-line-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--oa-line-block-height, 4000px);
+}
+
 /* From md up the timeline scrubber (AgentView/TimelineScrubber) is the
  * transcript's scrollbar; a native one would sit under the same edge. */
 @media (width >= 48rem) {
