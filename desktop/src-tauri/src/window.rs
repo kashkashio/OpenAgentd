@@ -150,8 +150,9 @@ pub fn emit_frontend_command(app: &AppHandle, command: &str) {
     });
 }
 
-/// The Vite dev server URL a debug build loads its UI from. Its origin is the
-/// only remote one granted IPC (`capabilities-dev/vite.json`).
+/// The Vite dev server URL a debug build loads its UI from. It must stay under
+/// `build.devUrl`: Tauri counts URLs there as the app's own origin, which is
+/// what grants the dev window IPC without any remote capability.
 pub fn frontend_dev_url(app_id: &str, window_label: &str) -> String {
     format!("http://localhost:5173/?oa-app-id={app_id}&oa-window-id={window_label}")
 }
@@ -462,29 +463,26 @@ mod tests {
         assert!(!script.contains(r#"value: "main";"#));
     }
 
-    fn capability(json: &str) -> serde_json::Value {
-        serde_json::from_str(json).expect("capability file is JSON")
+    // Release windows load the bundled UI (`frontend_webview_url`) and debug
+    // windows a URL under `devUrl`; Tauri counts both as the app's own
+    // origin, so no other origin needs IPC. Each remote URL pattern is also
+    // compiled once per allowed command at launch: twelve of them cost
+    // ~380 ms.
+    #[test]
+    fn capability_grants_ipc_to_the_app_origin_only() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert!(capability.get("remote").is_none(), "remote origins granted IPC: {}", capability["remote"]);
     }
 
-    // Release windows load the bundled UI (`frontend_webview_url`), so no
-    // other origin needs IPC. Each remote URL pattern is also compiled once
-    // per allowed command at launch: twelve of them cost ~380 ms.
     #[test]
-    fn release_capability_grants_ipc_to_the_bundled_ui_only() {
-        let release = capability(include_str!("../capabilities/default.json"));
-        assert!(release.get("remote").is_none(), "remote origins in the release capability: {}", release["remote"]);
-    }
-
-    // Debug windows load the UI from Vite instead, a remote origin; it gets
-    // the same permissions and nothing else does.
-    #[test]
-    fn dev_server_capability_mirrors_the_release_one_for_vite_only() {
-        let release = capability(include_str!("../capabilities/default.json"));
-        let dev = capability(include_str!("../capabilities-dev/vite.json"));
-        assert_eq!(dev["windows"], release["windows"]);
-        assert_eq!(dev["permissions"], release["permissions"]);
-        assert_eq!(dev["local"], serde_json::json!(false));
-        assert_eq!(dev["remote"]["urls"], serde_json::json!(["http://localhost:5173"]));
-        assert!(frontend_dev_url("app", "main").starts_with("http://localhost:5173/"));
+    fn dev_window_url_stays_under_dev_url() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let dev_url = config["build"]["devUrl"].as_str().expect("build.devUrl");
+        assert!(
+            frontend_dev_url("app", "main").starts_with(&format!("{}/", dev_url.trim_end_matches('/'))),
+            "{} is outside devUrl {dev_url}, so the dev window would get no IPC",
+            frontend_dev_url("app", "main")
+        );
     }
 }

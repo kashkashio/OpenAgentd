@@ -609,14 +609,6 @@ fn main() {
         ])
         .build();
 
-    // Debug builds load the UI from Vite (`window::frontend_dev_url`), a
-    // remote origin that needs its own grant; release builds load the
-    // bundled UI and grant no other origin.
-    #[cfg(debug_assertions)]
-    let context = tauri::generate_context!(capabilities = ["capabilities-dev/vite.json"]);
-    #[cfg(not(debug_assertions))]
-    let context = tauri::generate_context!();
-
     tauri::Builder::default()
         // This must be first: on Windows/Linux it passes a second process's
         // deep-link argv to the deep-link plugin before showing the window.
@@ -713,7 +705,7 @@ fn main() {
             tauri::async_runtime::spawn(watchdog::run(watchdog_handle));
             Ok(())
         })
-        .build(context)
+        .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| match event {
             RunEvent::WindowEvent {
