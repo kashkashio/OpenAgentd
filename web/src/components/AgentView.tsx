@@ -81,6 +81,9 @@ function contentTop(root: HTMLElement, el: HTMLElement): number {
 }
 
 function blockElement(root: HTMLElement, id: string): HTMLElement | undefined {
+  // Block ids are uuids/hex, safe inside a quoted attribute selector; anything
+  // else takes the scan instead of needing CSS.escape.
+  if (/^[\w-]+$/.test(id)) return root.querySelector<HTMLElement>(`[data-block-id="${id}"]`) ?? undefined
   return Array.from(root.querySelectorAll<HTMLElement>('[data-block-id]')).find((el) => el.dataset.blockId === id)
 }
 
