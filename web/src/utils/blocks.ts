@@ -505,19 +505,30 @@ export function startCompaction(blocks: ContentBlock[]): ContentBlock[] {
 /** summarization_content — append streaming summary text onto the most
  *  recent ``compacting`` block. If no such block exists (events out of
  *  order), drop the chunk silently. */
+/**
+ * Append a streamed summary chunk to the in-flight compaction divider, in
+ * place; ``false`` when there is none. It runs per summary token against the
+ * confirmed ``blocks``, which compaction only ever meets at their longest, so
+ * like ``appendToolOutputInto`` it scans the plain array and replaces one block.
+ */
+export function appendCompactionContentInto(blocks: ContentBlock[], text: string): boolean {
+  const view = readBlocks(blocks)
+  for (let i = view.length - 1; i >= 0; i--) {
+    const block = view[i]
+    if (getCompactionState(block) === 'compacting') {
+      blocks[i] = { ...block, content: block.content + text }
+      return true
+    }
+  }
+  return false
+}
+
 export function appendCompactionContent(
   blocks: ContentBlock[],
   text: string,
 ): ContentBlock[] {
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i]
-    if (getCompactionState(block) === 'compacting') {
-      const result = [...blocks]
-      result[i] = { ...block, content: block.content + text }
-      return result
-    }
-  }
-  return blocks
+  const next = [...blocks]
+  return appendCompactionContentInto(next, text) ? next : blocks
 }
 
 /** summarization_end — flip the trailing ``compacting`` block to

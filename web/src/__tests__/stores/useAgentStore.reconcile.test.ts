@@ -102,6 +102,69 @@ beforeEach(() => {
 })
 
 describe('reconcileTurnTail', () => {
+  // Performance regression: both paths rebuilt the stream's session-sized
+  // ``blocks`` by spreading or filtering the Immer draft, which drafts every
+  // block (~1 ms per 2000). Drafts are counted through ``Proxy.revocable``.
+  function countDrafts<T>(fn: () => Promise<T>): Promise<{ drafts: number; result: T }> {
+    const real = Proxy.revocable
+    let drafts = 0
+    Proxy.revocable = ((target: object, handler: ProxyHandler<object>) => {
+      drafts += 1
+      return real(target, handler)
+    }) as typeof Proxy.revocable
+    return fn().then(
+      (result) => { Proxy.revocable = real; return { drafts, result } },
+      (error) => { Proxy.revocable = real; throw error },
+    )
+  }
+
+  function padHistory(count: number) {
+    useAgentStore.setState((state) => {
+      const stream = state.agentStreams.lead
+      const padding = Array.from({ length: count }, (_, i) => ({
+        id: `pad-${i}`,
+        type: 'text' as const,
+        content: `confirmed ${i}`,
+        timestamp: new Date('2026-07-01T00:00:02Z'),
+      }))
+      stream.blocks = [...stream.blocks, ...padding]
+      return state
+    })
+  }
+
+  it('adopts a delta without drafting the confirmed history', async () => {
+    await seedLoadedSession()
+    padHistory(2000)
+
+    const { drafts } = await countDrafts(() => useAgentStore.getState().reconcileTurnTail('lead-sess'))
+
+    const blocks = useAgentStore.getState().agentStreams.lead.blocks
+    expect(blocks.at(-1)?.content).toBe('canonical')
+    expect(blocks).toHaveLength(2 + 2000 + 1)
+    expect(drafts).toBeLessThan(100)
+  })
+
+  it('prepends an older page without drafting the loaded history', async () => {
+    await seedLoadedSession()
+    padHistory(2000)
+    mockSessionHistory.mockImplementation(() =>
+      Promise.resolve(fullHistory({
+        lead: leadSession({
+          messages: [{ id: 'm0', role: 'user', content: 'older', created_at: '2026-06-30T00:00:00Z' }],
+        }),
+        has_more: false,
+        next_cursor: null,
+      })),
+    )
+
+    const { drafts } = await countDrafts(() => useAgentStore.getState().loadOlderMessages())
+
+    const blocks = useAgentStore.getState().agentStreams.lead.blocks
+    expect(blocks[0]?.content).toBe('older')
+    expect(blocks).toHaveLength(1 + 2 + 2000)
+    expect(drafts).toBeLessThan(100)
+  })
+
   it('fetches only the delta using the synced watermark', async () => {
     await seedLoadedSession()
     expect(useAgentStore.getState()._syncedThrough).toBe('m2')

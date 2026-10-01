@@ -7,7 +7,7 @@ import {
   generateBlockId,
   readBlocks,
   startCompaction,
-  appendCompactionContent,
+  appendCompactionContentInto,
   endCompaction,
 } from '@/utils/blocks'
 import { createDefaultAgentStream } from './defaults'
@@ -931,7 +931,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
         set((draft) => {
           ensureAgent(draft, agent)
           const stream = draft.agentStreams[agent]
-          stream.blocks = appendCompactionContent(stream.blocks, text)
+          appendCompactionContentInto(stream.blocks, text)
         })
         break
       }

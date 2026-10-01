@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand'
 import { agentStatus, sessionHistory, sessionHistorySince, updateSessionInteractionMode } from '@/api/client'
 import { applyOrphanToolResults, isPromptMessage, parseAgentBlocks, sumUsageFromMessages } from '@/utils/messages'
 import type { OrphanToolResult } from '@/utils/messages'
+import { readBlocks } from '@/utils/blocks'
 import { createDefaultAgentStream } from './defaults'
 import { applyRevertBoundary, revokeBlobUrlsFromBlocks } from './helpers'
 import { toPendingQuestion } from './sse-reducer'
@@ -51,7 +52,9 @@ function prependOlderPage(draft: AgentStore, history: SessionHistoryResponse, re
     // tool result whose call row is in this older page.
     const orphans = { ...(stream._orphanToolResults ?? {}) }
     const older = applyOrphanToolResults(parseAgentBlocks(messagesBeforeTime(messages, revertTime), orphans), orphans)
-    stream.blocks = [...older, ...stream.blocks]
+    // Spread the plain array, not the draft: spreading a draft drafts every
+    // loaded block. Nothing in this recipe writes to those blocks afterwards.
+    stream.blocks = [...older, ...readBlocks(stream.blocks)]
     stream._orphanToolResults = orphans
   }
   const lead = draft.leadName ? draft.agentStreams[draft.leadName] : undefined
@@ -1081,9 +1084,12 @@ export const createSessionSlice: StateCreator<
         const stream = draft.agentStreams[name]
         if (!stream) return
         const unsynced = new Set(stream._unsyncedBlockIds ?? [])
+        // Read the plain array: filtering or spreading the draft would draft
+        // every confirmed block. The recipe never writes to them afterwards.
+        const loaded = readBlocks(stream.blocks)
         const confirmedRaw = unsynced.size > 0
-          ? stream.blocks.filter((block) => !unsynced.has(block.id) || block.type === 'provider_status')
-          : stream.blocks
+          ? loaded.filter((block) => !unsynced.has(block.id) || block.type === 'provider_status')
+          : loaded
         // The delta can carry a tool result whose assistant row predates the
         // watermark (a mid-turn loadSession adopted it before the tool
         // finished). Attach such orphans to the already-confirmed card, or it

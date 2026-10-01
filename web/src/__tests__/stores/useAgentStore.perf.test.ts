@@ -124,4 +124,29 @@ describe("streamed deltas stay off the rest of the session", () => {
     expect(confirmed[confirmed.length - 1]).toMatchObject({ toolDone: true, toolResult: "exit 0" })
     expect(drafts).toBeLessThan(20)
   })
+
+  it("streams a compaction summary without drafting the session", () => {
+    const state = () => useAgentStore.getState()
+    state()._handleSSEEvent("summarization_start", { agent: "lead" })
+    const drafts = countDrafts(() => {
+      state()._handleSSEEvent("summarization_content", { agent: "lead", text: "Summary so far" })
+    })
+    const confirmed = state().agentStreams.lead.blocks
+    expect(confirmed[confirmed.length - 1]).toMatchObject({ type: "compaction", content: "Summary so far" })
+    expect(drafts).toBeLessThan(20)
+  })
+})
+
+describe("ending a turn stays off the confirmed history", () => {
+  it("commits the live turn without drafting every confirmed block", () => {
+    const drafts = countDrafts(() => {
+      useAgentStore.getState()._handleSSEEvent("done", {})
+    })
+    const lead = useAgentStore.getState().agentStreams.lead
+    expect(lead.blocks).toHaveLength(CONFIRMED + LIVE)
+    expect(lead.blocks[lead.blocks.length - 1].id).toBe("live-tail")
+    expect(lead.currentBlocks).toHaveLength(0)
+    // Every live block is stamped (one draft each); the history is not.
+    expect(drafts).toBeLessThan(LIVE + 50)
+  })
 })

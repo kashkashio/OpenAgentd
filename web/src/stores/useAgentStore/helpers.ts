@@ -92,8 +92,14 @@ export function markRestartPending(stream: AgentStream): void {
  */
 export function appendLocalBlocks(stream: AgentStream, blocks: ContentBlock[]) {
   if (blocks.length === 0) return
-  stream.blocks = [...stream.blocks, ...blocks]
-  stream._unsyncedBlockIds = [...(stream._unsyncedBlockIds ?? []), ...blocks.map((b) => b.id)]
+  // Pushed in place: ``stream`` is an Immer draft, and spreading its
+  // session-sized ``blocks`` would draft every confirmed block just to add a
+  // turn's worth at the end.
+  const unsynced = (stream._unsyncedBlockIds ??= [])
+  for (const block of blocks) {
+    stream.blocks.push(block)
+    unsynced.push(block.id)
+  }
 }
 
 /**
