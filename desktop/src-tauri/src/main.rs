@@ -682,9 +682,7 @@ fn main() {
                 }
             });
             install_desktop_menus(app)?;
-            #[cfg(target_os = "macos")]
-            tray_popup::create_tray_popup(app)?;
-            log::info!("startup: menus and tray built at_ms={}", launch_ms());
+            log::info!("startup: menus built at_ms={}", launch_ms());
             match desktop_log_path(app.handle()) {
                 Ok(path) => log::info!("desktop log path={}", path.display()),
                 Err(e) => log::warn!("desktop log path unavailable: {e:#}"),

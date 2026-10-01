@@ -307,6 +307,9 @@ pub async fn build_app_window(
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 log::info!("startup: page loaded window={} at_ms={}", webview.label(), crate::launch_ms());
+                if webview.label() == MAIN_WINDOW {
+                    crate::tray_popup::prewarm_tray_popup(webview.app_handle());
+                }
             }
         });
     let builder = configure_window_chrome(builder);
