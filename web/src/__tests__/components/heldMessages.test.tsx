@@ -234,6 +234,52 @@ describe('stopTurn', () => {
     expect(composer.added).toEqual([notes])
     expect(held()).toEqual(['elsewhere'])
   })
+
+  // Stop calls off a steer the agent has not read yet, as it does a held
+  // message, instead of leaving it in history unanswered. The cancel goes
+  // first: the interrupt would release unread steers into the transcript.
+  it('calls off unread steers before stopping and returns them ahead of held messages', async () => {
+    const order: string[] = []
+    const removePendingMessage = mock(async (...args: unknown[]) => {
+      order.push(`cancel ${String(args[0])}`)
+      return 'cancelled' as const
+    })
+    const stopAgent = mock(async () => { order.push('stop') })
+    useAgentStore.setState({
+      stopAgent,
+      removePendingMessage,
+      _pendingMessages: [
+        { id: 'q2', sessionId: 's1', content: 'second steer', submittedAt: 2 },
+        { id: 'q1', sessionId: 's1', content: 'first steer', submittedAt: 1 },
+        { id: 'q-other', sessionId: 's2', content: 'elsewhere', submittedAt: 3 },
+      ],
+    })
+    useHeldMessagesStore.getState().hold({ sessionId: 's1', content: 'then this' })
+    const composer = fakeComposer()
+    composer.ref.current.appendValue = (text) => { order.push(`restore ${text}`) }
+
+    await stopTurn(composer.ref.current)
+
+    expect(order).toEqual(['cancel q1', 'cancel q2', 'restore first steer\n\nsecond steer\n\nthen this', 'stop'])
+    expect(held()).toEqual([])
+  })
+
+  it('leaves a steer the agent read during the stop where it is', async () => {
+    const removePendingMessage = mock(async () => 'sent' as const)
+    const stopAgent = mock(async () => {})
+    useAgentStore.setState({
+      stopAgent,
+      removePendingMessage,
+      _pendingMessages: [{ id: 'q1', sessionId: 's1', content: 'too late', submittedAt: 1 }],
+    })
+    useHeldMessagesStore.getState().hold({ sessionId: 's1', content: 'then this' })
+    const composer = fakeComposer()
+
+    await stopTurn(composer.ref.current)
+
+    expect(composer.appended).toEqual([{ text: 'then this', paragraph: true }])
+    expect(stopAgent).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('deliverFromComposer', () => {

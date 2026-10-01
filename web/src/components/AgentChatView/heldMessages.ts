@@ -59,13 +59,18 @@ export async function callOffSteers(sessionId: string): Promise<Returned[]> {
 }
 
 /**
- * Stop the running turn. Stopping also calls off what was lined up behind it,
- * so held messages return to the composer rather than starting a turn the
- * moment this one ends.
+ * Stop the running turn. Stopping also calls off what was lined up behind it:
+ * unread steers, then held messages (the order they would have gone out in),
+ * return to the composer rather than reaching the agent after the stop.
  */
-export function stopTurn(composer: InputComposerHandle | null): Promise<void> {
+export async function stopTurn(composer: InputComposerHandle | null): Promise<void> {
   const { sessionId, stopAgent } = useAgentStore.getState()
-  if (sessionId) returnToComposer(composer, useHeldMessagesStore.getState().takeAll(sessionId))
+  if (!sessionId) return stopAgent()
+  // Taken at once, so a turn that ends during the cancels cannot send them.
+  const held = useHeldMessagesStore.getState().takeAll(sessionId)
+  // Before the interrupt, which would release unread steers into history.
+  const steers = await callOffSteers(sessionId)
+  returnToComposer(composer, [...steers, ...held])
   return stopAgent()
 }
 

@@ -8,7 +8,7 @@ import { useHeldMessagesStore } from '@/stores/useHeldMessagesStore'
 const redo = mock(async (): Promise<AgentCommandResponse | undefined> => undefined)
 const stopAgent = mock(async () => {})
 mock.module('@/stores/useAgentStore', () => ({
-  useAgentStore: { getState: () => ({ redoAgent: redo, redoAllAgent: redo, sessionId: 'session-1', stopAgent }) },
+  useAgentStore: { getState: () => ({ redoAgent: redo, redoAllAgent: redo, sessionId: 'session-1', stopAgent, _pendingMessages: [] }) },
 }))
 mock.module('lucide-react', () => new Proxy({}, { get: () => () => null }))
 
