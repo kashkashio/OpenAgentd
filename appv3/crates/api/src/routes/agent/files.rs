@@ -130,12 +130,18 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_listed_paths(base: &Path) -> Option<Vec<String>> {
-    let top = git_stdout(base, &["rev-parse", "--show-toplevel"])?;
+    // Three independent git spawns (~10 ms each): run them side by side.
+    let (top, tracked, untracked) = std::thread::scope(|s| {
+        let tracked = s.spawn(|| git_stdout(base, &["ls-files", "-z", "--cached"]));
+        let untracked = s.spawn(|| git_stdout(base, &["ls-files", "-z", "--others", "--exclude-standard"]));
+        let top = git_stdout(base, &["rev-parse", "--show-toplevel"]);
+        (top, tracked.join().ok().flatten(), untracked.join().ok().flatten())
+    });
+    let top = top?;
     if resolve(Path::new(top.trim())) != resolve(base) {
         return None;
     }
-    let tracked = git_stdout(base, &["ls-files", "-z", "--cached"])?;
-    let untracked = git_stdout(base, &["ls-files", "-z", "--others", "--exclude-standard"])?;
+    let (tracked, untracked) = (tracked?, untracked?);
     let mut paths: BTreeSet<String> = tracked.split('\0').filter(|r| !r.is_empty()).map(String::from).collect();
     for rel in untracked.split('\0').filter(|r| !r.is_empty()) {
         let parts: Vec<&str> = rel.trim_end_matches('/').split('/').collect();
@@ -998,5 +1004,26 @@ mod tests {
         assert_eq!(v["is_git_repo"], true);
         assert_eq!(v["untracked"], json!(["b.txt"]));
         assert!(v["diff"].as_str().unwrap().contains("b.txt"));
+    }
+
+    fn listed(root: &Path) -> Vec<String> {
+        list_files(root).0.iter().map(|f| f["path"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn list_files_merges_tracked_and_untracked_in_git_order() {
+        let d = repo_on_main();
+        std::fs::create_dir_all(d.path().join("src/deep")).unwrap();
+        std::fs::create_dir_all(d.path().join("node_modules/x")).unwrap();
+        std::fs::write(d.path().join("src/deep/t.rs"), "t").unwrap();
+        commit(d.path(), "src/deep/t.rs");
+        std::fs::write(d.path().join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(d.path().join("b.txt"), "b").unwrap();
+        std::fs::write(d.path().join("skip.log"), "l").unwrap();
+        std::fs::write(d.path().join("node_modules/x/i.js"), "i").unwrap();
+        assert_eq!(listed(d.path()), [".gitignore", "a.txt", "b.txt", "src/deep/t.rs"]);
+        // A subdirectory is not the repo top level: walked, not git-listed.
+        std::fs::write(d.path().join("src/u.rs"), "u").unwrap();
+        assert_eq!(listed(&d.path().join("src")), ["u.rs", "deep/t.rs"]);
     }
 }
