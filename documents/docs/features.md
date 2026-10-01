@@ -81,6 +81,22 @@ run from the terminal (the native Rust binary since v3.0.0).
   functions, options, PATH) once and reuses them, instead of sourcing
   `.zshrc`/`.bashrc` on every call (about 130 ms saved per call; rebuilt when
   an rc file changes; `OPENAGENTD_SHELL_SNAPSHOT=false` restores v2 behaviour).
+- **Faster reopen, streaming and desktop launch** `[v3.4.0]`:
+  - Reopening a long session with member agents loads 3 history pages
+    instead of 11 (1.7 MB instead of 13.3 MB), and member rows are no longer
+    repeated.
+  - While a reply streams, only the live turn re-renders, and a long answer
+    re-parses only its unfinished tail (0.5 ms per update at 100k characters,
+    was 8 ms).
+  - Large files, diffs, model lists, trace waterfalls and commit patches open
+    and scroll without stalls.
+  - The desktop app's bundled backend is ready ~220 ms after launch (was
+    ~880 ms). A saved server that is offline costs one 2 s check instead of
+    up to 18 s, and in dark mode a new window opens dark instead of
+    flashing light.
+  - An idle server uses almost no CPU (under 10 ms a minute, was 60 ms).
+  - `grep` keeps the matches it found when it times out. `read` caps
+    directory listings and reports binary files instead of dumping them.
 - **Plugins page and live settings refresh (v3)** `[v3.0.0]` — Settings →
   Plugins lists each plugin with its provider, tool hooks and load errors,
   and flags v2 Python plugins that have no TypeScript port (v3 does not run
@@ -542,7 +558,7 @@ run from the terminal (the native Rust binary since v3.0.0).
   - A finished turn lists the files its `patch` calls changed, with line
     counts; each opens its git diff in the review dock. Since `[v3.1.0]` the list starts
     closed behind its "N files changed" header.
-- **The composer while the agent works** `[v3.0.0, updated v3.3.2]`:
+- **The composer while the agent works** `[v3.0.0, updated v3.4.0]`:
   - Scrolled away from the live end, a "↓ N new" chip rides on the
     composer, wherever it is dragged, and counts what arrived since.
   - While a turn runs, Send splits in two. The pill steers: the agent reads
@@ -554,11 +570,11 @@ run from the terminal (the native Rust binary since v3.0.0).
   - Queued messages reach the agent in the order they go out: steers first,
     then held messages, one turn each. A steer is read before the running
     turn's next step, or starts the next turn if that turn makes no further
-    step. Its `@` mentions arrive with it `[v3.3.2]`. A steer sent while a
+    step. Its `@` mentions arrive with it `[v3.4.0]`. A steer sent while a
     question or plan review waits replaces it and starts a new turn; a held
     message waits until the question is answered or dismissed.
   - Stop, or a turn that fails, returns what the agent has not read yet to
-    the composer: unread steers, then held messages `[v3.3.2]`. A steer the
+    the composer: unread steers, then held messages `[v3.4.0]`. A steer the
     agent read first stays in the transcript. A steer with files sent from
     another window stays with the agent and goes out ahead of the next
     message.
@@ -1294,7 +1310,7 @@ MCP.
   than guessing on a decision that would cost real work to undo. Each question
   carries up to 5 options with optional descriptions, single- or multi-select,
   a "Recommended" badge on the agent's preferred choice, and a free-text
-  answer. **Type your own answer** is on every question `[v3.3.2]`; the agent
+  answer. **Type your own answer** is on every question `[v3.4.0]`; the agent
   can no longer turn it off. Multi-question cards are stepped through one at a time —
   **Back** replaces **Dismiss** past the first question — and the whole set is
   submitted together at the end. The card renders **inline in the transcript**, in place of
@@ -1657,7 +1673,7 @@ Desktop is primary. CLI / server is the developer path.
   sign with your Apple Development identity if you have one, else an
   "OpenAgentd Local Signer" identity kept in its own keychain
   (`openagentd-signing.keychain-db`), so signing never asks for a password
-  `[v3.3.2]`. Earlier builds kept that identity in the login keychain, where
+  `[v3.4.0]`. Earlier builds kept that identity in the login keychain, where
   codesign asked to use its key on every install or update.
 - **Linux desktop** `[since v1.0]` — AppImage (`chmod +x`) or `.deb` for
   Debian/Ubuntu.
