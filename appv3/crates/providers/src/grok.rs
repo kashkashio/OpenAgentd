@@ -193,7 +193,11 @@ async fn load_access_token() -> Result<String, String> {
 }
 
 pub fn build(model: &str, model_kwargs: Kwargs) -> ProviderResult<Arc<dyn LlmProvider>> {
-    let token = block_on_thread(load_access_token()).map_err(ProviderError::Invalid)?;
+    // A valid token is a file read; only a refresh needs the async helper.
+    let token = match GrokAuth::load(&oauth_path()) {
+        Some(auth) if !auth.is_expired() => auth.access_token,
+        _ => block_on_thread(load_access_token()).map_err(ProviderError::Invalid)?,
+    };
     let inner = make_inner(model, &token, &model_kwargs);
     tracing::debug!("grok_build_provider model={}", model);
     Ok(Arc::new(GrokProvider { model: model.into(), kw: model_kwargs, provider_name: Some("grok".into()), inner: RwLock::new((token, inner)) }))

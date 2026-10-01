@@ -337,12 +337,24 @@ pub fn save_json_obj(path: &std::path::Path, data: &Map<String, Value>) -> std::
 
 /// Run a future to completion on a private runtime thread — used where v2
 /// performs synchronous `httpx` calls from sync code (e.g. provider build).
+/// Run `fut` to completion from sync code (provider builders) on a helper
+/// thread with its own runtime, since the caller may already be inside one.
+/// On a multi-thread runtime the wait uses `block_in_place`, so the caller's
+/// worker hands its other tasks to another thread instead of stalling them.
+/// Pass lazy futures (`async fn` calls): a timer created eagerly here binds to
+/// the caller's runtime.
 pub fn block_on_thread<F, T>(fut: F) -> T
 where
     F: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    std::thread::spawn(move || tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(fut)).join().expect("block_on_thread panicked")
+    let run = move || {
+        std::thread::spawn(move || tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(fut)).join().expect("block_on_thread panicked")
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(run),
+        _ => run(),
+    }
 }
 
 /// Python truthiness of a JSON value.
@@ -423,5 +435,52 @@ mod tests {
         assert_eq!(parse_iso_ts(Some(&json!("2026-01-01T00:00:00Z"))), Some(1767225600));
         assert_eq!(parse_iso_ts(Some(&json!("2026-01-01T00:00:00.123456+00:00"))), Some(1767225600));
         assert_eq!(parse_iso_ts(Some(&json!("nope"))), None);
+    }
+
+    async fn answer() -> u32 {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        42
+    }
+
+    #[test]
+    fn block_on_thread_works_outside_any_runtime() {
+        assert_eq!(block_on_thread(answer()), 42);
+    }
+
+    #[test]
+    fn block_on_thread_works_inside_a_current_thread_runtime() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        assert_eq!(rt.block_on(async { block_on_thread(answer()) }), 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn block_on_thread_works_on_workers_and_blocking_threads() {
+        assert_eq!(tokio::spawn(async { block_on_thread(answer()) }).await.unwrap(), 42);
+        assert_eq!(tokio::task::spawn_blocking(|| block_on_thread(answer())).await.unwrap(), 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn waiting_on_block_on_thread_does_not_stall_the_worker() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let ticks = std::sync::Arc::new(AtomicUsize::new(0));
+        let t = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                t.fetch_add(1, SeqCst);
+            }
+        });
+        let t = ticks.clone();
+        let during = tokio::spawn(async move {
+            let before = t.load(SeqCst);
+            // Lazy (async block): an eagerly built Sleep binds to this
+            // runtime's timer, which the blocked worker could never fire.
+            block_on_thread(async { tokio::time::sleep(std::time::Duration::from_millis(150)).await });
+            t.load(SeqCst) - before
+        })
+        .await
+        .unwrap();
+        ticker.abort();
+        assert!(during >= 3, "other tasks on the worker advanced only {during} times during the wait");
     }
 }

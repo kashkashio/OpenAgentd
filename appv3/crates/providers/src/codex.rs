@@ -189,7 +189,11 @@ pub async fn load_token() -> Result<(String, Option<String>), String> {
 
 /// `CodexProvider(model, model_kwargs)`.
 pub fn build(model: &str, model_kwargs: Kwargs) -> ProviderResult<Arc<dyn LlmProvider>> {
-    let (token, account_id) = block_on_thread(load_token()).map_err(ProviderError::Invalid)?;
+    // A valid token is a file read; only a refresh needs the async helper.
+    let (token, account_id) = match CodexAuth::load(&oauth_path()) {
+        Some(auth) if !auth.is_expired() => (auth.access_token, auth.account_id),
+        _ => block_on_thread(load_token()).map_err(ProviderError::Invalid)?,
+    };
     let p = provider_for(model, &token, account_id, model_kwargs);
     tracing::debug!("codex_provider model={}", model);
     Ok(Arc::new(p))
