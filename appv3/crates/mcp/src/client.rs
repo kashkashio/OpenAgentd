@@ -75,11 +75,13 @@ struct PendingInner {
 
 type Pending = Arc<Mutex<PendingInner>>;
 
-fn rpc_result(msg: &Value) -> Result<Value, McpError> {
+/// Takes the message by value so the result moves out: tool results can carry
+/// multi-MB base64 images, and cloning them doubled every response.
+fn rpc_result(mut msg: Value) -> Result<Value, McpError> {
     if let Some(err) = msg.get("error") {
         return Err(McpError::Rpc(err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error").to_string()));
     }
-    Ok(msg.get("result").cloned().unwrap_or(json!({})))
+    Ok(msg.as_object_mut().and_then(|m| m.remove("result")).unwrap_or(json!({})))
 }
 
 // ── stdio ───────────────────────────────────────────────────────────────────
@@ -131,8 +133,9 @@ impl Stdio {
                 };
                 match (msg.get("id"), msg.get("method").and_then(|m| m.as_str())) {
                     (Some(id), None) => {
-                        if let Some(tx) = id.as_i64().and_then(|id| p2.lock().unwrap().map.remove(&id)) {
-                            let _ = tx.send(rpc_result(&msg));
+                        let tx = id.as_i64().and_then(|id| p2.lock().unwrap().map.remove(&id));
+                        if let Some(tx) = tx {
+                            let _ = tx.send(rpc_result(msg));
                         }
                     }
                     // Server → client request: answer ping, reject the rest.
@@ -453,7 +456,7 @@ impl Http {
                 self.handle_server_message(&v);
                 return Err(rpc_err("Connection closed"));
             }
-            return rpc_result(&v).map(Some);
+            return rpc_result(v).map(Some);
         }
         if ctype.starts_with("text/event-stream") {
             let mut outcome = self.read_sse(resp, true).await;
@@ -523,7 +526,7 @@ impl Http {
                 if msg.get("method").is_some() {
                     self.handle_server_message(&msg);
                 } else if for_request && msg.get("id").is_some() {
-                    return SseOutcome::Done(rpc_result(&msg));
+                    return SseOutcome::Done(rpc_result(msg));
                 }
             }
         }
