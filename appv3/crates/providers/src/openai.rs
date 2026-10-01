@@ -526,8 +526,7 @@ pub fn parse_stream_chunk_ext(data: &Value, copilot_usage: bool) -> Option<ChatC
     let created = data.get("created").and_then(|v| v.as_i64()).unwrap_or(0);
     let model = data.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let usage = data.get("usage").filter(|u| u.is_object()).map(|u| usage_from_openai_ext(u, copilot_usage));
-    let choices = data.get("choices").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-    let Some(choice) = choices.first() else {
+    let Some(choice) = data.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) else {
         return usage.map(|u| ChatCompletionChunk { id, created, model, choices: vec![], usage: Some(u), agent_name: None });
     };
     let d = &choice["delta"];
