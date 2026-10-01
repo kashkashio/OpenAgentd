@@ -202,15 +202,29 @@ fn scan_reader(m: &Matcher, mut r: impl Read, display: &str, max: usize, chunk: 
     }
 }
 
-/// Candidate files in walk order: v2's `os.walk` (a directory's files, then
-/// its subdirectories, depth first), with names sorted so the order — and
-/// which hits survive `max_results` — is the same on every OS/filesystem.
-fn candidate_files(root: &Path, include: &regex::Regex, gi: &Gitignore, denied: &DeniedPaths, deadline: Instant) -> Result<Vec<PathBuf>, ToolError> {
-    let mut out = vec![];
+/// Search the tree under `root` in walk order: v2's `os.walk` (a directory's
+/// files, then its subdirectories, depth first), with names sorted so the
+/// order — and which hits survive `max` — is the same on every OS. Files are
+/// scanned in parallel `batch`es as the walk finds them, so a search with
+/// early hits stops without walking the rest. Returns `(hits, timed_out)`;
+/// on time-out the hits found so far are kept.
+#[allow(clippy::too_many_arguments)]
+fn search_tree(
+    root: &Path,
+    include: &regex::Regex,
+    gi: &Gitignore,
+    denied: &DeniedPaths,
+    m: &Matcher,
+    max: usize,
+    batch: usize,
+    expired: &dyn Fn() -> bool,
+) -> (Vec<String>, bool) {
+    let mut hits = vec![];
+    let mut pending: Vec<PathBuf> = vec![];
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        if Instant::now() > deadline {
-            return Err(timeout_error());
+        if expired() {
+            return (hits, true);
         }
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
@@ -237,38 +251,52 @@ fn candidate_files(root: &Path, include: &regex::Regex, gi: &Gitignore, denied: 
             }
             let fp = dir.join(&f);
             if !denied.is_denied_read_path(&fp) {
-                out.push(fp);
+                pending.push(fp);
+            }
+        }
+        if pending.len() >= batch {
+            if scan_batch(m, &pending, denied, max, &mut hits) {
+                return (hits, false);
+            }
+            pending.clear();
+            if expired() {
+                return (hits, true);
             }
         }
         let mut kept: Vec<String> = dirs.into_iter().filter(|d| !NOISE_DIR_NAMES.contains(&d.as_str()) && !is_gitignored(gi, &join(d), true)).collect();
         kept.reverse();
         stack.extend(kept.into_iter().map(|d| dir.join(d)));
     }
-    Ok(out)
+    scan_batch(m, &pending, denied, max, &mut hits);
+    (hits, false)
 }
 
 fn timeout_error() -> ToolError {
     ToolError::Execution(format!("grep_files scan timed out after {SCAN_TIMEOUT_S}s — pattern may be too complex or directory too large"))
 }
 
-/// Scan `files` in parallel, keeping walk order, stopping at `max` hits.
-fn scan_ordered(m: &Matcher, files: &[PathBuf], denied: &DeniedPaths, max: usize, deadline: Instant) -> Result<Vec<String>, ToolError> {
+/// Scan `files` in parallel into `hits`, keeping their order. True once
+/// `max` hits are in.
+fn scan_batch(m: &Matcher, files: &[PathBuf], denied: &DeniedPaths, max: usize, hits: &mut Vec<String>) -> bool {
     use rayon::prelude::*;
-    let chunk = (rayon::current_num_threads() * 16).max(16);
-    let mut hits = vec![];
-    for batch in files.chunks(chunk) {
-        if Instant::now() > deadline {
-            return Err(timeout_error());
-        }
-        let per_file: Vec<Vec<String>> = batch.par_iter().map(|fp| scan_file(m, fp, &denied.display_path(fp), max)).collect();
-        for line in per_file.into_iter().flatten() {
-            hits.push(line);
-            if hits.len() >= max {
-                return Ok(hits);
-            }
+    let left = max - hits.len();
+    let per_file: Vec<Vec<String>> = files.par_iter().map(|fp| scan_file(m, fp, &denied.display_path(fp), left)).collect();
+    for line in per_file.into_iter().flatten() {
+        hits.push(line);
+        if hits.len() >= max {
+            return true;
         }
     }
-    Ok(hits)
+    false
+}
+
+/// The tool's text for `hits`, noting when the search stopped early.
+fn render_hits(hits: Vec<String>, timed_out: bool) -> String {
+    let mut out = hits.join("\n");
+    if timed_out {
+        out.push_str(&format!("\n\n[grep stopped after {SCAN_TIMEOUT_S}s: these results are partial. Narrow the directory or include pattern for a complete search.]"));
+    }
+    out
 }
 
 pub struct GrepTool;
@@ -294,25 +322,30 @@ impl Tool for GrepTool {
             return Err(ToolError::Execution(format!("File or directory not found: {}", denied.display_path(&resolved))));
         }
         let no_match = format!("No matches for pattern '{pattern}' in {} (include={include})", denied.display_path(&resolved));
-        let task = tokio::task::spawn_blocking(move || -> Result<Vec<String>, ToolError> {
+        let task = tokio::task::spawn_blocking(move || -> Result<(Vec<String>, bool), ToolError> {
             let m = compile_pattern(&pattern)?;
             if resolved.is_file() {
-                return Ok(scan_file(&m, &resolved, &denied.display_path(&resolved), max_results));
+                return Ok((scan_file(&m, &resolved, &denied.display_path(&resolved), max_results), false));
             }
             let deadline = Instant::now() + std::time::Duration::from_secs(SCAN_TIMEOUT_S);
             let gi = load_gitignore(&resolved);
             let inc = regex::Regex::new(&fnmatch_translate(&include)).map_err(ToolError::exec)?;
-            let files = candidate_files(&resolved, &inc, &gi, &denied, deadline)?;
-            scan_ordered(&m, &files, &denied, max_results, deadline)
+            let batch = (rayon::current_num_threads() * 16).max(16);
+            Ok(search_tree(&resolved, &inc, &gi, &denied, &m, max_results, batch, &|| Instant::now() > deadline))
         });
-        let hits = match tokio::time::timeout(std::time::Duration::from_secs(SCAN_TIMEOUT_S), task).await {
+        // The walk keeps its own deadline and returns partial hits; this is
+        // only a backstop for a single file that will not finish.
+        let (hits, timed_out) = match tokio::time::timeout(std::time::Duration::from_secs(SCAN_TIMEOUT_S + 5), task).await {
             Ok(r) => r.map_err(ToolError::exec)??,
             Err(_) => return Err(timeout_error()),
         };
         if hits.is_empty() {
+            if timed_out {
+                return Err(timeout_error());
+            }
             return Ok(ToolOutput::Text(no_match));
         }
-        Ok(ToolOutput::Text(hits.join("\n")))
+        Ok(ToolOutput::Text(render_hits(hits, timed_out)))
     }
 }
 
@@ -419,5 +452,54 @@ mod tests {
         assert_eq!(lines_of(&out), vec!["a.txt:1: hit", "b.txt:1: hit", "z.txt:1: hit", "y.txt:1: hit"], "{out}");
         let out = grep(d.path(), serde_json::json!({"pattern": "hit", "max_results": 3})).await;
         assert_eq!(lines_of(&out), vec!["a.txt:1: hit", "b.txt:1: hit", "z.txt:1: hit"], "{out}");
+    }
+
+    fn hit_tree() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        for f in ["a.txt", "b.txt", "sub/c.txt", "sub/d.txt", "sub/deeper/e.txt", "z/f.txt"] {
+            let p = d.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "hit\n").unwrap();
+        }
+        d
+    }
+
+    fn search(root: &Path, max: usize, batch: usize, expired: &dyn Fn() -> bool) -> (Vec<String>, bool) {
+        let denied = DeniedPaths::with(root, None, Some(vec![]), Some(vec![]));
+        let inc = regex::Regex::new(&fnmatch_translate("*")).unwrap();
+        search_tree(root, &inc, &load_gitignore(root), &denied, &compile_pattern("hit").unwrap(), max, batch, expired)
+    }
+
+    #[test]
+    fn search_keeps_walk_order_for_any_batch_size() {
+        let d = hit_tree();
+        let (all, timed_out) = search(d.path(), 100, 1000, &|| false);
+        assert!(!timed_out);
+        assert_eq!(lines_of(&all.join("\n")), ["a.txt:1: hit", "b.txt:1: hit", "c.txt:1: hit", "d.txt:1: hit", "e.txt:1: hit", "f.txt:1: hit"]);
+        for batch in [1, 2, 3] {
+            assert_eq!(search(d.path(), 100, batch, &|| false).0, all, "batch {batch}");
+            assert_eq!(search(d.path(), 4, batch, &|| false).0, all[..4], "batch {batch}");
+        }
+    }
+
+    #[test]
+    fn a_timed_out_search_keeps_what_it_found() {
+        let d = hit_tree();
+        let (all, _) = search(d.path(), 100, 1000, &|| false);
+        let calls = std::cell::Cell::new(0);
+        let (partial, timed_out) = search(d.path(), 100, 1, &|| {
+            calls.set(calls.get() + 1);
+            calls.get() > 3
+        });
+        assert!(timed_out);
+        assert!(!partial.is_empty() && partial.len() < all.len(), "{partial:?}");
+        assert_eq!(partial, all[..partial.len()]);
+    }
+
+    #[test]
+    fn partial_results_say_so() {
+        assert_eq!(render_hits(vec!["a:1: x".into()], false), "a:1: x");
+        let out = render_hits(vec!["a:1: x".into(), "b:2: y".into()], true);
+        assert!(out.starts_with("a:1: x\nb:2: y\n\n") && out.contains("stopped after 10s"), "{out}");
     }
 }
