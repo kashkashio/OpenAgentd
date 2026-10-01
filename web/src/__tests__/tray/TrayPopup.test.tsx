@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { TrayPopup } from '@/tray/TrayPopup'
 import type { TrayUsageResult } from '@/tray/usage'
 
@@ -52,8 +52,18 @@ mock.module('@tauri-apps/api/core', () => ({
   },
 }))
 
+// Live tray-refresh listeners; `listenDelayMs` makes `listen` resolve late,
+// like the real IPC round trip.
+let activeListeners = 0
+let listenDelayMs = 0
 mock.module('@tauri-apps/api/event', () => ({
-  listen: async () => () => {},
+  listen: async () => {
+    if (listenDelayMs) await new Promise((resolve) => setTimeout(resolve, listenDelayMs))
+    activeListeners++
+    return () => {
+      activeListeners--
+    }
+  },
 }))
 
 describe('TrayPopup component', () => {
@@ -85,5 +95,19 @@ describe('TrayPopup component', () => {
     await waitFor(() => {
       expect(screen.getByTitle('Local Bundled')).toBeDefined()
     })
+  })
+
+  it('drops the refresh listener when unmounted before listen resolves', async () => {
+    cleanup()
+    activeListeners = 0
+    listenDelayMs = 20
+    try {
+      const { unmount } = render(<TrayPopup />)
+      unmount()
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      expect(activeListeners).toBe(0)
+    } finally {
+      listenDelayMs = 0
+    }
   })
 })
