@@ -296,7 +296,12 @@ pub async fn build_app_window(
         config.height = f64::from(initial_size.height);
     }
     let builder = WebviewWindowBuilder::from_config(app, &config)?
-        .initialization_script(&init_script);
+        .initialization_script(&init_script)
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                log::info!("startup: page loaded window={} at_ms={}", webview.label(), crate::launch_ms());
+            }
+        });
     let builder = configure_window_chrome(builder);
     let win = builder.build().context("build webview window")?;
     if let Some(size) = saved_size {
@@ -318,6 +323,7 @@ pub async fn build_app_window(
     win.hide_menu().context("hide Windows application menu")?;
     win.show().context("show window")?;
     win.set_focus().ok();
+    log::info!("startup: window shown window={} at_ms={}", win.label(), crate::launch_ms());
     Ok(win)
 }
 

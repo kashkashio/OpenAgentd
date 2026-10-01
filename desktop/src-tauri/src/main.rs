@@ -17,9 +17,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex as StdMutex,
+    Arc, Mutex as StdMutex, OnceLock,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{
     menu::MenuItem,
     AppHandle, Emitter, Manager, RunEvent, Runtime, WindowEvent, Wry,
@@ -36,6 +36,14 @@ use crate::window::{
 };
 use crate::menu::{install_desktop_menus, update_tray_status, handle_desktop_menu};
 use crate::commands::wait_for_health;
+
+static LAUNCHED: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds since launch, so `desktop.log` (whole seconds) shows where a
+/// slow start spends its time.
+pub fn launch_ms() -> u128 {
+    LAUNCHED.get_or_init(Instant::now).elapsed().as_millis()
+}
 
 /// Shared application state.
 pub struct AppState {
@@ -428,7 +436,7 @@ async fn start_backend_and_window(app: AppHandle) -> Result<()> {
                     return Ok(());
                 }
                 Err(e) => {
-                    log::warn!("desktop: saved external backend is not reachable at startup: {e:#}")
+                    log::warn!("desktop: saved external backend is not reachable at startup (at_ms={}): {e:#}", launch_ms())
                 }
             },
             Err(e) => {
@@ -444,6 +452,7 @@ async fn start_backend_and_window(app: AppHandle) -> Result<()> {
     .ok_or_else(|| anyhow::anyhow!("bundled backend is already starting"))?;
     match Sidecar::spawn(&app) {
         Ok(mut sidecar) => {
+            log::info!("startup: sidecar spawned at_ms={}", launch_ms());
             let handshake_result = sidecar
                 .read_handshake(SIDECAR_HANDSHAKE_TIMEOUT)
                 .await
@@ -451,10 +460,11 @@ async fn start_backend_and_window(app: AppHandle) -> Result<()> {
             match handshake_result {
                 Ok(handshake) => {
                     log::info!(
-                        "sidecar handshake: port={} pid={} version={}",
+                        "sidecar handshake: port={} pid={} version={} at_ms={}",
                         handshake.port,
                         handshake.pid,
-                        handshake.version
+                        handshake.version,
+                        launch_ms()
                     );
 
                     let base = format!("http://127.0.0.1:{}", handshake.port);
@@ -492,6 +502,7 @@ async fn start_backend_and_window(app: AppHandle) -> Result<()> {
                                 .context("inject bundled backend config")?;
                         }
                         update_tray_status(&app, "Status: Running");
+                        log::info!("startup: bundled backend ready at_ms={}", launch_ms());
 
                         app.emit(
                             "backend-ready",
@@ -539,6 +550,7 @@ async fn start_backend_and_window(app: AppHandle) -> Result<()> {
 }
 
 fn main() {
+    LAUNCHED.get_or_init(Instant::now);
     let state = AppState {
         sidecar: Arc::new(Mutex::new(None)),
         desktop_token: Arc::new(Mutex::new(None)),
@@ -626,9 +638,11 @@ fn main() {
             updater::updater_release_notes
         ])
         .setup(|app| {
+            log::info!("startup: setup at_ms={}", launch_ms());
             install_desktop_menus(app)?;
             #[cfg(target_os = "macos")]
             tray_popup::create_tray_popup(app)?;
+            log::info!("startup: menus and tray built at_ms={}", launch_ms());
             match desktop_log_path(app.handle()) {
                 Ok(path) => log::info!("desktop log path={}", path.display()),
                 Err(e) => log::warn!("desktop log path unavailable: {e:#}"),
