@@ -33,6 +33,9 @@ pub const NOISE_DIR_NAMES: &[&str] = &[
 const MAX_PATTERN_LEN: usize = 500;
 const SCAN_TIMEOUT_S: u64 = 10;
 const BINARY_SNIFF_BYTES: usize = 4096;
+/// Files are read this much at a time (rounded to whole lines), so a large
+/// log costs ~1 MB per scanning thread instead of several times its size.
+const SCAN_CHUNK_BYTES: usize = 1 << 20;
 
 /// Root `.gitignore` only (v2 limitation preserved).
 pub fn load_gitignore(root: &Path) -> Gitignore {
@@ -92,9 +95,9 @@ pub fn compile_pattern(pattern: &str) -> Result<Matcher, ToolError> {
 }
 
 /// Python universal newlines: `\r\n` and lone `\r` become `\n`.
-fn normalise_newlines(data: Vec<u8>) -> Vec<u8> {
-    if memchr::memchr(b'\r', &data).is_none() {
-        return data;
+fn normalise_newlines(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if memchr::memchr(b'\r', data).is_none() {
+        return std::borrow::Cow::Borrowed(data);
     }
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
@@ -110,57 +113,93 @@ fn normalise_newlines(data: Vec<u8>) -> Vec<u8> {
         }
         i += 1;
     }
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 /// Search one file like v2 (`TextIOWrapper(errors="replace")` +
 /// `compiled.search(line)`, where `line` keeps its `\n`). Returns hits in
 /// line order, at most `max`.
 fn scan_file(m: &Matcher, fpath: &Path, display: &str, max: usize) -> Vec<String> {
+    match std::fs::File::open(fpath) {
+        Ok(f) => scan_reader(m, f, display, max, SCAN_CHUNK_BYTES),
+        Err(_) => vec![],
+    }
+}
+
+/// Where a chunk can end: after its last `\n`, or after a lone `\r` (one
+/// not at the very end, which may be the first half of `\r\n`). At EOF,
+/// everything left.
+fn chunk_cut(buf: &[u8], eof: bool) -> Option<usize> {
+    if eof {
+        return Some(buf.len());
+    }
+    if let Some(i) = memchr::memrchr(b'\n', buf) {
+        return Some(i + 1);
+    }
+    memchr::memrchr(b'\r', &buf[..buf.len().saturating_sub(1)]).map(|i| i + 1)
+}
+
+/// [`scan_file`] over any reader, `chunk` bytes at a time. Chunks hold whole
+/// lines, so the per-chunk prefilter and the line numbers match a scan of
+/// the whole file; reading stops at `max` hits.
+fn scan_reader(m: &Matcher, mut r: impl Read, display: &str, max: usize, chunk: usize) -> Vec<String> {
     let mut hits = vec![];
-    let Ok(mut f) = std::fs::File::open(fpath) else {
-        return hits;
-    };
-    let mut sniff = vec![0u8; BINARY_SNIFF_BYTES];
-    let n = f.read(&mut sniff).unwrap_or(0);
-    if sniff[..n].contains(&0) {
-        return hits;
-    }
-    let Ok(data) = std::fs::read(fpath) else {
-        return hits;
-    };
-    let data = normalise_newlines(data);
-    if !m.may_match_file(&data) {
-        return hits;
-    }
-    let text = String::from_utf8_lossy(&data);
-    let ends_with_nl = text.ends_with('\n');
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    if ends_with_nl {
-        lines.pop();
-    }
-    let last = lines.len().saturating_sub(1);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut line_no = 0usize;
+    let mut first = true;
     let mut with_nl = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let has_nl = i < last || ends_with_nl;
-        // `$` in Python also matches before the final `\n`; patterns that
-        // consume the newline (`\s$`, `\n`) need the line with it.
-        let hit = m.is_match(line)
-            || (has_nl && {
-                with_nl.clear();
-                with_nl.push_str(line);
-                with_nl.push('\n');
-                m.is_match(&with_nl)
-            });
-        if hit {
-            let shown: String = line.trim_end().chars().take(200).collect();
-            hits.push(format!("{display}:{}: {shown}", i + 1));
-            if hits.len() >= max {
-                break;
+    loop {
+        let want = if first { chunk.max(BINARY_SNIFF_BYTES) } else { chunk };
+        let n = match r.by_ref().take(want as u64).read_to_end(&mut buf) {
+            Ok(n) => n,
+            Err(_) => return hits,
+        };
+        if first {
+            if buf[..buf.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+                return hits;
+            }
+            first = false;
+        }
+        let eof = n == 0;
+        let Some(cut) = chunk_cut(&buf, eof) else { continue };
+        let region = normalise_newlines(&buf[..cut]);
+        if !m.may_match_file(&region) {
+            line_no += memchr::memchr_iter(b'\n', &region).count() + usize::from(eof && !region.is_empty() && !region.ends_with(b"\n"));
+        } else {
+            let text = String::from_utf8_lossy(&region);
+            let ends_with_nl = text.ends_with('\n');
+            let mut lines: Vec<&str> = text.split('\n').collect();
+            if ends_with_nl || text.is_empty() {
+                lines.pop();
+            }
+            let last = lines.len().saturating_sub(1);
+            for (i, line) in lines.iter().enumerate() {
+                line_no += 1;
+                let has_nl = i < last || ends_with_nl;
+                // `$` in Python also matches before the final `\n`; patterns
+                // that consume the newline (`\s$`, `\n`) need the line with it.
+                let hit = m.is_match(line)
+                    || (has_nl && {
+                        with_nl.clear();
+                        with_nl.push_str(line);
+                        with_nl.push('\n');
+                        m.is_match(&with_nl)
+                    });
+                if hit {
+                    let shown: String = line.trim_end().chars().take(200).collect();
+                    hits.push(format!("{display}:{line_no}: {shown}"));
+                    if hits.len() >= max {
+                        return hits;
+                    }
+                }
             }
         }
+        drop(region);
+        buf.drain(..cut);
+        if eof {
+            return hits;
+        }
     }
-    hits
 }
 
 /// Candidate files in walk order: v2's `os.walk` (a directory's files, then
@@ -339,6 +378,30 @@ mod tests {
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
         let err = GrepTool.run(&ctx(d.path()), serde_json::json!({"pattern": "(unclosed"})).await.unwrap_err();
         assert!(format!("{err:?}").contains("Invalid regex"), "{err:?}");
+    }
+
+    /// Files are scanned in chunks of whole lines; the hits, line numbers
+    /// and newline handling must not depend on where a chunk ends.
+    #[test]
+    fn chunked_scan_matches_a_whole_file_scan() {
+        let contents: [&[u8]; 6] = [
+            b"foo\r\nbar\r\nold\rmac\nx foo \nlast foo",
+            b"a\nfoo\n\nfoo bar\nTi\xe1\xba\xbfng foo Vi\xe1\xbb\x87t\n",
+            b"\r\r\nfoo\r",
+            b"no trailing newline foo",
+            b"foo\n",
+            b"\xff\xfe broken utf8 foo\nfoo\n",
+        ];
+        for pattern in ["foo$", "foo\\s$", "^foo", "foo", "^$", "t$"] {
+            let m = compile_pattern(pattern).unwrap();
+            for data in contents {
+                let whole = scan_reader(&m, data, "f", 100, usize::MAX);
+                for chunk in [1, 2, 3, 5, 8, 64] {
+                    assert_eq!(scan_reader(&m, data, "f", 100, chunk), whole, "pattern {pattern:?} chunk {chunk} data {:?}", String::from_utf8_lossy(data));
+                }
+                assert_eq!(scan_reader(&m, data, "f", 1, 2), whole.into_iter().take(1).collect::<Vec<_>>());
+            }
+        }
     }
 
     #[tokio::test]
