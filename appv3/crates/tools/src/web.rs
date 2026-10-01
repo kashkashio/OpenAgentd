@@ -716,8 +716,6 @@ async fn ddg_search(query: &str, max: usize, page: i64, safesearch: &str) -> Vec
 }
 
 fn parse_exa_text(text: &str) -> Vec<Value> {
-    let rx = regex::Regex::new(r"\n(?:Title:\s*)").unwrap();
-    let _ = rx;
     let mut blocks: Vec<String> = vec![];
     let mut cur = String::new();
     for line in text.trim().split('\n') {
@@ -756,7 +754,11 @@ fn parse_exa_text(text: &str) -> Vec<Value> {
 
 async fn exa_search(query: &str, max: usize) -> Result<Value, String> {
     let data = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "web_search_exa", "arguments": {"query": query, "numResults": max}}});
-    let resp = reqwest::Client::new()
+    // Reused like `client()`, but with reqwest's default redirect policy: a
+    // fresh client per search rebuilt the native root store and lost pooling.
+    static EXA: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let resp = EXA
+        .get_or_init(reqwest::Client::new)
         .post("https://mcp.exa.ai/mcp")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
