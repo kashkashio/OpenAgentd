@@ -17,7 +17,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use bytes::Bytes;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -555,10 +555,13 @@ async fn workspace_status(q: Qs) -> ApiResult<Response> {
     if !root.join(".git").exists() {
         return Ok(not_git());
     }
-    let Some(status_out) = git(&resolved, &["status", "--porcelain=v2", "--branch"]).await else { return Ok(not_git()) };
+    // This runs after every agent tool call, and each git spawn costs ~10 ms,
+    // so independent calls run side by side.
+    let (status_out, log) = tokio::join!(git(&resolved, &["status", "--porcelain=v2", "--branch"]), git(&resolved, &["log", "-1", "--format=%h%x00%s%x00%ct"]));
+    let Some(status_out) = status_out else { return Ok(not_git()) };
     let mut p = parse_porcelain_v2(&status_out);
     let mut head = Value::Null;
-    if let Some(log) = git(&resolved, &["log", "-1", "--format=%h%x00%s%x00%ct"]).await.filter(|l| !l.is_empty()) {
+    if let Some(log) = log.filter(|l| !l.is_empty()) {
         let parts: Vec<&str> = log.trim_end_matches('\n').split('\0').collect();
         if parts.len() == 3 {
             if let Ok(ts) = parts[2].trim().parse::<i64>() {
@@ -568,7 +571,19 @@ async fn workspace_status(q: Qs) -> ApiResult<Response> {
     }
     if p.upstream.is_none() || p.ahead.is_none() || p.behind.is_none() {
         let mut upstream_ref: Option<String> = Some("@{u}".into());
-        let div = git(&resolved, &["rev-list", "--left-right", "--count", "HEAD...@{u}"]).await;
+        // Fallback refs in priority order, probed alongside `@{u}`.
+        let mut candidates: Vec<String> = vec![];
+        if let Some(b) = &p.branch {
+            candidates.push(format!("origin/{b}"));
+        }
+        candidates.extend(["origin/HEAD", "origin/main", "origin/master", "main", "master"].map(String::from));
+        let mut seen = HashSet::new();
+        candidates.retain(|c| p.branch.as_deref() != Some(c.as_str()) && seen.insert(c.clone()));
+        let cwd = resolved.as_str();
+        let (div, exists) = tokio::join!(
+            git(cwd, &["rev-list", "--left-right", "--count", "HEAD...@{u}"]),
+            futures::future::join_all(candidates.iter().map(|c| async move { git(cwd, &["rev-parse", "--verify", c]).await }))
+        );
         if let Some(d) = &div {
             if let Some((a, b)) = parse_counts(d) {
                 p.ahead = Some(a);
@@ -576,25 +591,13 @@ async fn workspace_status(q: Qs) -> ApiResult<Response> {
             }
         }
         if div.is_none() {
-            let mut candidates: Vec<String> = vec![];
-            if let Some(b) = &p.branch {
-                candidates.push(format!("origin/{b}"));
-            }
-            candidates.extend(["origin/HEAD", "origin/main", "origin/master", "main", "master"].map(String::from));
             upstream_ref = None;
-            for c in candidates {
-                if p.branch.as_deref() == Some(c.as_str()) {
-                    continue;
-                }
-                if git(&resolved, &["rev-parse", "--verify", &c]).await.is_some() {
-                    if let Some(cc) = git(&resolved, &["rev-list", "--left-right", "--count", &format!("HEAD...{c}")]).await {
-                        if let Some((a, b)) = parse_counts(&cc) {
-                            p.ahead = Some(a);
-                            p.behind = Some(b);
-                            upstream_ref = Some(c);
-                            break;
-                        }
-                    }
+            for (c, _) in candidates.into_iter().zip(exists).filter(|(_, e)| e.is_some()) {
+                if let Some((a, b)) = git(&resolved, &["rev-list", "--left-right", "--count", &format!("HEAD...{c}")]).await.as_deref().and_then(parse_counts) {
+                    p.ahead = Some(a);
+                    p.behind = Some(b);
+                    upstream_ref = Some(c);
+                    break;
                 }
             }
         }
@@ -862,5 +865,76 @@ mod tests {
         let (_, stderr, code, _) = bounded_git_diff(d.path().to_str().unwrap(), &["diff", "HEAD", "--", "."], 1024).await.unwrap();
         assert_eq!(code, 0, "{stderr}");
         assert!(std::fs::read(&index).unwrap() == before, "`git diff` refreshed .git/index, so it held index.lock");
+    }
+
+    fn repo_on_main() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        git_ok(d.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(d.path().join("a.txt"), "a\n").unwrap();
+        git_ok(d.path(), &["add", "a.txt"]);
+        git_ok(d.path(), &["commit", "-qm", "init"]);
+        d
+    }
+
+    fn commit(dir: &Path, file: &str) {
+        std::fs::write(dir.join(file), file).unwrap();
+        git_ok(dir, &["add", file]);
+        git_ok(dir, &["commit", "-qm", file]);
+    }
+
+    async fn status_of(dir: &Path) -> Value {
+        let q = Qs::parse(&format!("workspace={}", form_urlencoded::byte_serialize(dir.to_str().unwrap().as_bytes()).collect::<String>()));
+        let r = workspace_status(q).await.unwrap();
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    fn upstream_fields(v: &Value) -> (Value, Value, Value) {
+        (v["upstream"].clone(), v["commits_ahead"].clone(), v["commits_behind"].clone())
+    }
+
+    #[tokio::test]
+    async fn status_on_main_without_remote_has_no_upstream() {
+        let d = repo_on_main();
+        std::fs::write(d.path().join("a.txt"), "changed\n").unwrap();
+        std::fs::write(d.path().join("new.txt"), "n").unwrap();
+        let v = status_of(d.path()).await;
+        assert_eq!(v["branch"], "main");
+        assert_eq!(v["dirty"], json!({"staged": 0, "unstaged": 1, "untracked": 1}));
+        assert_eq!(v["head"]["subject"], "init");
+        assert_eq!(upstream_fields(&v), (Value::Null, Value::Null, Value::Null));
+    }
+
+    #[tokio::test]
+    async fn status_without_remote_compares_a_branch_with_local_main() {
+        let d = repo_on_main();
+        git_ok(d.path(), &["checkout", "-qb", "feature"]);
+        commit(d.path(), "b.txt");
+        commit(d.path(), "c.txt");
+        assert_eq!(upstream_fields(&status_of(d.path()).await), (json!("main"), json!(2), json!(0)));
+    }
+
+    #[tokio::test]
+    async fn status_uses_the_tracking_upstream() {
+        let origin = repo_on_main();
+        let d = tempfile::tempdir().unwrap();
+        git_ok(d.path(), &["clone", "-q", origin.path().to_str().unwrap(), "."]);
+        commit(d.path(), "b.txt");
+        commit(origin.path(), "o.txt");
+        git_ok(d.path(), &["fetch", "-q"]);
+        assert_eq!(upstream_fields(&status_of(d.path()).await), (json!("origin/main"), json!(1), json!(1)));
+    }
+
+    #[tokio::test]
+    async fn status_prefers_origin_branch_when_nothing_is_tracked() {
+        let origin = repo_on_main();
+        git_ok(origin.path(), &["checkout", "-qb", "feature"]);
+        commit(origin.path(), "f.txt");
+        git_ok(origin.path(), &["checkout", "-q", "main"]);
+        let d = tempfile::tempdir().unwrap();
+        git_ok(d.path(), &["clone", "-q", origin.path().to_str().unwrap(), "."]);
+        // Local `feature` with no tracking config, one commit past origin/feature.
+        git_ok(d.path(), &["checkout", "-q", "--no-track", "-b", "feature", "origin/feature"]);
+        commit(d.path(), "g.txt");
+        assert_eq!(upstream_fields(&status_of(d.path()).await), (json!("origin/feature"), json!(1), json!(0)));
     }
 }
