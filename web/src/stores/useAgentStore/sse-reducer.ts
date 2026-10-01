@@ -1,11 +1,11 @@
 import {
-  appendThinking,
-  appendText,
-  initTool,
-  addTool,
-  appendToolOutput,
-  completeTool,
+  appendStreamedInto,
+  initToolInto,
+  addToolInto,
+  appendToolOutputInto,
+  completeToolInto,
   generateBlockId,
+  readBlocks,
   startCompaction,
   appendCompactionContent,
   endCompaction,
@@ -167,9 +167,9 @@ function appendStreamingText(
   const replayPossible = stream._replayPending[kind]
   if (replayPossible) stream._replayPending[kind] = false
   if (kind === 'thinking') {
-    stream.currentBlocks = appendThinking(stream.currentBlocks, text, replayPossible)
+    appendStreamedInto(stream.currentBlocks, 'thinking', text, replayPossible)
   } else {
-    stream.currentBlocks = appendText(stream.currentBlocks, text, replayPossible)
+    appendStreamedInto(stream.currentBlocks, 'text', text, replayPossible)
     const last = stream.currentBlocks[stream.currentBlocks.length - 1]
     if (last?.type === 'text') {
       if (!last.startedAt) last.startedAt = Date.now()
@@ -192,7 +192,8 @@ function appendStreamingText(
  */
 function findConfirmedTool(draft: AgentStore, agent: string, toolCallId: string | undefined): ContentBlock | undefined {
   if (!toolCallId) return undefined
-  return draft.agentStreams[agent].blocks.find(
+  // Read-only: the session-sized rows are scanned without drafting each one.
+  return readBlocks(draft.agentStreams[agent].blocks).find(
     (b) => b.type === 'tool' && b.toolCallId === toolCallId,
   )
 }
@@ -217,18 +218,14 @@ function applyBufferedSSEDelta(draft: AgentStore, event: BufferedSSEDelta) {
   const toolCallId = d.tool_call_id as string | undefined
   ensureAgent(draft, agent)
   const stream = draft.agentStreams[agent]
-  const next = appendToolOutput(stream.currentBlocks, d.name as string, toolCallId, d.text as string)
-  if (next !== stream.currentBlocks) {
-    stream.currentBlocks = next
-    return
-  }
+  if (appendToolOutputInto(stream.currentBlocks, d.name as string, toolCallId, d.text as string)) return
   // No live card — the tool may already sit in the confirmed rows (a mid-turn
   // loadSession reconciles the assistant row before its tools finish). Route
   // the delta there instead of dropping it; matched strictly by id so
   // orphaned history cards are never touched.
   const confirmed = findConfirmedTool(draft, agent, toolCallId)
   if (confirmed && !confirmed.toolDone) {
-    stream.blocks = appendToolOutput(stream.blocks, d.name as string, toolCallId, d.text as string)
+    appendToolOutputInto(stream.blocks, d.name as string, toolCallId, d.text as string)
   }
 }
 
@@ -271,7 +268,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
           // Replay after a mid-turn reconcile: the card already lives in the
           // confirmed rows — recreating it live would render a duplicate.
           if (findConfirmedTool(draft, agent, d.tool_call_id as string | undefined)) return
-          draft.agentStreams[agent].currentBlocks = initTool(
+          initToolInto(
             draft.agentStreams[agent].currentBlocks,
             d.name as string,
             d.tool_call_id as string | undefined,
@@ -287,7 +284,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
           markTurnStarted(draft, agent)
           const toolCallId = d.tool_call_id as string | undefined
           // Mirrors addTool's own match condition.
-          const hasLive = draft.agentStreams[agent].currentBlocks.some(
+          const hasLive = readBlocks(draft.agentStreams[agent].currentBlocks).some(
             (b) =>
               b.type === 'tool' &&
               (toolCallId
@@ -297,7 +294,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
           // Confirmed card already carries its args (persisted with the
           // assistant row) — don't let addTool's fallback spawn a duplicate.
           if (!hasLive && findConfirmedTool(draft, agent, toolCallId)) return
-          draft.agentStreams[agent].currentBlocks = addTool(
+          addToolInto(
             draft.agentStreams[agent].currentBlocks,
             d.name as string,
             d.arguments as string | undefined,
@@ -330,7 +327,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
           const stream = draft.agentStreams[agent]
           // Mirrors completeTool's own matching: exact id, else incomplete
           // card of the same name.
-          const hasLive = stream.currentBlocks.some(
+          const hasLive = readBlocks(stream.currentBlocks).some(
             (b) =>
               b.type === 'tool' &&
               ((toolCallId && b.toolCallId === toolCallId) ||
@@ -340,7 +337,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
           if (confirmed && !confirmed.toolDone) {
             // Card was reconciled into the confirmed rows mid-turn — finish
             // it there or it stays "running" until a full reload.
-            stream.blocks = completeTool(
+            completeToolInto(
               stream.blocks,
               toolName,
               toolCallId,
@@ -350,7 +347,7 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
             )
             return
           }
-          stream.currentBlocks = completeTool(
+          completeToolInto(
             stream.currentBlocks,
             toolName,
             toolCallId,
