@@ -594,9 +594,11 @@ impl AgentSession {
         if queued.is_empty() {
             return false;
         }
-        let ids: Vec<String> = queued.iter().map(|r| db::codec::api_uuid(&r.id)).collect();
+        // The UI shows only what the user wrote; the turn reads the rest from history.
+        let visible: Vec<&db::SessionMessage> = queued.iter().filter(|r| !db::is_attached_row(r)).collect();
+        let ids: Vec<String> = visible.iter().map(|r| db::codec::api_uuid(&r.id)).collect();
         let data: Vec<Value> =
-            queued.iter().map(|r| json!({"id": db::codec::api_uuid(&r.id), "content": r.content.clone().unwrap_or_default(), "extra": r.extra_json()})).collect();
+            visible.iter().map(|r| json!({"id": db::codec::api_uuid(&r.id), "content": r.content.clone().unwrap_or_default(), "extra": r.extra_json()})).collect();
         self.clear_cancel();
         self.set_active_turn(true);
         self.spawn_turn(TurnOptions {

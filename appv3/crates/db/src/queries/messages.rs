@@ -462,8 +462,21 @@ pub async fn has_queued_user_messages(pool: &DbPool, session_id: &str) -> Result
     Ok(n > 0)
 }
 
+/// Whether `row` belongs to another message (its @-mention context or an
+/// attachment's text, `extra.attachment_for_message_id`) rather than being
+/// one the user wrote.
+pub fn is_attached_row(row: &SessionMessage) -> bool {
+    row.extra_json().is_some_and(|e| e.get("attachment_for_message_id").is_some_and(|v| !v.is_null()))
+}
+
 /// Promote all queued rows to `chat` at the tail (v2 `_promote_queued`).
 /// `snapshot` is stored on each promoted row's `extra`.
+///
+/// The rows attached to each one (its @-mention context, saved separately at
+/// queue time) move right after it and are pinned, as an immediate send's
+/// mention note is. Left where they were saved, the context sat before its
+/// steer, and an injection mid-turn delivered the steer without it. Returns
+/// every moved row in transcript order; [`is_attached_row`] tells them apart.
 pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snapshot: Option<&str>) -> Result<Vec<SessionMessage>> {
     let sid = db_id(session_id);
     let queued = sqlx::query_as::<_, SessionMessage>(
@@ -481,9 +494,10 @@ pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snaps
     // the updates cannot interleave with a concurrent `save_message`.
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let max: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ?").bind(&sid).fetch_one(&mut *tx).await?;
-    let base = max.unwrap_or(0) + SEQ_STEP;
+    let mut next_seq = max.unwrap_or(0) + SEQ_STEP;
+    let mut moved: i64 = 0;
     let mut out = Vec::with_capacity(queued.len());
-    for (i, row) in queued.iter().enumerate() {
+    for row in &queued {
         let mut extra = match row.extra_json() {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
@@ -494,16 +508,40 @@ pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snaps
             extra.insert("snapshot".into(), Value::String(s.into()));
         }
         let extra_v = if extra.is_empty() { None } else { Some(Value::Object(extra)) };
-        let created = released + chrono::Duration::microseconds(i as i64);
         // A row cancelled since the read above updates nothing and is skipped.
-        let promoted = sqlx::query_as::<_, SessionMessage>("UPDATE session_messages SET kind = 'chat', seq = ?, created_at = ?, extra = ? WHERE id = ? RETURNING *")
-            .bind(base + i as i64 * SEQ_STEP)
-            .bind(crate::codec::dt_db(&created))
+        let Some(promoted) = sqlx::query_as::<_, SessionMessage>("UPDATE session_messages SET kind = 'chat', seq = ?, created_at = ?, extra = ? WHERE id = ? RETURNING *")
+            .bind(next_seq)
+            .bind(crate::codec::dt_db(&(released + chrono::Duration::microseconds(moved))))
             .bind(json_db(extra_v.as_ref()))
             .bind(&row.id)
             .fetch_optional(&mut *tx)
-            .await?;
-        out.extend(promoted);
+            .await?
+        else {
+            continue;
+        };
+        next_seq += SEQ_STEP;
+        moved += 1;
+        out.push(promoted);
+        let attached: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM session_messages WHERE session_id = ? \
+             AND json_extract(extra, '$.attachment_for_message_id') IN (?, ?) ORDER BY seq ASC, id ASC",
+        )
+        .bind(&sid)
+        .bind(crate::codec::api_uuid(&row.id))
+        .bind(&row.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for id in attached {
+            let row = sqlx::query_as::<_, SessionMessage>("UPDATE session_messages SET seq = ?, created_at = ?, pinned = 1 WHERE id = ? RETURNING *")
+                .bind(next_seq)
+                .bind(crate::codec::dt_db(&(released + chrono::Duration::microseconds(moved))))
+                .bind(&id)
+                .fetch_one(&mut *tx)
+                .await?;
+            next_seq += SEQ_STEP;
+            moved += 1;
+            out.push(row);
+        }
     }
     // Same transaction: readers never see promoted rows under the old revision.
     bump_history_revision(&mut *tx, &sid, true).await?;

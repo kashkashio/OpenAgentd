@@ -214,6 +214,20 @@ explicitly.
   earlier web build only offer free text when it is set. The answer route
   takes one typed answer per question even for rows stored with
   `custom: false` (`tools/ask_user.rs`, `api/src/routes/agent/questions.rs`).
+- **Queued messages ("steers") keep send order and their context.** Both
+  change where rows sit in `session_messages`; old rows need no migration.
+  - A new message promotes any rows still `kind='queued'` (left over from a
+    failed turn) to the tail *before* it is saved, so they keep their place.
+    Previously the new message was saved first and the older steers were
+    promoted after it.
+  - On promotion, a steer's attached rows (`extra.attachment_for_message_id`,
+    its @-mention context saved at queue time) move right after it and are
+    pinned, as an idle send's mention note is. Previously they stayed at the
+    queue-time position, which could fall between a tool call and its
+    result, and the steer was injected without them. Queued rows from older DBs
+    get the same treatment. `queued_turn_start` still lists only the
+    steers (`db::is_attached_row`). Covered by
+    `agent/tests/queued_messages.rs`.
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and
