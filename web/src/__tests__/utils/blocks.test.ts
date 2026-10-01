@@ -27,6 +27,14 @@ describe("countBlocksAfter", () => {
   it("is null once the block is gone", () => {
     expect(countBlocksAfter([block("a")], "missing")).toBeNull();
   });
+
+  it("counts across the finalized blocks and the live tail without merging them", () => {
+    const finalized = [block("a"), block("b")];
+    const live = [block("blank", " "), block("c"), block("d")];
+    expect(countBlocksAfter(finalized, "a", live)).toBe(3);
+    expect(countBlocksAfter(finalized, "c", live)).toBe(1);
+    expect(countBlocksAfter(finalized, "missing", live)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

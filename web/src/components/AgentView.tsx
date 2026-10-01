@@ -442,10 +442,11 @@ export function AgentView({
   // `[...blocks, ...liveTail]` copy is never needed here — nothing reads full
   // merged content, only counts and the last block).
   const liveTail = useMemo(() => liveBlockTail(blocks, currentBlocks), [blocks, currentBlocks])
-  const searchableBlocks = useMemo(() => [...blocks, ...liveTail], [blocks, liveTail])
+  // Merged only while find is open: the copy costs a whole-transcript walk
+  // on every streamed token.
   const findMatches = useMemo(
-    () => (findOpen ? collectTranscriptFindMatches(searchableBlocks, findQuery) : []),
-    [findOpen, findQuery, searchableBlocks],
+    () => (findOpen ? collectTranscriptFindMatches([...blocks, ...liveTail], findQuery) : []),
+    [blocks, findOpen, findQuery, liveTail],
   )
   const clampedFindIndex = findMatches.length === 0
     ? 0
@@ -513,9 +514,12 @@ export function AgentView({
     () => latestMCPAppResourceBlockIdsFromParts(finalizedMCPAppResources, currentBlocks),
     [currentBlocks, finalizedMCPAppResources],
   )
+  // The live tail follows the finalized blocks, so its newest wait wins; only
+  // the (small) tail is rescanned per token.
+  const finalizedQuotaWait = useMemo(() => latestQuotaWait(blocks), [blocks])
   const liveQuotaWait = useMemo(
-    () => latestQuotaWait([...blocks, ...liveTail]),
-    [blocks, liveTail],
+    () => latestQuotaWait(liveTail) ?? finalizedQuotaWait,
+    [finalizedQuotaWait, liveTail],
   )
   const storedQuotaWait = useMemo(() => readStoredQuotaWait(sessionId), [sessionId])
 
@@ -523,8 +527,10 @@ export function AgentView({
   const visibleQuotaWait = liveQuotaWait ?? restoredQuotaWait
 
   const lastBlock = liveTail.length > 0 ? liveTail[liveTail.length - 1] : blocks[blocks.length - 1]
+  // A change key for auto-follow, not the content itself: the streamed fields
+  // only grow, so their lengths move whenever they do.
   const lastContent = lastBlock
-    ? `${lastBlock.content ?? ''}:${lastBlock.toolOutput ?? ''}:${lastBlock.toolResult ?? ''}:${lastBlock.toolArgs ?? ''}`
+    ? `${lastBlock.id}:${lastBlock.content?.length ?? -1}:${lastBlock.toolOutput?.length ?? -1}:${lastBlock.toolResult?.length ?? -1}:${lastBlock.toolArgs?.length ?? -1}`
     : ''
   const isUserMessage = lastBlock ? isDirectUserBlock(lastBlock) : false
   const isEmpty = !isWorking &&
@@ -572,12 +578,12 @@ export function AgentView({
       if (useTranscriptFollowStore.getState().unseen !== null) useTranscriptFollowStore.setState({ unseen: null })
       return
     }
-    followAnchorRef.current ??= searchableBlocks[searchableBlocks.length - 1]?.id ?? ''
-    const counted = countBlocksAfter(searchableBlocks, followAnchorRef.current)
+    followAnchorRef.current ??= (liveTail[liveTail.length - 1] ?? blocks[blocks.length - 1])?.id ?? ''
+    const counted = countBlocksAfter(blocks, followAnchorRef.current, liveTail)
     // A reconcile can swap the anchor's id; keep the last count then.
     const unseen = counted ?? useTranscriptFollowStore.getState().unseen ?? 0
     if (useTranscriptFollowStore.getState().unseen !== unseen) useTranscriptFollowStore.setState({ unseen })
-  }, [jumpToLatestInComposer, searchableBlocks, showScrollBtn])
+  }, [blocks, jumpToLatestInComposer, liveTail, showScrollBtn])
   useEffect(() => {
     if (!jumpToLatestInComposer) return
     useTranscriptFollowStore.setState({ jumpToLatest: () => scrollToBottom('smooth') })

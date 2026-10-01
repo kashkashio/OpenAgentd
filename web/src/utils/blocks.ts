@@ -71,15 +71,18 @@ export function mergeBlocks(
 
 /**
  * Blocks after ``id`` that render something; ``null`` once ``id`` is gone.
- * Scans from the end, so the cost is the number of blocks counted.
+ * Scans from the end, so the cost is the number of blocks counted. ``liveTail``
+ * follows ``blocks``, so callers need not merge the two to count across them.
  */
-export function countBlocksAfter(blocks: ContentBlock[], id: string): number | null {
+export function countBlocksAfter(blocks: ContentBlock[], id: string, liveTail: ContentBlock[] = []): number | null {
   let count = 0
-  for (let i = blocks.length - 1; i >= 0; i -= 1) {
-    const block = blocks[i]
-    if (block.id === id) return count
-    const blank = (block.type === 'text' || block.type === 'thinking') && block.content.trim().length === 0
-    if (!blank) count += 1
+  for (const part of [liveTail, blocks]) {
+    for (let i = part.length - 1; i >= 0; i -= 1) {
+      const block = part[i]
+      if (block.id === id) return count
+      const blank = (block.type === 'text' || block.type === 'thinking') && block.content.trim().length === 0
+      if (!blank) count += 1
+    }
   }
   return null
 }
