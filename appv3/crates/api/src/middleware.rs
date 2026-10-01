@@ -372,7 +372,36 @@ pub async fn cors(axum::extract::State(c): axum::extract::State<Cors>, req: Requ
 
 pub fn gzip_layer() -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
     use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
-    tower_http::compression::CompressionLayer::new().no_br().no_deflate().no_zstd().compress_when(SizeAbove::new(1000).and(NotForContentType::SSE).and(NotForContentType::GRPC))
+    use tower_http::CompressionLevel;
+    // Media and archives are already compressed; gzipping them again burns
+    // CPU for nothing. Fastest keeps most of the ratio on JSON at about a
+    // quarter of the default level's cost, and the server is usually local.
+    let worth_compressing = |_: StatusCode, _: axum::http::Version, h: &axum::http::HeaderMap, _: &axum::http::Extensions| {
+        let ct = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+        let compressed_already = (ct.starts_with("image/") && !ct.starts_with("image/svg"))
+            || [
+                "video/",
+                "audio/",
+                "font/woff",
+                "application/zip",
+                "application/gzip",
+                "application/x-gzip",
+                "application/pdf",
+                "application/octet-stream",
+                "application/x-7z",
+                "application/x-rar",
+                "application/zstd",
+            ]
+            .iter()
+            .any(|p| ct.starts_with(p));
+        !compressed_already
+    };
+    tower_http::compression::CompressionLayer::new()
+        .no_br()
+        .no_deflate()
+        .no_zstd()
+        .quality(CompressionLevel::Fastest)
+        .compress_when(SizeAbove::new(1000).and(NotForContentType::SSE).and(NotForContentType::GRPC).and(worth_compressing))
 }
 
 // ── Panics ──────────────────────────────────────────────────────────────────
@@ -392,6 +421,43 @@ pub fn catch_panic_layer() -> tower_http::catch_panic::CatchPanicLayer<fn(Box<dy
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    /// `Content-Encoding` the gzip layer gives a 4 KB body of `content_type`.
+    async fn encoding_for(content_type: &'static str, partial: bool) -> Option<String> {
+        let app = axum::Router::new()
+            .route(
+                "/f",
+                axum::routing::get(move || async move {
+                    let mut r = Response::new(Body::from("a".repeat(4096)));
+                    r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+                    if partial {
+                        *r.status_mut() = StatusCode::PARTIAL_CONTENT;
+                        r.headers_mut().insert(header::CONTENT_RANGE, HeaderValue::from_static("bytes 0-4095/9000"));
+                    }
+                    r
+                }),
+            )
+            .layer(gzip_layer());
+        let req = Request::get("/f").header(header::ACCEPT_ENCODING, "gzip").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        resp.headers().get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn gzip_covers_text_and_skips_already_compressed_media() {
+        for ct in ["application/json", "text/html; charset=utf-8", "image/svg+xml", "application/javascript"] {
+            assert_eq!(encoding_for(ct, false).await.as_deref(), Some("gzip"), "{ct}");
+        }
+        for ct in ["image/png", "image/jpeg", "video/mp4", "audio/mpeg", "application/zip", "application/pdf", "application/octet-stream", "font/woff2", "text/event-stream"] {
+            assert_eq!(encoding_for(ct, false).await, None, "{ct}");
+        }
+    }
+
+    #[tokio::test]
+    async fn gzip_leaves_partial_content_alone() {
+        // Content-Range counts identity bytes; encoding the slice breaks seeking.
+        assert_eq!(encoding_for("application/json", true).await, None);
+    }
 
     #[tokio::test]
     async fn a_panicking_handler_answers_500() {
