@@ -1640,7 +1640,12 @@ Desktop is primary. CLI / server is the developer path.
 
 - **macOS desktop** `[since v1.0]` — Homebrew cask
   (`brew install --cask lthoangg/tap/openagentd`) or `.dmg` with bundled
-  `install.sh` (ad-hoc signs locally).
+  `install.sh` (signs locally). Installs, cask upgrades and in-app updates
+  sign with your Apple Development identity if you have one, else an
+  "OpenAgentd Local Signer" identity kept in its own keychain
+  (`openagentd-signing.keychain-db`), so signing never asks for a password
+  `[v3.3.2]`. Earlier builds kept that identity in the login keychain, where
+  codesign asked to use its key on every install or update.
 - **Linux desktop** `[since v1.0]` — AppImage (`chmod +x`) or `.deb` for
   Debian/Ubuntu.
 - **Windows desktop** `[v1.106.0]` — native x64 `.msi` installer with the

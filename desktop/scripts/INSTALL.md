@@ -18,7 +18,11 @@ the one-time steps required on each supported platform.
 
    The script will:
    - Strip the `com.apple.quarantine` xattr that the browser added.
-   - Ad-hoc codesign the bundle locally (no Apple ID required).
+   - Codesign the bundle locally (no Apple ID required). It uses your
+     Apple Development identity if you have one, otherwise an
+     "OpenAgentd Local Signer" identity kept in its own keychain,
+     `~/Library/Keychains/openagentd-signing.keychain-db`, so signing
+     never asks for your password.
    - Verify the signature.
    - Copy `OpenAgentd.app` into `/Applications/`.
 
