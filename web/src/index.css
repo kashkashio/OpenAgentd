@@ -834,12 +834,13 @@ html[data-mobile-shell][data-vp-anim] .settings-modal-shell {
 }
 
 /* ─────────────────────────────────────────────────────────────
- * Font-weight transition — signature interaction.
+ * Font-weight on hover/press — signature interaction.
  * Apply to buttons, nav items, tabs, menu items. Not prose.
+ * Not transitioned: animating font-weight re-lays-out the text on every
+ * frame of the transition.
  * ───────────────────────────────────────────────────────────── */
 .interactive-weight {
   font-weight: 400;
-  transition: font-weight var(--motion-fast) var(--ease-in-out);
 }
 .interactive-weight:hover  { font-weight: 500; }
 .interactive-weight:active { font-weight: 600; }

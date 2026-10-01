@@ -64,7 +64,7 @@ export function TelemetryOverlay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: DURATIONS_S.fast }}
-            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px]"
+            className="fixed inset-0 z-50 bg-black/40"
             onClick={close}
             aria-hidden="true"
             data-swipe-ignore

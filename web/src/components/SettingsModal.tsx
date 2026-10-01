@@ -310,7 +310,7 @@ export function SettingsModal() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: DURATIONS_S.fast }}
-            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px]"
+            className="fixed inset-0 z-50 bg-black/40"
             onClick={closeSettings}
             aria-hidden="true"
             // Full-screen on mobile — must not be readable by the outer
