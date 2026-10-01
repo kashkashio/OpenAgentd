@@ -8,6 +8,7 @@
 
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from '@tanstack/markdown/react'
+import { parseMarkdown } from '@tanstack/markdown'
 import { streamingMarkdownExtension } from '@tanstack/markdown/extensions/streaming'
 import { ImageOff, FileVideo, Check, Copy } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -21,6 +22,7 @@ import { tokenizeCode } from '@/utils/code-highlight'
 import { MermaidBlock } from '@/utils/MermaidBlock'
 import { isVideoSrc } from '@/utils/workspace'
 import { useSmoothStream } from '@/hooks/useSmoothStream'
+import { createMarkdownChunker } from '@/utils/markdown-chunks'
 import {
   MathBlock,
   MathSpan,
@@ -603,6 +605,12 @@ export const MarkdownTable = memo(function MarkdownTable(
  *
  * While ``isStreaming``, the text is eased in with ``useSmoothStream`` so a
  * chunky stream reads as steady typing.
+ *
+ * A message that streams renders as settled chunks plus a live tail
+ * (``markdown-chunks.ts``), so each update parses and reconciles only the
+ * tail; it keeps that tree after the stream ends, so finished code blocks
+ * and media do not remount. A message that never streamed (history)
+ * renders whole: it is parsed once anyway.
  */
 export const MarkdownBlock = memo(function MarkdownBlock({
   content,
@@ -626,23 +634,41 @@ export const MarkdownBlock = memo(function MarkdownBlock({
     () => isStreaming ? markClosedStreamingMermaidFences(fixedContent) : fixedContent,
     [fixedContent, isStreaming],
   )
+  const [streamed, setStreamed] = useState(isStreaming)
+  if (isStreaming && !streamed) setStreamed(true)
+  const [chunk] = useState(() => createMarkdownChunker(parseMarkdownText))
+  const chunks = useMemo(
+    () => (streamed ? chunk(renderedContent, !isStreaming) : null),
+    [streamed, chunk, renderedContent, isStreaming],
+  )
 
   return (
     <MarkdownStreamingContext.Provider value={isStreaming}>
       <MarkdownSessionContext.Provider value={sessionId}>
         <div className="oa-prose text-sm">
-          <Markdown
-            extensions={_EXTENSIONS}
-            frontmatter={false}
-            headingIds={false}
-            components={MARKDOWN_COMPONENTS}
-          >
-            {renderedContent}
-          </Markdown>
+          {chunks ? (
+            chunks.map((c, index) => <MarkdownChunkView key={index} doc={c.doc} />)
+          ) : (
+            <Markdown
+              extensions={_EXTENSIONS}
+              frontmatter={false}
+              headingIds={false}
+              components={MARKDOWN_COMPONENTS}
+            >
+              {renderedContent}
+            </Markdown>
+          )}
         </div>
       </MarkdownSessionContext.Provider>
     </MarkdownStreamingContext.Provider>
   )
+})
+
+/** One parsed chunk. Settled chunks keep their document, so they skip render. */
+const MarkdownChunkView = memo(function MarkdownChunkView({ doc }: { doc: ReturnType<typeof parseMarkdown> }) {
+  // Extensions only act while parsing; rendering a parsed document needs
+  // just the component map.
+  return <Markdown components={MARKDOWN_COMPONENTS}>{doc}</Markdown>
 })
 
 // The renderer creates each ``components`` entry as a component type, so the
@@ -745,8 +771,19 @@ const MARKDOWN_COMPONENTS = {
 // retroactively reinterpret its opening lines as metadata, and ``headingIds``
 // is off because a streamed heading would otherwise change its own element id
 // on every delta.
-const _EXTENSIONS = [
-  streamingMarkdownExtension(),
-  mathMarkdownExtension(),
-  planMarkdownExtension(),
-]
+//
+// The streaming extension only trims the document's *last* block, so settled
+// chunks (see ``markdown-chunks.ts``) parse without it; only the live tail,
+// which ends where the whole text ends, keeps it.
+const _SETTLED_EXTENSIONS = [mathMarkdownExtension(), planMarkdownExtension()]
+const _EXTENSIONS = [streamingMarkdownExtension(), ..._SETTLED_EXTENSIONS]
+
+/** Extensions for the live tail and for settled chunks. */
+// eslint-disable-next-line react-refresh/only-export-components
+export const MARKDOWN_EXTENSIONS = { live: _EXTENSIONS, settled: _SETTLED_EXTENSIONS }
+
+/** Parses like `MarkdownBlock` renders; `live` for a stream's last chunk. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function parseMarkdownText(text: string, live: boolean) {
+  return parseMarkdown(text, { extensions: live ? _EXTENSIONS : _SETTLED_EXTENSIONS, frontmatter: false, headingIds: false })
+}
