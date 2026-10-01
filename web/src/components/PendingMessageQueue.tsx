@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Paperclip, Pencil } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { useHeldMessagesStore } from '@/stores/useHeldMessagesStore'
+import { useToastStore } from '@/stores/useToastStore'
 import type { MessageAttachment } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { designFeedbackPlainText } from '@/lib/design-feedback'
@@ -81,8 +82,20 @@ function QueuedBubble({ content, attachments, label, onEdit }: {
   content: string
   attachments?: MessageAttachment[]
   label: string
-  onEdit: () => void
+  onEdit: () => void | Promise<void>
 }) {
+  // A steer's edit waits for the server's cancel; a second click meanwhile
+  // would cancel it twice.
+  const [busy, setBusy] = useState(false)
+  const edit = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await onEdit()
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="group flex justify-end">
       <div className="flex max-w-full flex-col items-end gap-1.5 md:max-w-[78%]">
@@ -92,7 +105,8 @@ function QueuedBubble({ content, attachments, label, onEdit }: {
             <TooltipTrigger
               render={
                 <button
-                  onClick={onEdit}
+                  onClick={() => { void edit() }}
+                  disabled={busy}
                   aria-label="Edit queued message"
                   className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-(--color-text-muted) opacity-100 transition-colors hover:bg-(--bg-key) hover:text-(--color-text) md:h-6 md:w-6 md:opacity-70 md:group-hover:opacity-100"
                 >
@@ -153,9 +167,16 @@ export const PendingMessageQueue = memo(function PendingMessageQueue() {
           attachments={msg.attachments}
           // The backend hands it to the agent before its next model call.
           label="Read before the next step"
-          onEdit={() => {
-            restoreDraft(msg.content, msg.files)
-            removePendingMessage(msg.id)
+          onEdit={async () => {
+            const outcome = await removePendingMessage(msg.id)
+            if (outcome === 'cancelled') restoreDraft(msg.content, msg.files)
+            else if (outcome === 'sent') {
+              useToastStore.getState().push({
+                tone: 'info',
+                title: 'Already sent to the agent',
+                description: 'It reached the agent before it could be edited.',
+              })
+            }
           }}
         />
       ))}

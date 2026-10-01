@@ -26,7 +26,7 @@ import { mock, describe, it, expect, beforeEach, afterEach, spyOn } from "bun:te
 const mockPostAgentChat = mock(() =>
   Promise.resolve({ status: "ok", session_id: "team-sid" })
 ) as any
-const mockCancelQueuedAgentMessage = mock(() => Promise.resolve()) as any
+const mockCancelQueuedAgentMessage = mock(() => Promise.resolve(true)) as any
 const mockPostAgentCommand = mock(() =>
   Promise.resolve({ status: "accepted", session_id: "team-sid", command: "continue" })
 ) as any
@@ -1097,7 +1097,7 @@ describe("sendMessage: queue behaviour", () => {
     expect(typeof pending.submittedAt).toBe("number")
   })
 
-  it("removePendingMessage removes message by id", () => {
+  it("removePendingMessage removes message by id", async () => {
     useAgentStore.setState({
       _pendingMessages: [
         { id: "pm-1", content: "first" },
@@ -1105,7 +1105,7 @@ describe("sendMessage: queue behaviour", () => {
         { id: "pm-3", content: "third" },
       ],
     })
-    useAgentStore.getState().removePendingMessage("pm-2")
+    await expect(useAgentStore.getState().removePendingMessage("pm-2")).resolves.toBe("cancelled")
     const pending = useAgentStore.getState()._pendingMessages
     expect(pending).toHaveLength(2)
     expect(pending[0].content).toBe("first")

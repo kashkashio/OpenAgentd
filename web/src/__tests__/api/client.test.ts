@@ -148,16 +148,18 @@ describe('postAgentChat', () => {
       return Promise.resolve(new Response(null, { status: 204 }))
     }) as typeof fetch
 
-    await cancelQueuedMessage('sid', 'mid')
+    await expect(cancelQueuedMessage('sid', 'mid')).resolves.toBe(true)
 
     expect(String(url)).toBe('/api/agent/sessions/sid/queued-messages/mid')
     expect(method).toBe('DELETE')
   })
 
-  it('treats missing queued messages as already cancelled', async () => {
+  // 404: the agent read it first. The caller must not hand it back for
+  // editing, or the user resends what the agent already has.
+  it('reports a queued message that is no longer queued', async () => {
     globalThis.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({ detail: 'not found' }), { status: 404 }))) as typeof fetch
 
-    await expect(cancelQueuedMessage('sid', 'mid')).resolves.toBeUndefined()
+    await expect(cancelQueuedMessage('sid', 'mid')).resolves.toBe(false)
   })
 })
 

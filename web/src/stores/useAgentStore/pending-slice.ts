@@ -309,17 +309,28 @@ export const createPendingSlice: StateCreator<
     }
   },
 
-  removePendingMessage: (id: string) => {
+  removePendingMessage: async (id: string) => {
     const pending = get()._pendingMessages.find((m) => m.id === id)
-    set((draft) => {
+    const drop = () => set((draft) => {
       draft._pendingMessages = draft._pendingMessages.filter((m) => m.id !== id)
     })
-    if (pending?.sessionId) {
-      void cancelQueuedMessage(pending.sessionId, id).catch((err) => {
-        set((draft) => {
-          draft.error = err instanceof Error ? err.message : 'Failed to cancel queued message'
-        })
+    // Already spliced into the transcript: the agent has it.
+    if (!pending) return 'sent'
+    if (!pending.sessionId) {
+      drop()
+      return 'cancelled'
+    }
+    // The chip stays until the server answers: the agent may read the message
+    // in the meantime, and then it is no longer the user's to edit.
+    try {
+      const cancelled = await cancelQueuedMessage(pending.sessionId, id)
+      drop()
+      return cancelled ? 'cancelled' : 'sent'
+    } catch (err) {
+      set((draft) => {
+        draft.error = err instanceof Error ? err.message : 'Failed to cancel queued message'
       })
+      return 'failed'
     }
   },
 })

@@ -269,7 +269,8 @@ export interface AgentStoreActions {
   consumeResolvedSessionReady: (sessionId: string, workspace?: string | null) => boolean
   /** Reset local chat state. Retained for stale async-generation guards in tests. */
   newSession: () => void
-  removePendingMessage: (id: string) => void
+  /** Cancel a queued message: ``sent`` when the agent read it first. */
+  removePendingMessage: (id: string) => Promise<'cancelled' | 'sent' | 'failed'>
   _handleSSEEvent: (type: string, data: unknown) => void
   _drainCacheInvalidations: () => CacheInvalidation[]
   _abortController: AbortController | null
