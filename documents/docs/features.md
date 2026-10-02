@@ -894,6 +894,9 @@ agent against it.
       the empty launcher closes the dock.
     - New tabs open right after the active one. Drag a tab to move it, or
       use `⌥⇧←/→` (`Alt+Shift+←/→`) or **Move Left / Move Right** in its menu.
+      A dragged tab lifts and follows the pointer while the others slide
+      aside to show where it lands; it drops on release, and Escape puts it
+      back `[v3.5.1]`.
       Closing the active tab activates its right neighbour.
     - `⌘1`–`⌘8` pick a tab and `⌘9` the last; `⌃Tab` / `⌃⇧Tab` step through
       them, also from the terminal. In a browser, which keeps these keys for

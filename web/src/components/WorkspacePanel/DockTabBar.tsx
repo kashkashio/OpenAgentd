@@ -28,6 +28,7 @@ import { cn } from '@/lib/utils'
 import type { TerminalSessionMeta } from '@/stores/useTerminalStore'
 import {
   DOCK_ACTION_BUTTON_CLASS,
+  DOCK_TAB_LIFTED_CLASS,
   dockTabButtonClass,
   dockTabClass,
   dockTabCloseClass,
@@ -220,7 +221,7 @@ export function DockTabBar({
               <TerminalTabButton
                 key={tab.id}
                 dockTabId={tab.id}
-                className={dragging ? 'opacity-60' : undefined}
+                className={dragging ? DOCK_TAB_LIFTED_CLASS : undefined}
                 buttonRef={(node) => registerTabRef(tab.id, node)}
                 meta={terminalMetas.find((m) => m.id === tab.termId) ?? {
                   id: tab.termId, contextKey: workspace, title: tab.title, status: 'connecting', order: 0,
@@ -265,7 +266,7 @@ export function DockTabBar({
             </button>
           )
           return (
-            <div key={tab.id} data-dock-tab={tab.id} className={cn(dockTabClass(active), dragging && 'opacity-60')}>
+            <div key={tab.id} data-dock-tab={tab.id} className={cn(dockTabClass(active), dragging && DOCK_TAB_LIFTED_CLASS)}>
               {tooltip ? (
                 <Tooltip className="h-full min-w-0 flex-1">
                   <TooltipTrigger className="h-full min-w-0 flex-1" render={tabButton} />

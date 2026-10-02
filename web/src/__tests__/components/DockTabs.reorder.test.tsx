@@ -157,6 +157,9 @@ describe('moving tabs from the keyboard and the menu', () => {
 describe('dragging tabs', () => {
   /** Lay the tabs out 100 px wide, by their current place in the strip. */
   function layOut() {
+    // A wide strip, so the pointer is never near an edge (no auto-scroll).
+    const strip = document.querySelector<HTMLElement>('[data-dock-tab]')!.parentElement!
+    strip.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 30, width: 1000, height: 30, x: 0, y: 0 }) as DOMRect
     for (const node of document.querySelectorAll<HTMLElement>('[data-dock-tab]')) {
       node.getBoundingClientRect = () => {
         const index = Array.from(document.querySelectorAll('[data-dock-tab]')).indexOf(node)
@@ -164,26 +167,62 @@ describe('dragging tabs', () => {
       }
     }
   }
-  const pointer = (type: 'pointerDown' | 'pointerMove' | 'pointerUp', target: Element, clientX: number) =>
+  const pointer = (type: 'pointerDown' | 'pointerMove' | 'pointerUp' | 'pointerCancel', target: Element, clientX: number) =>
     act(async () => { fireEvent[type](target, { button: 0, pointerId: 1, pointerType: 'mouse', clientX }) })
+  const node = (name: string) => tab(name).closest<HTMLElement>('[data-dock-tab]')!
+  const shift = (name: string) => node(name).style.transform
 
-  it('reorders live once the pointer passes a neighbour’s midpoint', async () => {
+  it('picks the tab up: it follows the pointer, neighbours make room, and it drops on release', async () => {
     const { request } = await renderDock()
     await request({ view: 'review', key: 1 })
     layOut()
     const handle = tab('Terminal 1')
     await pointer('pointerDown', handle, 50)
     await pointer('pointerMove', handle, 140)
-    expect(order()).toEqual(['Terminal 1', 'Git', 'Terminal 2'])
+    expect(shift('Terminal 1')).toBe('translateX(90px)')
+    expect(shift('Git')).toBe('')
+    expect(node('Terminal 1').hasAttribute('data-dragging')).toBe(true)
+
+    // Past Git's midpoint: Git slides left into the gap; the DOM order holds.
     await pointer('pointerMove', handle, 160)
-    expect(order()).toEqual(['Git', 'Terminal 1', 'Terminal 2'])
+    expect(shift('Git')).toBe('translateX(-100px)')
+    expect(shift('Terminal 2')).toBe('')
+    expect(order()).toEqual(['Terminal 1', 'Git', 'Terminal 2'])
+
     await pointer('pointerMove', handle, 260)
-    expect(order()).toEqual(['Git', 'Terminal 2', 'Terminal 1'])
+    expect(shift('Terminal 2')).toBe('translateX(-100px)')
+    expect(order()).toEqual(['Terminal 1', 'Git', 'Terminal 2'])
+
     await pointer('pointerUp', handle, 260)
+    expect(order()).toEqual(['Git', 'Terminal 2', 'Terminal 1'])
+    for (const name of ['Terminal 1', 'Git', 'Terminal 2']) expect(shift(name)).toBe('')
+    expect(node('Terminal 1').hasAttribute('data-dragging')).toBe(false)
 
     // Released: further moves do nothing.
     await pointer('pointerMove', handle, 10)
     expect(order()).toEqual(['Git', 'Terminal 2', 'Terminal 1'])
+  })
+
+  it('keeps the tab inside the strip, and Escape or a cancelled pointer puts it back', async () => {
+    await renderDock()
+    layOut()
+    const handle = tab('Terminal 2')
+    await pointer('pointerDown', handle, 150)
+    await pointer('pointerMove', handle, -400)
+    expect(shift('Terminal 2')).toBe('translateX(-100px)')
+    expect(shift('Terminal 1')).toBe('translateX(100px)')
+
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+    expect(shift('Terminal 1')).toBe('')
+    expect(shift('Terminal 2')).toBe('')
+    await pointer('pointerUp', handle, -400)
+    expect(order()).toEqual(['Terminal 1', 'Terminal 2'])
+
+    await pointer('pointerDown', handle, 150)
+    await pointer('pointerMove', handle, 20)
+    await pointer('pointerCancel', handle, 20)
+    expect(order()).toEqual(['Terminal 1', 'Terminal 2'])
+    expect(shift('Terminal 2')).toBe('')
   })
 
   it('a short press is still a click, and the close button is no handle', async () => {
