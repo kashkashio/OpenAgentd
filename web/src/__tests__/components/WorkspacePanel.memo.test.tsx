@@ -72,7 +72,7 @@ describe('Review dock list memoization', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const panel = (centerWidth: number) => (
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} />
+        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} viewRequest={{ view: 'review', key: 1 }} />
       </QueryClientProvider>
     )
     let rerender: (ui: React.ReactElement) => void = () => {}

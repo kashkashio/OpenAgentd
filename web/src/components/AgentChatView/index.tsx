@@ -304,6 +304,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     showTodos,
     showMobileActions,
     handleWorkspaceFiles,
+    handleOpenGit,
     handleSidebarToggle,
     handleOpenWorkspaceDialog,
     handleFileSelect,
@@ -503,6 +504,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     workspacePanelOpen: workspacePanel !== null,
     handleNewSession,
     handleWorkspaceFiles,
+    handleOpenGit: workspace && !isChatWorkspace ? handleOpenGit : undefined,
     handleSidebarToggle,
     handleToggleAgentCapabilities,
     handleToggleTasks,
@@ -832,6 +834,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
               onClearPlan={handleClearPlan}
               onFileSelect={handleFileSelect}
               onAddComment={handleAddFileComment}
+              onRequestClose={() => setWorkspacePanel(null)}
             />
           )}
         </AnimatePresence>
@@ -848,7 +851,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
         sessionThinkingLevel={sessionThinkingLevel}
         sessionFastMode={storeState.sessionFastMode}
         onToggleSessionSettings={handleToggleAgentCapabilities}
-        onOpenGitChanges={workspace ? handleWorkspaceFiles : undefined}
+        onOpenGitChanges={workspace && !isChatWorkspace ? handleOpenGit : undefined}
       />
 
       <AgentChatPanels

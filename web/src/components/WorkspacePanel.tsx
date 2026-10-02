@@ -40,7 +40,6 @@ import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/
 import { useClaimStrandedFocus } from '@/hooks/use-dock-focus'
 import { useElementWidth } from '@/hooks/use-element-width'
 import { usePlatform } from '@/hooks/use-platform'
-import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
 import {
   DOCK_MIN_WIDTH,
   dockMaxWidth,
@@ -49,6 +48,7 @@ import {
 } from '@/lib/workbench-layout'
 import { useGitPanelStore, DEFAULT_WORKSPACE_STATE } from '@/stores/useGitPanelStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
+import { useUIStore } from '@/stores/useUIStore'
 import type { SessionPlan, TodoItem, WorkspaceFileInfo } from '@/api/types'
 import { type PreviewTarget, closePreview, isLocalBackend, lastPreviewUrl } from '@/api/preview'
 import { EASINGS } from '@/lib/motion'
@@ -72,6 +72,7 @@ import { PreviewTabView } from './Preview/PreviewTabView'
 import type { DesignFeedback } from '@/lib/design-feedback'
 import { SchedulerDockView } from './SchedulerPanel/SchedulerDockView'
 import { DockTabBar } from './WorkspacePanel/DockTabBar'
+import { DockLauncher } from './WorkspacePanel/DockLauncher'
 import { DockActionMenus, type CommitActionTarget } from './WorkspacePanel/DockActionMenus'
 import { CloseTerminalDialog } from './WorkspacePanel/CloseTerminalDialog'
 import { useGitActions } from './WorkspacePanel/useGitActions'
@@ -144,6 +145,7 @@ export function WorkspacePanel({
   onAddComment,
   onSendPreviewComments,
   chatWorkspace = false,
+  onRequestClose,
 }: {
   workspace: string
   open: boolean
@@ -189,6 +191,8 @@ export function WorkspacePanel({
    * home-sized repo nor offers whole-home discard/revert actions.
    */
   chatWorkspace?: boolean
+  /** Closes the dock: ⌘W on the empty launcher. */
+  onRequestClose?: () => void
 }) {
   const prefersReducedMotion = useReducedMotion()
   const { os } = usePlatform()
@@ -219,6 +223,7 @@ export function WorkspacePanel({
     openDiffTab,
     openCommitTab,
     openPreviewTab,
+    openGitTab,
     openTerminal,
     closeTab,
     closeOtherTabs,
@@ -243,6 +248,7 @@ export function WorkspacePanel({
     handledPreviewRequestKeyRef,
     onTabClosed: handleTabClosed,
     focusTab: (id) => requestAnimationFrame(() => tabButtonRefs.current.get(id)?.focus()),
+    onCloseDock: onRequestClose,
   })
   const [mobileFileActions, setMobileFileActions] = useState<ChangedFileInfo | null>(null)
   const [mobileCommitActions, setMobileCommitActions] = useState<CommitActionTarget | null>(null)
@@ -299,8 +305,10 @@ export function WorkspacePanel({
   })
   // The toggle is meaningless while a narrow window already forces overlay.
   const maximizeState = mobile || (overlay && !dockMaximized) ? null : dockMaximized
-  // Covering the chat makes it inert, which drops its focus onto <body>.
-  useClaimStrandedFocus(open && overlay, activeTabId, () => tabButtonRefs.current.get(activeTabId) ?? null)
+  // Covering the chat makes it inert, which drops its focus onto <body>:
+  // take it on the active tab, or the launcher's first row when empty.
+  useClaimStrandedFocus(open && overlay, activeTabId, () =>
+    tabButtonRefs.current.get(activeTabId) ?? document.querySelector<HTMLElement>('[data-dock-launcher] button'))
 
   // ── Server state ──────────────────────────────────────────────────────────
   const files = useQuery({
@@ -660,15 +668,15 @@ export function WorkspacePanel({
             <SchedulerDockView contextWorkspace={chatWorkspace ? null : workspace} />
           ) : activeTab?.type === 'preview' ? (
             null
-          ) : chatWorkspace ? (
-            <div className="flex h-full items-center justify-center px-4">
-              <p className="max-w-56 text-center text-xs text-(--color-text-subtle)">
-                Open a file with{' '}
-                <span className="font-medium text-(--color-text-muted)">{shortcutLabel(APP_SHORTCUTS.quickOpen, os)}</span>{' '}
-                or start a terminal.
-              </p>
-            </div>
-          ) : null}
+          ) : (
+            <DockLauncher
+              os={os}
+              onOpenGit={chatWorkspace ? undefined : openGitTab}
+              onOpenTerminal={openTerminal}
+              onOpenPreview={previewsAvailable ? openNewPreview : undefined}
+              onOpenFile={mobile ? undefined : () => useUIStore.getState().openQuickOpen('')}
+            />
+          )}
         </div>
         <CloseTerminalDialog
           open={confirmCloseOpen}

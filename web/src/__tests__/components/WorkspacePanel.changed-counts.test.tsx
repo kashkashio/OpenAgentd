@@ -80,7 +80,7 @@ describe('Changes tab counters', () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <WorkspacePanel workspace={WORKSPACE} open />
+          <WorkspacePanel workspace={WORKSPACE} open viewRequest={{ view: 'review', key: 1 }} />
         </QueryClientProvider>,
       )
     })

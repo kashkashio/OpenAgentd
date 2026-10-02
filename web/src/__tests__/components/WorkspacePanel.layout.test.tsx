@@ -53,13 +53,13 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-async function renderPanel({ centerWidth = 1000, mobile = false } = {}) {
+async function renderPanel({ centerWidth = 1000, mobile = false, git = false } = {}) {
   const { WorkspacePanel } = await import('@/components/WorkspacePanel')
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
     render(
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} mobile={mobile} />
+        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} mobile={mobile} viewRequest={git ? { view: 'review', key: 1 } : null} />
       </QueryClientProvider>,
     )
   })
@@ -137,11 +137,25 @@ describe('Review dock layout', () => {
     document.body.appendChild(chat)
     composer.focus()
 
-    await renderPanel({ centerWidth: 600 })
+    await renderPanel({ centerWidth: 600, git: true })
 
     const activeTab = document.querySelector('[data-review-dock] [aria-current="true"]')
     expect(activeTab).not.toBeNull()
     expect(document.activeElement).toBe(activeTab)
+    chat.remove()
+  })
+
+  it('lands stranded focus on the launcher when the covering dock is empty', async () => {
+    const chat = document.createElement('main')
+    chat.setAttribute('inert', '')
+    const composer = document.createElement('textarea')
+    chat.appendChild(composer)
+    document.body.appendChild(chat)
+    composer.focus()
+
+    await renderPanel({ centerWidth: 600 })
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Git \(/ }))
     chat.remove()
   })
 

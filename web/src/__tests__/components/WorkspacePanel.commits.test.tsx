@@ -97,6 +97,7 @@ async function renderCommitsTab(mobile = false) {
           workspace={WORKSPACE}
           open
           mobile={mobile}
+          viewRequest={{ view: 'review', key: 1 }}
         />
       </QueryClientProvider>,
     )
@@ -413,6 +414,7 @@ async function renderWithCommitsSubtab(ahead: number | null, behind: number | nu
           workspace={WORKSPACE}
           open
           mobile={false}
+          viewRequest={{ view: 'review', key: 1 }}
         />
       </QueryClientProvider>,
     )
@@ -470,6 +472,7 @@ describe('WorkspacePanel – commits_ahead badge', () => {
             workspace={WORKSPACE}
             open
             mobile={false}
+            viewRequest={{ view: 'review', key: 1 }}
           />
         </QueryClientProvider>,
       )

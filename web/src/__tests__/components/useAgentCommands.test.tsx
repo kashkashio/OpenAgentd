@@ -108,6 +108,20 @@ describe("useAgentCommands — shortcut labels", () => {
     const { result } = renderHook(() => useAgentCommands(makeArgs({ handleOpenPlan: () => {}, planAwaitingReview: true })))
     expect(byId(result.current, "open-plan").description).toMatch(/^Waiting for your review/)
   })
+
+  it("names Ctrl+D Toggle Review Dock and lists Open Git only for project workspaces", () => {
+    const noGit = renderHook(() => useAgentCommands(makeArgs()))
+    expect(byId(noGit.result.current, "workspace-files").label).toBe("Toggle Review Dock")
+    expect(noGit.result.current.find((c) => c.id === "open-git")).toBeUndefined()
+
+    const handleOpenGit = mock(() => {})
+    const withGit = renderHook(() => useAgentCommands(makeArgs({ handleOpenGit })))
+    const cmd = byId(withGit.result.current, "open-git")
+    expect(cmd.label).toBe("Open Git")
+    expect(cmd.shortcut).toBe("Ctrl+Shift+G")
+    cmd.action()
+    expect(handleOpenGit).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ════════════════════════════════════════════════════════════════════════════

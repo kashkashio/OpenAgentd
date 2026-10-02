@@ -116,8 +116,8 @@ export function DockTabMenuItems({ tab, tabs, workspace, dismiss, onClose, onClo
   onCloseToRight?: (id: string) => void
 }): ReactNode {
   const index = tabs.findIndex((item) => item.id === tab.id)
-  const hasOthers = tabs.some((item) => item.id !== tab.id && item.type !== 'review')
-  const hasRight = tabs.slice(index + 1).some((item) => item.type !== 'review')
+  const hasOthers = tabs.length > 1
+  const hasRight = index >= 0 && index < tabs.length - 1
   const path = tabPath(tab, workspace)
   const item = (label: string, run: () => void, icon?: ReactNode, disabled = false) => (
     <button
@@ -133,7 +133,7 @@ export function DockTabMenuItems({ tab, tabs, workspace, dismiss, onClose, onClo
   )
   return (
     <>
-      {onClose && tab.type !== 'review' && item('Close', () => onClose(tab.id), <X size={12} aria-hidden="true" />)}
+      {onClose && item('Close', () => onClose(tab.id), <X size={12} aria-hidden="true" />)}
       {onCloseOthers && item('Close Others', () => onCloseOthers(tab.id), undefined, !hasOthers)}
       {onCloseToRight && item('Close to the Right', () => onCloseToRight(tab.id), undefined, !hasRight)}
       {path && item('Copy Path', () => { void navigator.clipboard?.writeText(path) }, <Copy size={12} aria-hidden="true" />)}
@@ -189,11 +189,11 @@ export function DockTabBar({
                 active={active}
                 mobile={mobile}
                 onActivate={() => onActivate(tab.id)}
+                onClose={() => onClose(tab.id)}
                 extraMenuItems={(dismiss) => sharedMenu(tab, dismiss)}
               />
             )
           }
-          const closable = tab.type !== 'review'
           const label = dockTabLabel(tab)
           const tooltip = dockTabTooltip(tab)
           const tabButton = (
@@ -215,11 +215,11 @@ export function DockTabBar({
                 setMenu({ id: tab.id, x: at.clientX, y: at.clientY })
               }}
               onAuxClick={(event) => {
-                if (!closable || event.button !== 1) return
+                if (event.button !== 1) return
                 event.preventDefault()
                 onClose(tab.id)
               }}
-              className={cn(dockTabButtonClass(closable), 'flex-1')}
+              className={cn(dockTabButtonClass(true), 'flex-1')}
             >
               <TabIcon tab={tab} />
               <span className={cn('truncate', !isViewTab(tab) && 'font-mono')}>{tab.title}</span>
@@ -233,17 +233,15 @@ export function DockTabBar({
                   <TooltipContent side="bottom">{tooltip}</TooltipContent>
                 </Tooltip>
               ) : tabButton}
-              {closable && (
-                <button
-                  type="button"
-                  data-zone-skip
-                  onClick={() => onClose(tab.id)}
-                  className={dockTabCloseClass(active)}
-                  aria-label={`Close ${label}`}
-                >
-                  <X size={11} aria-hidden="true" />
-                </button>
-              )}
+              <button
+                type="button"
+                data-zone-skip
+                onClick={() => onClose(tab.id)}
+                className={dockTabCloseClass(active)}
+                aria-label={`Close ${label}`}
+              >
+                <X size={11} aria-hidden="true" />
+              </button>
             </div>
           )
         })}

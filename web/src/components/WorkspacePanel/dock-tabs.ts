@@ -1,12 +1,12 @@
 /**
  * Review dock tab model.
  *
- * The dock is an editor-style strip: one pinned Git review tab plus any
- * number of file previews, full-height diffs, commit views, web previews,
- * and terminals.
- * The agent task list and the scheduler are singleton tabs opened on demand
- * (⌘T and the Scheduled Tasks command on desktop), and so is the session
- * plan (from the Tasks view, a plan review, or the transcript).
+ * The dock is an editor-style strip of file previews, full-height diffs,
+ * commit views, web previews, and terminals. It starts empty, on a launcher.
+ * Git, the agent task list, the scheduler, and the session plan are
+ * singleton tabs opened on demand: Git from the status-bar branch or ⌘⇧G,
+ * Tasks with ⌘T, Schedule from its command, the plan from the Tasks view,
+ * a plan review, or the transcript.
  * Tab ids are stable per target so re-opening a file, diff, or commit
  * focuses the existing tab instead of stacking duplicates.
  */
@@ -37,8 +37,8 @@ export type DockTab =
 
 export type DockTabOf<T extends DockTab['type']> = Extract<DockTab, { type: T }>
 
-/** Singleton view tabs the shell can ask the dock to open (Tasks / Scheduled Tasks / Plan). */
-export type DockView = 'tasks' | 'schedule' | 'plan'
+/** Singleton view tabs the shell can ask the dock to open (Git / Tasks / Scheduled Tasks / Plan). */
+export type DockView = 'review' | 'tasks' | 'schedule' | 'plan'
 
 /**
  * A file tab's info at render time. Tabs keep the listing entry they opened
@@ -83,7 +83,7 @@ export const TASKS_TAB: DockTabOf<'tasks'> = { id: TASKS_TAB_ID, type: 'tasks', 
 export const SCHEDULE_TAB: DockTabOf<'schedule'> = { id: SCHEDULE_TAB_ID, type: 'schedule', title: 'Schedule' }
 export const PLAN_TAB: DockTabOf<'plan'> = { id: PLAN_TAB_ID, type: 'plan', title: 'Plan' }
 
-const VIEW_TABS: Record<DockView, DockTab> = { tasks: TASKS_TAB, schedule: SCHEDULE_TAB, plan: PLAN_TAB }
+const VIEW_TABS: Record<DockView, DockTab> = { review: REVIEW_TAB, tasks: TASKS_TAB, schedule: SCHEDULE_TAB, plan: PLAN_TAB }
 
 /** The singleton tab a view request opens. */
 export function viewTab(view: DockView): DockTab {

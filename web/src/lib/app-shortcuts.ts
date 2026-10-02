@@ -43,6 +43,7 @@ export const APP_SHORTCUTS = {
   // Matched on the physical Backquote key: layouts report Shift+` as `~`,
   // `` ` `` or `Dead`, which a character match cannot express.
   terminal: { key: '`', code: 'Backquote', shift: true },
+  openGit: { key: 'G', shift: true },
   shortcutsHelp: { key: '/', switcher: true },
   // Dock tabs by position; matched on the digit key so layouts that print
   // another character there (AZERTY) work too. 9 is the last tab.

@@ -42,6 +42,8 @@ interface TerminalTabButtonProps {
   buttonRef?: (node: HTMLButtonElement | null) => void
   /** Tab-strip items (Close Others, …) appended to the desktop menu. */
   extraMenuItems?: (dismiss: () => void) => ReactNode
+  /** Closes the tab through the dock, which picks the next active tab. */
+  onClose?: () => void
 }
 
 export function TerminalTabButton({
@@ -52,12 +54,14 @@ export function TerminalTabButton({
   className,
   buttonRef,
   extraMenuItems,
+  onClose,
 }: TerminalTabButtonProps) {
   const [desktopMenuAt, setDesktopMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draftTitle, setDraftTitle] = useState(meta.title)
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const close = onClose ?? (() => useTerminalStore.getState().close(meta.id))
 
   const openRename = () => {
     setDraftTitle(meta.title)
@@ -104,7 +108,7 @@ export function TerminalTabButton({
                 onAuxClick={(e) => {
                   if (mobile || e.button !== 1) return
                   e.preventDefault()
-                  useTerminalStore.getState().close(meta.id)
+                  close()
                 }}
                 className={cn(dockTabButtonClass(!mobile), 'flex-1')}
               >
@@ -121,7 +125,7 @@ export function TerminalTabButton({
             data-zone-skip
             onClick={(e) => {
               e.stopPropagation()
-              useTerminalStore.getState().close(meta.id)
+              close()
             }}
             className={dockTabCloseClass(active)}
             aria-label={`Close ${meta.title}`}
@@ -161,7 +165,7 @@ export function TerminalTabButton({
             className={CONTEXT_MENU_ITEM_DANGER_CLASS}
             onClick={() => {
               setDesktopMenuAt(null)
-              useTerminalStore.getState().close(meta.id)
+              close()
             }}
           >
             <X size={12} aria-hidden="true" />
@@ -211,7 +215,7 @@ export function TerminalTabButton({
               className="justify-start"
               onClick={() => {
                 setMobileSheetOpen(false)
-                useTerminalStore.getState().close(meta.id)
+                close()
               }}
               aria-label="Close terminal"
             >

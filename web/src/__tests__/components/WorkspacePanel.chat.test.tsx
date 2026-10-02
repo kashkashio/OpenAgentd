@@ -54,7 +54,7 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-async function renderPanel(chatWorkspace: boolean) {
+async function renderPanel(chatWorkspace: boolean, { openGit = false } = {}) {
   const { WorkspacePanel } = await import('@/components/WorkspacePanel')
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
@@ -64,18 +64,22 @@ async function renderPanel(chatWorkspace: boolean) {
           workspace={WORKSPACE}
           open
           chatWorkspace={chatWorkspace}
+          viewRequest={openGit ? { view: 'review', key: 1 } : null}
         />
       </QueryClientProvider>,
     )
   })
 }
 
+const launcherRow = (name: string) => screen.queryByRole('button', { name: new RegExp(`^${name}( \\(|$)`) })
+
 describe('WorkspacePanel chat workspace', () => {
-  it('drops the Git tab and never probes git for a chat root', async () => {
-    await renderPanel(true)
+  it('never offers Git or probes git for a chat root, even when asked to open it', async () => {
+    await renderPanel(true, { openGit: true })
 
     expect(screen.queryByRole('button', { name: 'Git' })).toBeNull()
-    expect(screen.getByText(/start a terminal/i)).toBeTruthy()
+    expect(launcherRow('Git')).toBeNull()
+    expect(launcherRow('Terminal')).toBeTruthy()
     expect(
       requestedUrls.filter(
         (url) =>
@@ -86,14 +90,22 @@ describe('WorkspacePanel chat workspace', () => {
     ).toEqual([])
   })
 
-  it('keeps the Git tab for coding workspaces', async () => {
+  it('starts a coding workspace empty, with Git on the launcher', async () => {
     await renderPanel(false)
 
-    expect(screen.getByRole('button', { name: 'Git' })).toBeTruthy()
-    expect(screen.queryByText(/start a terminal/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Git' })).toBeNull()
+    await act(async () => { launcherRow('Git')!.click() })
+    const gitTab = screen.getByRole('button', { name: 'Git' })
+    expect(gitTab.getAttribute('aria-current')).toBe('true')
+    expect(launcherRow('Terminal')).toBeNull()
+
+    // Git is an ordinary tab: closing it goes back to the launcher.
+    await act(async () => { screen.getByRole('button', { name: 'Close Git' }).click() })
+    expect(screen.queryByRole('button', { name: 'Git' })).toBeNull()
+    expect(launcherRow('Git')).toBeTruthy()
   })
 
-  it('brings the Git tab back when the open dock moves from Chat to a project', async () => {
+  it('offers Git again when the open dock moves from Chat to a project', async () => {
     // The dock stays open across workspace switches, so the same panel
     // instance receives the new workspace.
     const { WorkspacePanel } = await import('@/components/WorkspacePanel')
@@ -107,12 +119,11 @@ describe('WorkspacePanel chat workspace', () => {
     await act(async () => {
       rerender = render(panel(WORKSPACE, true)).rerender
     })
-    expect(screen.queryByRole('button', { name: 'Git' })).toBeNull()
+    expect(launcherRow('Git')).toBeNull()
 
     await act(async () => {
       rerender(panel('/home/user/code/site', false))
     })
-    const gitTab = screen.getByRole('button', { name: 'Git' })
-    expect(gitTab.getAttribute('aria-current')).toBe('true')
+    expect(launcherRow('Git')).toBeTruthy()
   })
 })

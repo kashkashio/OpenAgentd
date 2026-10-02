@@ -61,9 +61,9 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-/** Git plus three terminals: [Git, Terminal 1, Terminal 2, Terminal 3]. */
-async function renderDock({ open = true, exited = false } = {}) {
-  for (let i = 0; i < 3; i++) useTerminalStore.getState().open({ workspace: WORKSPACE }, WORKSPACE)
+/** By default Git plus three terminals: [Git, Terminal 1, Terminal 2, Terminal 3]. */
+async function renderDock({ open = true, exited = false, terminals = 3, git = true, onRequestClose = undefined as (() => void) | undefined } = {}) {
+  for (let i = 0; i < terminals; i++) useTerminalStore.getState().open({ workspace: WORKSPACE }, WORKSPACE)
   if (exited) {
     useTerminalStore.setState((state) => ({
       sessions: Object.fromEntries(Object.entries(state.sessions).map(([id, meta]) => [id, { ...meta, status: 'exited' as const }])),
@@ -74,11 +74,17 @@ async function renderDock({ open = true, exited = false } = {}) {
   await act(async () => {
     render(
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open={open} terminalOpenKey={0} />
+        <WorkspacePanel
+          workspace={WORKSPACE}
+          open={open}
+          terminalOpenKey={0}
+          viewRequest={git ? { view: 'review', key: 1 } : null}
+          onRequestClose={onRequestClose}
+        />
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Terminal 3' })).toBeTruthy())
+  if (terminals > 0) await waitFor(() => expect(screen.getByRole('button', { name: `Terminal ${terminals}` })).toBeTruthy())
 }
 
 const tab = (name: string) => screen.getByRole('button', { name })
@@ -146,14 +152,14 @@ describe('dock tab keys', () => {
 })
 
 describe('dock tab menu', () => {
-  it('Close Others keeps the chosen tab and Git, and makes it active', async () => {
+  it('Close Others keeps only the chosen tab, and makes it active', async () => {
     await renderDock({ exited: true })
     fireEvent.contextMenu(tab('Terminal 2'))
     await act(async () => { screen.getByRole('menuitem', { name: 'Close Others' }).click() })
     expect(screen.queryByRole('button', { name: 'Terminal 1' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Terminal 3' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Git' })).toBeNull()
     expect(isActive('Terminal 2')).toBe(true)
-    expect(tab('Git')).toBeTruthy()
     expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(1)
   })
 
@@ -164,8 +170,7 @@ describe('dock tab menu', () => {
       git.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }))
     })
     expect(screen.getByRole('menu', { name: 'Actions for Git' })).toBeTruthy()
-    // Git cannot close, but the tabs after it can.
-    expect(screen.queryByRole('menuitem', { name: 'Close' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: 'Close' })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: 'Close to the Right' })).toBeTruthy()
   })
 
@@ -180,5 +185,32 @@ describe('dock tab menu', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Terminal 1' })).toBeNull())
     expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(0)
     expect(isActive('Git')).toBe(true)
+  })
+})
+
+describe('closing tabs', () => {
+  it('activates the right neighbour, or the left one for the last tab', async () => {
+    await renderDock({ exited: true })
+    await press('2')
+    await press('w')
+    expect(screen.queryByRole('button', { name: 'Terminal 1' })).toBeNull()
+    expect(isActive('Terminal 2')).toBe(true)
+
+    // The × button goes through the dock too, not straight to the store.
+    await press('9')
+    await act(async () => { tab('Close Terminal 3').click() })
+    expect(isActive('Terminal 2')).toBe(true)
+  })
+
+  it('shows the launcher once the last tab closes, and Ctrl+W there closes the dock', async () => {
+    const onRequestClose = mock(() => {})
+    await renderDock({ terminals: 0, onRequestClose })
+    await press('w')
+    expect(screen.queryByRole('button', { name: 'Git' })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Git \(/ })).toBeTruthy()
+    expect(onRequestClose).not.toHaveBeenCalled()
+
+    await press('w')
+    expect(onRequestClose).toHaveBeenCalledTimes(1)
   })
 })
