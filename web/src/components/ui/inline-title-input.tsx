@@ -11,12 +11,14 @@ export function InlineTitleInput({
   onSubmit,
   onCancel,
   className = '',
+  maxLength = 255,
 }: {
   initial: string
   label: string
   onSubmit: (title: string) => void
   onCancel: () => void
   className?: string
+  maxLength?: number
 }) {
   const [value, setValue] = useState(initial)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -57,7 +59,7 @@ export function InlineTitleInput({
       onBlur={() => settle(true)}
       onClick={(event) => event.stopPropagation()}
       aria-label={label}
-      maxLength={255}
+      maxLength={maxLength}
       className={`min-w-0 rounded-xs border border-(--focus-ring) bg-(--bg-page) px-1 text-(--color-text) outline-none ring-2 ring-(--focus-ring)/25 ${className}`}
     />
   )

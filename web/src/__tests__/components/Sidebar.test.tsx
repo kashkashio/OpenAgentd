@@ -2020,27 +2020,26 @@ describe('Sidebar workspace trust flow', () => {
     const row = (title: string) =>
       Array.from(document.querySelectorAll<HTMLElement>('[data-sidebar-session]')).find((el) => el.textContent?.includes(title))!
 
-    it('is one Tab stop that enters on the open session, with hover actions out of Tab order', async () => {
+    it('keeps every row and its actions in Tab order', async () => {
       twoSessions()
       await renderSidebarForSessions('session-1')
       await frame()
-      expect(row('First').tabIndex).toBe(0)
       expect(row('First').getAttribute('aria-current')).toBe('page')
-      expect(row('Second').tabIndex).toBe(-1)
-      expect(screen.getByLabelText('Collapse repository project').tabIndex).toBe(-1)
-      expect(screen.getByLabelText('Edit session First').tabIndex).toBe(-1)
-      expect(screen.getByLabelText('Delete session First').tabIndex).toBe(-1)
-      expect(screen.getByLabelText('Actions for project').tabIndex).toBe(-1)
-      expect(screen.getByRole('toolbar', { name: 'Workspace actions' })).toBeTruthy()
+      for (const el of [
+        row('First'),
+        row('Second'),
+        screen.getByLabelText('Collapse repository project'),
+        screen.getByLabelText('Edit session First'),
+        screen.getByLabelText('Delete session First'),
+        screen.getByLabelText('Actions for project'),
+      ]) expect(el.tabIndex).toBe(0)
     })
 
-    it('walks rows with arrows and climbs and folds the workspace with Left/Right', async () => {
+    it('climbs and folds the workspace with Left/Right', async () => {
       const user = userEvent.setup()
       twoSessions()
       await renderSidebarForSessions('session-1')
-      row('First').focus()
-      await user.keyboard('{ArrowDown}')
-      expect(document.activeElement).toBe(row('Second'))
+      row('Second').focus()
       await user.keyboard('{ArrowLeft}')
       const header = screen.getByLabelText('Collapse repository project')
       expect(document.activeElement).toBe(header)

@@ -38,7 +38,7 @@ import {
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { PanelResizeHandle, ResizableAside, settledWidthBesidePanels, type LiveWidth } from '@/components/ResizableAside'
 import { useClaimStrandedFocus } from '@/hooks/use-dock-focus'
-import { focusQuietly } from '@/lib/focus/zones'
+import { focusQuietly } from '@/lib/focus/quiet'
 import { useElementWidth } from '@/hooks/use-element-width'
 import { usePlatform } from '@/hooks/use-platform'
 import {

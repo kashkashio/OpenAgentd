@@ -24,10 +24,12 @@ web/src/__tests__/
   components/       One file per component (or per concern slice)
   hooks/            Hook-only tests
   stores/           Zustand store tests
+  lib/              lib/ modules (keyboard, design feedback, focus, …)
   utils/            Pure utility / helper tests
   routes/           Route-level tests
+  queries/          TanStack Query factories
   api/              API client tests
-  setup.ts          Global preload — Happy DOM + SVG stubs
+  setup.ts          Global preload (bunfig.toml) — Happy DOM, SVG `?url` stubs, framer-motion stub
 ```
 
 Mirror the source path: `components/Foo.tsx` → `__tests__/components/Foo.test.tsx`.
@@ -59,7 +61,8 @@ import { MyComponent } from '@/components/MyComponent'
 
 afterEach(cleanup)
 
-// Suppress lucide SVG noise in Happy DOM (required in every component test file)
+// Optional: stub lucide icons when a heavy tree renders many of them. Files that
+// need named icons list them instead: mock.module('lucide-react', () => ({ X: Icon }))
 mock.module('lucide-react', () => new Proxy({}, { get: () => () => null }))
 ```
 
@@ -145,7 +148,7 @@ expect(spy).toHaveBeenCalledWith(expect.stringContaining('oops'))
 ### ⚠️ Isolation rule
 
 `mock.module()` patches the **global** Bun module registry. `mock.restore()` does NOT undo it.
-**Always run tests with `--parallel`** (the project default) so each file gets its own worker process.
+**Always run tests with `--parallel`** (`bun run test` and `make verify-web` pass it) so each file gets its own worker process.
 If a test file uses `mock.module()` for a module that another file also imports normally, they **must** be in separate files and rely on `--parallel` for isolation — never pass both to a single `bun test` invocation without `--parallel`.
 
 ---
@@ -169,7 +172,7 @@ const makeCompactionBlock = (id: string, content: string, state: 'compacting' | 
   ({ id, type: 'compaction', content, extra: { state } })
 ```
 
-### AgentStream factory (for `AgentPane` tests)
+### AgentStream factory (shape: `AgentStream` in `stores/useAgentStore/types.ts`)
 
 ```ts
 import type { AgentStream } from '@/stores/useAgentStore'
@@ -179,7 +182,7 @@ function makeStream(overrides: Partial<AgentStream> = {}): AgentStream {
     blocks: [], currentBlocks: [], currentText: '', currentThinking: '',
     status: 'idle',
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
-    _completionBase: 0, model: null, lastError: null,
+    model: null, lastError: null,
     ...overrides,
   }
 }
@@ -205,16 +208,6 @@ function renderView(props: Partial<React.ComponentProps<typeof AgentView>> = {})
     />
   )
 }
-```
-
-### `AgentPane`
-
-```ts
-import { AgentPane } from '@/components/AgentPane'
-
-// AgentPane takes `name`, `stream`, `isLead` — NOT blocks/isWorking directly.
-// isWorking is derived from stream.status === 'working'
-render(<AgentPane name="researcher" stream={makeStream({ status: 'working' })} isLead={false} />)
 ```
 
 ---
@@ -244,10 +237,10 @@ const blocks = useAgentStore.getState().agentStreams.lead.blocks
 `isStreaming` is computed per-block in `AssistantTurnFooter`:
 
 ```
-isStreaming = isWorking && absoluteBlockIndex >= finalizedCount
+isStreaming = isCompactionStreaming || (isWorking && absoluteBlockIndex >= finalizedCount && isLast)
 ```
 
-- A block in `currentBlocks` (not yet flushed) is streaming when `isWorking=true`.
+- Only the last not-yet-finalized block streams while `isWorking=true` (a compaction block also streams while it compacts).
 - A block in `blocks` (finalized) is **never** streaming even if the agent is working on new content.
 - Components that receive `isStreaming` (e.g. `Thinking`, `CompactionDivider`, `MarkdownBlock`) **must** have it forwarded — omitting it silently disables smooth-stream animation.
 
@@ -292,27 +285,28 @@ expect(capturedProps.someProp).toBe(expectedValue)
 ```bash
 cd web
 
-# Full suite (always use --parallel — it's the project default and provides file isolation)
-bun test --parallel src/__tests__
+# Full suite (same as `bun run test`)
+bun run test
 
 # Single file
-bun test src/__tests__/components/MyComponent.test.tsx
+bun test --parallel src/__tests__/components/MyComponent.test.tsx
 
 # Two files (use --parallel to prevent mock.module cross-contamination)
 bun test --parallel src/__tests__/components/A.test.tsx src/__tests__/components/B.test.tsx
 
-# Type-check test files
-bunx tsc -p tsconfig.test.json --noEmit
+# Type-check app and tests (tsc -b follows tsconfig.app.json + tsconfig.test.json)
+bun run typecheck
 ```
 
-TypeScript IDE errors showing "Cannot find module 'bun:test'" in test files are **expected** — the test `tsconfig` excludes `src/__tests__/` from type checking by design. Run the `tsc` command above to catch real errors.
+`tsconfig.app.json` excludes `src/__tests__/`; `tsconfig.test.json` covers it, and
+`bun run typecheck` builds both. CI also runs `bun exec tsc -p tsconfig.test.json --noEmit`.
+An editor that only loads the app config may flag `bun:test` imports; trust `bun run typecheck`.
 
 ---
 
 ## Checklist before committing a test
 
 - [ ] `afterEach(cleanup)` present in every component test file
-- [ ] `lucide-react` mocked at the top of every component test file
 - [ ] `mock.module()` for API clients placed **before** any store import in that file
 - [ ] Store tests reset state in `beforeEach`
 - [ ] `--parallel` used whenever running multiple files that use `mock.module()`

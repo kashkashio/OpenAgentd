@@ -59,16 +59,13 @@ describe('AgentChatHeader', () => {
     expect(screen.getByText('Fix updater restart')).toBeInTheDocument()
   })
 
-  it('is one Tab stop whose controls Left/Right walk', async () => {
-    const user = userEvent.setup()
+  it('keeps every header control in Tab order', () => {
     const { container } = renderHeader({ isMobile: false, onRenameSession: () => undefined })
-    const stops = Array.from(container.querySelectorAll<HTMLElement>('header button')).filter((el) => el.tabIndex === 0)
-    expect(stops).toHaveLength(1)
-    const toggle = screen.getByRole('button', { name: 'Toggle sidebar' })
-    expect(stops[0]).toBe(toggle)
-    toggle.focus()
-    await user.keyboard('{ArrowRight}')
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Rename session Fix updater restart' }))
+    const buttons = Array.from(container.querySelectorAll<HTMLElement>('header button'))
+    expect(buttons.length).toBeGreaterThan(1)
+    expect(buttons.every((el) => el.tabIndex === 0)).toBe(true)
+    expect(screen.getByRole('button', { name: 'Toggle sidebar' }).tabIndex).toBe(0)
+    expect(screen.getByRole('button', { name: 'Rename session Fix updater restart' }).tabIndex).toBe(0)
   })
 
   it('renames the session from its title on desktop', async () => {

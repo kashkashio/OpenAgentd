@@ -47,8 +47,8 @@ export function shortcutHelp(os: OS, { desktopApp = false }: ShortcutHelpOptions
     {
       title: 'Moving around',
       entries: [
-        keys('Next and previous area', { key: 'Tab' }, { key: 'Tab', shift: true }),
-        keys('Move within an area', { key: 'ArrowUp' }, { key: 'ArrowDown' }, { key: 'ArrowLeft' }, { key: 'ArrowRight' }),
+        keys('Next and previous control', { key: 'Tab' }, { key: 'Tab', shift: true }),
+        keys('Collapse and expand a sidebar workspace', { key: 'ArrowLeft' }, { key: 'ArrowRight' }),
         keys('Rename the focused item', { key: 'F2' }),
         keys('Delete the focused item', { key: 'Delete' }, { key: 'Backspace', mod: true }),
         keys('Menu for the focused item', { key: 'F10', shift: true }),

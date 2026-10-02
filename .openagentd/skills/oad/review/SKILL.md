@@ -1,61 +1,77 @@
 ---
 name: oad/review
-description: OpenAgentd five-axis code review workflow — correctness, readability, architecture, security, performance. Use before merging any change, before opening a PR, or when asked to review a diff.
+description: OpenAgentd five-axis code review — correctness, readability, architecture, security, performance — with evidence for every finding. Use before merging, before opening a PR, or when asked to review a diff.
 ---
 
-Review the diff (staged, branch-vs-main, or a named PR) across five axes. Don't rubber-stamp — every review must show evidence, not just a verdict.
+Review the diff (staged, branch vs `main`, or a named PR). Every finding cites a
+file and line; a verdict without evidence is not a review.
 
-## 1. Establish scope
+## 1. Scope
 
 ```bash
 git status --short
-git diff --stat origin/main...HEAD   # or: git diff --stat --cached
+git diff --stat origin/main...HEAD    # or: git diff --cached --stat, or gh pr diff <n>
 ```
 
-If the diff is large (~300+ changed lines across unrelated concerns), say so and suggest splitting before reviewing line-by-line — reviewing a mixed refactor+feature diff hides real issues.
+If the diff mixes unrelated concerns or runs past ~300 lines of mixed refactor and
+behavior change, say so and suggest a split before reviewing line by line.
 
-## 2. Read tests first
+## 2. Tests first
 
-Tests reveal intent and coverage before you look at implementation.
+Tests show intent. For each behavior change: is there a test, does it assert
+behavior rather than internals, and would it fail without the change?
 
-- Do tests exist for the behavior change?
-- Do they test behavior, not implementation details?
-- Would they fail without the fix/feature and pass with it?
-- Backend: check the `#[cfg(test)]` modules beside the change and `appv3/crates/<crate>/tests/`.
-- Frontend: check colocated `*.test.tsx` under `web/src/`.
+- Rust: `#[cfg(test)]` modules beside the change and `appv3/crates/<crate>/tests/`.
+- Web: `web/src/__tests__/` at the mirrored path (`components/Foo.tsx` → `__tests__/components/Foo.test.tsx`).
+- Scripts and workflows: `scripts/tests/`.
 
-If tests are missing for non-trivial behavior, flag it as a **Required** finding and point at `oad/test-driven-development` as the fix path.
+Missing tests for non-trivial behavior is a required finding; point at `oad/testing`.
 
-## 3. Review the five axes
+## 3. The five axes
 
-**Correctness** — Does it match the task/spec? Edge cases (null, empty, boundary)? Error paths handled, not just happy path? Any state inconsistency across the team/session/mailbox model?
+**Correctness** — Does it do what was asked? Empty, null, boundary, and error
+paths? State that can drift between the web stores, SSE stream, and DB? Data as it
+really arrives (CRLF from multipart forms, rows written by v2 installs)?
 
-**Readability** — Names clear and consistent with the nearest `AGENTS.md` conventions? Control flow straightforward? Any dead code, backwards-compat shims, or unused imports left behind?
+**Readability** — Names and patterns match the nearest `AGENTS.md`? Dead code,
+leftover shims, unused imports, comments that restate the code?
 
-**Architecture** — Follows existing patterns in the touched module (check the nearest `AGENTS.md` "where to look first" map)? No feature-specific logic leaking into a shared hook/service? No duplicate helper when a canonical one exists (e.g. `_safe_join*` for path containment)?
+**Architecture** — Route handlers stay thin (behavior in the owning crate)?
+TanStack Query for server state, Zustand for client state? Platform-specific
+behavior gated through the platform hooks? No second helper where a canonical one
+exists (`safe_resolve` / `safe_join`, `validate_workspace`, `focusQuietly`, `utils/file-refs`)?
 
-**Security** — If the diff touches auth, file paths from external/model input, shell/subprocess execution, or MCP config: load `security-review` and run its full checklist before proceeding. Otherwise skip this axis (the other skills handle security-sensitive paths).
+**Security** — Treat as sensitive: auth and the desktop token, the Host/Origin
+network guard, workspace paths from external or model input, shell and file tools,
+MCP launch config, Tauri CSP and capabilities, keyring, updater signing. Secrets
+compare in constant time (`auth::constant_time_eq`); subprocesses take argument
+lists. When the diff touches any of these, run the `security-review` skill if it is available.
 
-**Performance** — Any N+1 DB queries (SQLModel/SQLAlchemy), unbounded loops over session history, missing pagination, unnecessary React re-renders (missing Zustand selector, inline object props), heavy compute or SSE payloads?
+**Performance** — N+1 or unbounded DB queries, loops over whole session history,
+missing pagination, large SSE payloads, React re-renders from unselected store
+reads or inline object props, work on every streamed token.
 
-## 4. Categorize findings
+**Contracts** — An SSE or wire change matches `appv3/contract/sse_events.json`,
+updates the web client in the same change, and is recorded in `appv3/REPORT.md`.
+Release versions move only through `scripts/bump_version.sh`.
 
-| Prefix | Meaning | Required? |
-|---|---|---|
-| **Critical:** | Security vuln, data loss, broken functionality | Blocks merge |
-| *(no prefix)* | Required change | Must address before merge |
-| **Optional:**/**Consider:** | Worth doing, not required | Author's call |
-| **Nit:** | Style/formatting | Author may ignore |
-| **FYI** | Informational | No action needed |
+## 4. Classify findings
 
-Lead with what matters — one structural/correctness finding beats ten nits. Order: correctness/security first, then architecture, then everything else.
+| Prefix | Meaning |
+|---|---|
+| **Critical:** | security hole, data loss, broken behavior; blocks merge |
+| *(none)* | required before merge |
+| **Consider:** | worth doing, author's call |
+| **Nit:** | style; may be ignored |
+| **FYI** | context, no action |
 
-## 5. Verify the verification story
+Lead with correctness and security, then architecture, then the rest.
 
-- What test commands were run? (see `oad/testing` for the canonical commands per surface)
-- Did lint/type-check pass? (see `Makefile` targets via `make help`)
-- For UI changes: verified at both ≤768px and a wide viewport (mobile-first requirement in `AGENTS.md`)?
-- For a PR: once review passes, push the branch and open the PR (`gh pr create` or equivalent).
+## 5. Check the verification story
+
+- Which gates ran: `make verify-v3`, `make verify-web`, `make verify-docs`, native targets (`oad/testing`)?
+- UI changes: checked at a narrow (≤768 px) and a wide viewport, touch and pointer, against `DESIGN.md`?
+- User-visible change: entry in `documents/docs/features.md`?
 
 ## 6. Output
 
@@ -63,19 +79,11 @@ Lead with what matters — one structural/correctness finding beats ten nits. Or
 ## Review: <scope>
 
 ### Critical
-- ...
-
 ### Required
-- ...
-
-### Optional / Nit / FYI
-- ...
-
-### What's done well
-- ...
-
-### Verdict
-Approve | Request changes
+### Consider / Nit / FYI
+### Done well
+### Verdict: Approve | Request changes
 ```
 
-Approve when the change definitely improves overall code health, even if imperfect — don't block on personal style preference if it follows project convention.
+Approve when the change improves the code base overall, even if imperfect; do not
+block on taste when it follows project convention.

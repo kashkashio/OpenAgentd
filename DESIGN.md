@@ -738,20 +738,18 @@ greys its selection. The browser build keeps the browser's behaviour.
 
 ### Keyboard focus model
 
-Tab moves between **areas**, arrows move inside one, as in a native app. An
-area is a focus zone (`lib/focus/zones.ts`): one roving item has `tabIndex=0`,
-the rest `-1`, so the desktop has about a dozen Tab stops in visual order —
-header, sidebar actions, sidebar list, chat, composer toolbar, composer, dock
-tab bar, dock list, status bar.
+Tab follows the DOM order: every control is its own Tab stop. Composite
+widgets (tablists, menus, listboxes, comboboxes) keep their own arrow keys.
 
-- **Items** are a zone's focusable descendants except text fields, nested
-  zones and tablists, and anything under `data-zone-skip`.
-- **Skipped controls** are hover-revealed row actions. Each needs a keyboard
-  path: F2, Delete, Shift+F10 / the Menu key, or a shortcut.
-- **Entry** is the item last used, else the zone's `first`, `last` (the
-  transcript) or `active` one (`aria-current`, `aria-selected`).
-- **Pointer sync**: a press on an item makes it current without a focus ring,
-  so arrow keys continue from the row that was clicked.
+- **Hover-revealed row actions** also show on `focus-within`, and keep a
+  keyboard shortcut: F2, Delete, Shift+F10 / the Menu key (`lib/focus/item-keys.ts`).
+- **Quiet focus**: focus a script hands back without a key press (the
+  composer pill on page load) goes through `focusQuietly`
+  (`lib/focus/quiet.ts`), so it draws no ring until the keyboard moves on.
+- **Ring follows input** (desktop): focus rings show only after a key press
+  and hide again on the next pointer press. Focus a script gives — the
+  composer at launch, a fold after its Collapse click — draws none until the
+  keyboard is used. Text fields keep their focus styles.
 - Focus never rests on `<body>` or in an `inert` panel; it returns to the
   composer.
 

@@ -127,8 +127,11 @@ function parseBody(attrs: string, body: string): DesignFeedback | null {
 }
 
 /** Pull every design feedback block out of ``message``. */
-export function splitDesignFeedback(message: string): { text: string; blocks: DesignFeedback[] } {
-  if (!message.includes(`<${TAG}`)) return { text: message, blocks: [] }
+export function splitDesignFeedback(raw: string): { text: string; blocks: DesignFeedback[] } {
+  if (!raw.includes(`<${TAG}`)) return { text: raw, blocks: [] }
+  // Messages are posted as multipart form data, which turns every line
+  // break into CRLF, so history returns blocks the LF-only parser would miss.
+  const message = raw.replace(/\r\n?/g, '\n')
   const blocks: DesignFeedback[] = []
   const text = message.replace(BLOCK_RE, (whole, attrs: string, body: string) => {
     const parsed = parseBody(attrs, body)
@@ -136,7 +139,7 @@ export function splitDesignFeedback(message: string): { text: string; blocks: De
     blocks.push(parsed)
     return ''
   })
-  if (!blocks.length) return { text: message, blocks }
+  if (!blocks.length) return { text: raw, blocks }
   return { text: text.replace(/\n{3,}/g, '\n\n').trim(), blocks }
 }
 

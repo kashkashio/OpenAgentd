@@ -27,11 +27,10 @@ This file adds source-level guidance to `web/AGENTS.md`.
   for centering because motion owns that property, and do not add backdrop blur
   to streaming/repainting surfaces on iOS WebKit.
 - Call hooks such as `useDeferredUnmount` before conditional returns.
-- Keyboard areas are focus zones (`lib/focus/zones.ts`): controls inside one
-  rove automatically, so do not hand-set `tabIndex` there. A new area gets a
-  zone, not more Tab stops. Hover-revealed row actions carry `data-zone-skip`
-  and each needs a keyboard path (F2, Delete, Shift+F10 via
-  `lib/focus/item-keys.ts`, or a shortcut).
+- Tab follows DOM order; there is no roving focus across areas. Hover-revealed
+  row actions must also show on `focus-within` and keep a keyboard path (F2,
+  Delete, Shift+F10 via `lib/focus/item-keys.ts`, or a shortcut). Use
+  `focusQuietly` (`lib/focus/quiet.ts`) for focus a script hands back.
 
 Keep the detailed scroll, compaction, gesture, suggestion-positioning, and file
 tree invariants beside their implementations and regression tests rather than

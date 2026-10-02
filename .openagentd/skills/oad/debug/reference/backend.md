@@ -1,55 +1,56 @@
-# Debug reference: Backend / API / agent / provider
+# Debug reference: backend (`appv3/`)
 
-Use when the symptom is in API routes, persistence, queueing, SSE streaming, agent loops, tool execution, or provider calls. The shipped backend is the Rust workspace in `appv3/`; `app/` is the source-only v2 code it ports.
-
----
+Use for API routes, persistence, queueing, SSE streaming, the agent loop, tools,
+and providers. `app/` is the frozen v2 Python source; only consult it for the
+data formats v3 must keep reading.
 
 ## Evidence commands
 
 ```bash
-openagentd server status                          # port, live, ready, and LAN checks
-openagentd server logs                            # readable server log lines
-curl -fsS http://127.0.0.1:8000/api/health/ready  # readiness from a source checkout (`make run`)
+make run                                          # API only on :8000 with APP_ENV=development
+curl -fsS http://127.0.0.1:8000/api/health/ready  # readiness
+openagentd server status                          # installed CLI: port, live, ready, LAN
+openagentd server logs                            # installed CLI: readable log lines
+sqlite3 .openagentd/dev/data/openagentd.db '.tables'
 ```
 
-For log files and OTEL telemetry analysis, load `oad/debug-prod`.
-
----
+Log and telemetry analysis: `reference/production.md`.
 
 ## File map
 
 ```
 appv3/crates/
-  api/        axum routes (src/routes/), middleware (auth, Origin/Host guard, CORS), startup
-  agent/      turn loop, hooks, sessions, SSE broadcaster + stream store, scheduler
-  db/         SQLite pool, v2-compatible queries, migrations (resources/migrations/)
-  providers/  LLM provider adapters
-  tools/      built-in agent tools
-  core/       settings, XDG paths, auth policy (src/auth.rs), path safety
-  cli/        `openagentd` binary; `server serve` is the sidecar entry point
+  api/        axum routes (src/routes/), middleware (desktop token, Host/Origin guard, CORS), startup, SSE
+  agent/      turn loop, hooks (summarization, otel, title), sessions, stream store, scheduler, snapshots
+  db/         SQLite pool, v2-compatible queries, migrations
+  providers/  provider adapters (openai, anthropic, google, bedrock, copilot, codex, …), plugin providers
+  tools/      built-in agent tools (shell, grep, patch, read, …); tool_start/tool_error logging in src/lib.rs
+  core/       settings and XDG paths (src/settings.rs), auth policy (src/auth.rs), path safety
+  jsplugin/   QuickJS runtime for .ts/.js plugins
+  mcp/ memory/ preview/ terminal/   MCP client, memory, Preview tab proxy, PTY terminals
+  cli/        the `openagentd` binary; `server serve` is the sidecar entry; loguru-format logging (src/logging.rs)
 appv3/contract/sse_events.json   SSE event contract shared with web
-appv3/REPORT.md                  deliberate differences from v2
+appv3/REPORT.md                  every deliberate wire or on-disk difference from v2
 ```
 
----
+## Failure boundaries
 
-## Common failure boundaries
-
-| Boundary | What to inspect |
+| Boundary | Inspect |
 |---|---|
-| Route validation | handler in `api/src/routes/`, HTTP status returned |
-| Persistence | `db/` queries and migrations |
-| Queueing / ordering | `agent/` stream store, SSE event emission order |
-| Agent loop | `agent/` turn loop, tool dispatch, compaction |
-| SSE stream | `agent/src/events.rs`, `appv3/contract/sse_events.json`, client reconnect behavior |
-| Provider call | `providers/` adapter, env vars, retry/timeout config |
-| Desktop auth | `core/src/auth.rs`, `api/src/middleware.rs`, sidecar handshake |
-
----
+| Route validation | handler in `api/src/routes/`, the HTTP status returned |
+| Request parsing | multipart/form fields (CRLF line breaks), `api/src/routes/agent/helpers.rs` (mentions, `#L` line refs) |
+| Persistence | `db/` queries and migrations; rows in the dev DB |
+| Queueing / ordering | `agent/src/stream_store.rs`, `queue.rs`, SSE emission order |
+| Agent loop | `agent/src/agent.rs`, tool dispatch, `hooks/summarization.rs` |
+| SSE stream | `agent/src/events.rs`, `api/src/sse.rs`, `appv3/contract/sse_events.json` |
+| Provider call | `providers/src/<provider>.rs`, env vars, retry and timeout (`agent/src/retry.rs`) |
+| Desktop auth | `core/src/auth.rs`, `api/src/middleware.rs` (`desktop_token`), sidecar handshake |
 
 ## Verification
 
 ```bash
-make verify-v3                                                         # fmt, clippy -D warnings, all tests
-cargo test --manifest-path appv3/Cargo.toml -p appv3-api --test http_api  # focused
+cargo test --manifest-path appv3/Cargo.toml -p appv3-api --test http_api   # focused
+make verify-v3                                                              # fmt, clippy -D warnings, all tests
 ```
+
+A wire or on-disk format change also needs `make verify-web` and an entry in `appv3/REPORT.md`.

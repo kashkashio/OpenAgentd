@@ -78,4 +78,27 @@ describe('desktop shell', () => {
     expect(document.documentElement.hasAttribute('data-window-inactive')).toBe(false)
     document.hasFocus = hasFocus
   })
+
+  it('tracks whether the keyboard or a pointer drove the last input, starting as pointer', () => {
+    // The focus ring follows the last input, not how focus moved,
+    // so focus a script gives at launch or after a click draws no ring.
+    setPlatform('MacIntel', true)
+    uninstall = installDesktopShell()
+    const root = document.documentElement
+    const field = document.getElementById('field')!
+    expect(root.getAttribute('data-input-modality')).toBe('pointer')
+
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
+    expect(root.getAttribute('data-input-modality')).toBe('keyboard')
+
+    field.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    expect(root.getAttribute('data-input-modality')).toBe('pointer')
+
+    // A bare modifier (holding Cmd before a click) is not keyboard navigation.
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Meta', bubbles: true }))
+    expect(root.getAttribute('data-input-modality')).toBe('pointer')
+
+    uninstall()
+    expect(root.hasAttribute('data-input-modality')).toBe(false)
+  })
 })

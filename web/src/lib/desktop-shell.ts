@@ -14,6 +14,12 @@
  *   for Inspect Element.
  * - ``data-window-inactive`` is set while another app has focus, so the UI
  *   can mute keyboard focus and selections the way native windows do.
+ * - ``data-input-modality`` is ``keyboard`` after a key press and ``pointer``
+ *   after a pointer press (the start value): the focus ring follows the last
+ *   input, never how focus moved, the way native editors draw it. WebKit
+ *   draws ``:focus-visible`` for any script ``focus()`` (the composer
+ *   claiming focus at launch, a fold handing focus back after a click), so
+ *   index.css hides the ring until the keyboard is in use.
  *
  * The browser build keeps the browser's behaviour: none of this runs there.
  */
@@ -63,6 +69,24 @@ function onFocus(): void {
   setInactive(false)
 }
 
+type InputModality = 'keyboard' | 'pointer'
+
+/** Held alone, these start a shortcut or a modified click, not navigation. */
+const MODIFIER_KEYS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'CapsLock', 'Fn', 'FnLock', 'Hyper', 'Super', 'OS', 'AltGraph'])
+
+function setModality(modality: InputModality): void {
+  const root = document.documentElement
+  if (root.getAttribute('data-input-modality') !== modality) root.setAttribute('data-input-modality', modality)
+}
+
+function onKeyDown(event: KeyboardEvent): void {
+  if (!MODIFIER_KEYS.has(event.key)) setModality('keyboard')
+}
+
+function onPointerDown(): void {
+  setModality('pointer')
+}
+
 let uninstall: (() => void) | null = null
 
 /** Install once at startup; a no-op outside the desktop app. */
@@ -71,15 +95,22 @@ export function installDesktopShell(): () => void {
   if (typeof window === 'undefined' || !isDesktopShell()) return () => {}
   const root = document.documentElement
   root.setAttribute('data-shell', 'desktop')
+  setModality('pointer')
   window.addEventListener('contextmenu', onContextMenu)
   window.addEventListener('blur', onBlur)
   window.addEventListener('focus', onFocus)
+  // Capture: a handler that stops propagation must not hide the input.
+  window.addEventListener('keydown', onKeyDown, true)
+  window.addEventListener('pointerdown', onPointerDown, true)
   uninstall = () => {
     root.removeAttribute('data-shell')
+    root.removeAttribute('data-input-modality')
     setInactive(false)
     window.removeEventListener('contextmenu', onContextMenu)
     window.removeEventListener('blur', onBlur)
     window.removeEventListener('focus', onFocus)
+    window.removeEventListener('keydown', onKeyDown, true)
+    window.removeEventListener('pointerdown', onPointerDown, true)
     uninstall = null
   }
   return uninstall

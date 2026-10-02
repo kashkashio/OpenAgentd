@@ -408,6 +408,15 @@ html[data-shell="desktop"] :is(img, a) {
 html[data-shell="desktop"][data-window-inactive] :focus-visible {
   outline-color: transparent;
 }
+/* The ring shows only while the keyboard drives the app, whatever moved focus
+ * (lib/desktop-shell.ts). Focus itself stays put, so Tab and arrows continue
+ * from it. Text fields keep their focus styles: a clicked field is where
+ * typing goes. Unlayered, so it wins over Tailwind's focus-visible:ring-*. */
+html[data-shell="desktop"]:not([data-input-modality="keyboard"]) :focus-visible:not(input, textarea, select, [contenteditable="true"]) {
+  outline-color: transparent;
+  --tw-ring-color: transparent;
+  --tw-ring-offset-color: transparent;
+}
 html[data-shell="desktop"][data-window-inactive] ::selection {
   background-color: var(--bg-key);
 }
@@ -1101,7 +1110,7 @@ html[data-app-hidden="true"] *::after {
   outline-offset: 2px;
 }
 /* Focus given by a click or a tab switch, not steered by keyboard; see
- * focusQuietly in lib/focus/zones.ts. Clears on blur. */
+ * focusQuietly in lib/focus/quiet.ts. Clears on blur. */
 [data-quiet-focus]:focus-visible {
   outline: none;
 }

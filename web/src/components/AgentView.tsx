@@ -35,7 +35,6 @@ import { useAgentStore } from '@/stores/useAgentStore'
 import { useDisplayPrefsStore } from '@/stores/useDisplayPrefsStore'
 import { useTranscriptFollowStore } from '@/stores/useTranscriptFollowStore'
 import { appShortcut, useShortcuts } from '@/lib/keyboard/hooks'
-import { useFocusZone } from '@/lib/focus/zones'
 import type { ContentBlock } from '@/api/types'
 import { UserBubble } from './AgentView/UserBubble'
 import { ErrorCard } from './AgentView/ErrorCard'
@@ -624,10 +623,6 @@ export function AgentView({
     isEmpty,
     onLoadOlderTop: handleLoadOlderTopTrigger,
   })
-  // The transcript is one Tab stop, entered on its newest control; Up/Down
-  // walk tool calls, message actions, copy buttons and links. PageUp,
-  // PageDown and Space still scroll. Throttled: content streams in.
-  useFocusZone(scrollRef, { orientation: 'vertical', entry: 'last', throttleMs: 200 })
 
   // ── Follow state for the composer's jump chip ─────────────────────────────
   // Counted from the newest block when the reader scrolled away, so earlier

@@ -1,62 +1,52 @@
 ---
 name: oad/debug
-description: OpenAgentd workflow for investigating bugs, regressions, sessions, and runtime issues.
+description: OpenAgentd debugging workflow — triage, reproduce, and fix bugs across the Rust backend, web UI, and Tauri shells, and analyze logs and OTEL telemetry from dev or production installs. Use for bugs, regressions, session problems, slow or failing tools, and runtime issues.
 ---
 
-Debug the reported issue across any surface of the OpenAgentd stack.
+Find the boundary that failed, prove it with a test, fix it there.
 
-## 1. Triage the report
+## 1. Triage
 
-Extract: symptom, expected behavior, reproduction steps, **affected surface** (backend / frontend / desktop / mobile / agent / provider), session id, workspace, model, logs, and timing clues.
+Extract the symptom, expected behavior, reproduction steps, affected surface
+(backend, web, desktop, mobile, provider, tool), session id, workspace, model,
+and timing. Inspect available evidence before asking; ask only when a missing
+decision blocks progress.
 
-If the report is ambiguous, inspect available evidence first; ask only when a missing decision blocks safe progress.
+## 2. Route to a reference
 
----
+The skill directory is given when this skill loads; read what applies:
 
-## 2. Route to the right reference
-
-Read the surface-specific reference for deeper commands, file maps, and gotchas.
-The skill directory is in the first line of this response — use it to build the path:
-
-- **Backend / API / agent / provider** → `read("<skill_dir>/reference/backend.md")`
-- **Frontend (web UI)** → `read("<skill_dir>/reference/frontend.md")`
-- **Desktop or mobile (Tauri / Rust)** → `read("<skill_dir>/reference/tauri.md")`
-
-When the issue spans multiple surfaces, read all relevant references.
-
----
+| Surface | Reference |
+|---|---|
+| API, persistence, SSE, agent loop, tools, providers (`appv3/`) | `reference/backend.md` |
+| Web UI (`web/`) | `reference/frontend.md` |
+| Desktop or mobile shell, sidecar, IPC, CSP | `reference/tauri.md` |
+| Logs, OTEL spans, tool usage, production installs | `reference/production.md` |
 
 ## 3. Reproduce narrowly
 
-- Recreate the smallest scenario that demonstrates the bug.
-- Match the user's mode / workspace / model / message sequence when relevant.
-- Capture durable evidence: raw HTTP response, persisted history, SSE events, logs, failing test output, or UI state snapshot.
+- Recreate the smallest scenario, matching the user's mode, workspace, model, and message order.
+- Capture durable evidence: HTTP response, persisted rows, SSE frames, log
+  records, a failing test, or a UI snapshot.
+- Dev state lives in `.openagentd/dev/` (`data/openagentd.db`, `state/logs`,
+  `state/otel`); a production install uses `~/.local/share/openagentd` and
+  `~/.local/state/openagentd`.
 
----
+## 4. Diagnose
 
-## 4. Diagnose from code and evidence
+- Name the failing boundary: route validation, persistence, queueing, stream
+  emission, agent loop, hook, tool, provider, web store, renderer, or native process.
+- Check how the data looks on the wire and on disk, not only in memory (for
+  example, multipart form fields arrive with CRLF line breaks).
+- Search for the existing pattern before inventing a new one. Preserve unrelated work.
 
-- Search for existing patterns before editing.
-- Identify the boundary that failed: route validation, persistence, queueing, stream emission, agent loop, hook, tool, provider, frontend store, renderer, or Rust process.
-- Preserve unrelated work; do not reset or overwrite changes you did not make.
+## 5. Fix with a test first
 
----
+Load `oad/testing` and follow Prove-It: a failing reproduction test, the smallest
+root-cause fix, then the surface's full gate. Do not edit the implementation before
+the reproduction test exists.
 
-## 5. Fix surgically
+## 6. Report
 
-Load `oad/test-driven-development` and follow the Prove-It pattern:
-
-1. Write a failing test that reproduces the bug — confirm it fails for the right reason.
-2. Make the smallest change that addresses the proven root cause.
-3. Confirm the test passes; run the full suite for no regressions.
-
-Do not edit the implementation before the reproduction test exists.
-
----
-
-## 6. Verify and report
-
-- Re-run the reproduction test and focused checks for the touched areas.
-- If feasible, run the repository's standard lint / type / test commands for the changed surface (see `oad/testing` for commands).
-- Report: root cause, changed files, checks run with results, and any remaining risk or unverified area.
-- Load `oad/commit` to ship the fix.
+Root cause, changed files, checks run with results, and anything left unverified.
+Load `oad/commit` to ship it.

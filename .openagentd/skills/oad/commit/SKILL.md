@@ -1,31 +1,80 @@
 ---
 name: oad/commit
-description: OpenAgentd workflow for well-formatted, detailed conventional commits.
+description: OpenAgentd commit workflow — check the staged diff, sync the feature catalogue, and write a conventional commit (Motivation / Technical Changes / Impact). Use whenever the user asks to commit.
 ---
 
-Git Commit Execution Workflow
+Commit only what belongs to the change, with the documentation it needs.
 
-1. **Stage**: Run `git status --porcelain`. If no files are staged, execute `git add .`.
-2. **Analyze**: Run `git diff --cached` to evaluate the technical scope and architectural impact (e.g., DDD shifts or C4 updates).
-3. **Sync Docs**: Load `oad/docs` to sync any documentation affected by the staged changes.
-4. **Generate Message**:
-   - **Format**: `<type>: <subject>`
-   - **Subject**: Auto-generate a concise imperative subject from the staged changes.
-   - **Body**: Leave a blank line, then detail **Motivation**, **Technical Changes** (bulleted deep-dive), and **Impact**.
-5. **Commit**: Execute `git commit -m "<message>"` and output the commit hash and a brief summary.
+## 1. Stage deliberately
 
-Note: Multiple commits are preferred for large changes. If the scope is too broad, break it down into smaller, focused commits following the same workflow (do not force to have multiple commits if the change is small and cohesive).
+```bash
+git status --short
+git diff --cached --stat
+```
 
-**Sizing:** target ~100 changed lines per commit (a single logical, self-contained change); ~300 is acceptable for one cohesive change; ~1000+ should be split. Keep refactors and behavior changes in separate commits — mixing "renamed X" with "fixed Y" makes both harder to review and revert.
+- If nothing is staged, stage the files of the change you made (`git add <paths>`).
+  Never sweep in unrelated work the user left in the tree; ask when ownership is unclear.
+- New files, deletions, and renames count: check `??` and `D` entries.
 
----
+## 2. Check the staged diff
 
-**Commit Conventions**
+Read `git diff --cached`. Stop and report (file and line) instead of committing when it contains:
 
-| Category | Type |
-| :--- | :--- |
-| **Features** | `feat` |
-| **Fixes** | `fix` |
-| **Refactor** | `refactor` |
-| **Maintenance** | `chore/docs` |
-| **Style** | `style` |
+- debug leftovers: stray `console.log`, `dbg!`, `println!`, `print()`, enabled debug flags;
+- temporary or rigged code: "temp", "wip", hardcoded test data, mocked responses in source;
+- commented-out code blocks, or new TODO / FIXME / HACK markers.
+
+## 3. Sync documentation
+
+Pick the smallest durable record for what changed:
+
+| Change | Record |
+|---|---|
+| Shipped user-visible capability or behavior change | Version-cited entry in `documents/docs/features.md` (the canonical catalogue). Use the next release version; mark removed features *(deprecated)* for at least one release before deleting them. |
+| Product story or first-run/setup change | `README.md` |
+| Non-obvious invariant, security, or architecture rationale | A comment beside the code (why, not what) |
+| Future work, bugs, roadmap | A GitHub issue, never a repository doc |
+| Implementation, API, config, CLI, UI detail | Nothing: source, tests, CLI help, and the UI are authoritative |
+| Repository policy or tooling | The nearest `AGENTS.md` or the matching `.openagentd/skills/oad/*` skill |
+
+Do not create guides, API references, or troubleshooting pages under `documents/`.
+After any Markdown change run `make verify-docs`: it checks frontmatter, local links,
+`AGENTS.md` references, and that every backticked `make <target>` exists.
+If nothing user-visible changed, say so in one line of the commit body.
+
+## 4. Size the commit
+
+- One logical change per commit: aim for ~100 changed lines, ~300 for one cohesive change; split ~1000+.
+- Keep refactors and behavior changes in separate commits.
+- Do not force a split when the pieces depend on each other.
+
+## 5. Write the message
+
+```
+<type>(<optional scope>): <imperative subject, ≤72 chars>
+
+Motivation:
+<why this change, what was wrong or missing>
+
+Technical Changes:
+- <one bullet per meaningful change, naming files or modules>
+
+Impact:
+<user-visible effect, risk, follow-ups; or "No user-visible change.">
+```
+
+Types: `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `chore`, `style`, `ci`.
+Scopes in use: `web`, `desktop`, `mobile`, `appv3` (or a crate such as `api`, `agent`), `scripts`.
+
+## 6. Commit
+
+```bash
+git commit -F - <<'EOF'
+<message>
+EOF
+git log --oneline -1
+```
+
+Pre-commit hooks run file hygiene, `oxlint`, and `tsc` for `web/`. If a hook fails,
+fix the cause and commit again; never bypass it with `--no-verify`.
+Report the hash and a one-line summary. Do not push unless asked.

@@ -192,10 +192,9 @@ describe('Review dock diff tabs', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'app.ts diff' })).toBeNull())
   })
 
-  it('keeps row actions out of Tab order and offers them on Shift+F10', async () => {
+  it('offers row actions on Shift+F10', async () => {
     await renderPanel()
     const row = screen.getByRole('button', { name: /diff for src\/app\.ts/ })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Open diff tab for src/app.ts' }).tabIndex).toBe(-1))
 
     await act(async () => {
       row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }))

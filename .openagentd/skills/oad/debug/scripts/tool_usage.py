@@ -2,7 +2,7 @@
 """Audit which tools earn their keep: volume, latency, outcome quality, waste.
 
 Usage:
-    python3 .openagentd/skills/oad/debug-prod/scripts/tool_usage.py [--days N]
+    python3 .openagentd/skills/oad/debug/scripts/tool_usage.py [--days N]
 
 Answers "is any tool underused, slow, or not useful?" by combining two sources:
 
@@ -11,9 +11,9 @@ Answers "is any tool underused, slow, or not useful?" by combining two sources:
     whether a *successful* call was useful ("No matches" is a green span and a
     wasted turn).
 
-Plain stdlib json rather than DuckDB (used by ``query_otel.py``): this script
-joins spans to logs by tool-call id and classifies shell commands by regex, both
-of which are shorter in Python than in generated SQL.
+Plain stdlib json: this script joins spans to logs by tool-call id and
+classifies shell commands by regex. v3 logs no ``tool_result_preview``
+records, so the no-hit columns only fill from older v2 logs.
 
 Three traps this encodes, learned by falling into them:
 
@@ -25,7 +25,8 @@ Three traps this encodes, learned by falling into them:
 2. **Redundant work is only redundant within a run.** Counting identical calls
    across all sessions turns legitimate reuse (loading a skill in a new session)
    into fake waste, so duplicates are attributed per ``run_id``.
-3. **Logged arguments are truncated at 500 chars** (``tool_executor.py``), so
+3. **Logged arguments are truncated at 500 chars** (``tool_start`` in
+   ``appv3/crates/tools/src/lib.rs``), so
    ``json.loads`` on them fails for 16% of shell calls — and precisely the long
    ones (heredocs, inline python). Dropping the unparseable ones inflated
    "shell is used to read files" to 78%, because short ``cat``/``head`` calls
@@ -45,7 +46,9 @@ STATE_DIRS = [
     Path.home() / ".local/state/openagentd",
     Path(".openagentd/dev/state"),
 ]
-TOOL_EXECUTOR = "app.agent.agent_loop.tool_executor"
+# Loggers that write ``tool_start`` / ``tool_error`` records: the v3 tools
+# crate (module path ``appv3_tools``), then the v2 Python executor for old logs.
+TOOL_LOGGERS = ("appv3_tools", "app.agent.agent_loop.tool_executor")
 # A result that starts with one of these is a successful call that found nothing.
 NO_HIT_PREFIXES = (
     "No matches for pattern",
@@ -146,13 +149,13 @@ def iter_log_records():
         for path in sorted((state / "logs/app").glob("app*.log")):
             with path.open(errors="ignore") as handle:
                 for line in handle:
-                    if TOOL_EXECUTOR not in line:
+                    if not any(name in line for name in TOOL_LOGGERS):
                         continue
                     try:
                         rec = json.loads(line)["record"]
                     except Exception:
                         continue
-                    if not rec.get("name", "").startswith(TOOL_EXECUTOR):
+                    if not rec.get("name", "").startswith(TOOL_LOGGERS):
                         continue
                     yield (
                         datetime.fromtimestamp(rec["time"]["timestamp"], timezone.utc),
