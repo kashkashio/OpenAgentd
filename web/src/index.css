@@ -945,49 +945,6 @@ html[data-app-hidden="true"] *::after {
   color: var(--color-text);
 }
 
-.oa-prose .oa-mermaid-diagram {
-  max-width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 1rem 0.75rem;
-  display: flex;
-  justify-content: center;
-}
-
-.oa-prose .oa-mermaid-diagram svg {
-  display: block;
-  height: auto;
-  max-width: 100%;
-  margin-inline: auto;
-  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif !important;
-}
-
-.oa-mermaid-diagram .node rect,
-.oa-mermaid-diagram .node circle,
-.oa-mermaid-diagram .node polygon {
-  rx: var(--radius-xs);
-  ry: var(--radius-xs);
-}
-
-.oa-mermaid-diagram text,
-.oa-mermaid-diagram .label {
-  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif !important;
-}
-
-.oa-mermaid-lightbox-content {
-  touch-action: pan-x pan-y;
-  -webkit-overflow-scrolling: touch;
-}
-
-.oa-mermaid-lightbox-content svg {
-  max-width: 100% !important;
-  max-height: 100% !important;
-  width: auto !important;
-  height: auto !important;
-  display: block;
-  margin-inline: auto;
-}
-
 .oa-prose a {
   color: var(--color-text);
   font-weight: 500;

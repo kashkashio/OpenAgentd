@@ -19,7 +19,6 @@ import { ImageLightbox } from '@/components/ImageLightbox'
 import { CodeBlock } from '@/components/CodeBlock'
 import { FileRefCode, MarkdownLink } from '@/components/FileRefLink'
 import { tokenizeCode } from '@/utils/code-highlight'
-import { MermaidBlock } from '@/utils/MermaidBlock'
 import { isVideoSrc } from '@/utils/workspace'
 import { useSmoothStream } from '@/hooks/useSmoothStream'
 import { createMarkdownChunker } from '@/utils/markdown-chunks'
@@ -117,41 +116,6 @@ export function fixNestedFences(content: string): string {
   }
 
   return result.join('\n')
-}
-
-const STREAMING_MERMAID_LANGUAGE = 'mermaid-complete'
-
-/**
- * Mark only closed Mermaid fences during a stream so completed diagrams do not
- * wait for the whole response. This follows fixNestedFences' equal-length,
- * bare-closer convention, leaving an unfinished fence on the CodeBlock path.
- */
-function markClosedStreamingMermaidFences(content: string): string {
-  if (!content.includes('```mermaid')) return content
-
-  const lines = content.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const openMatch = lines[i].match(/^(`{3,})mermaid\s*$/i)
-    if (!openMatch) continue
-
-    const fenceLength = openMatch[1].length
-    let depth = 1
-    for (let j = i + 1; j < lines.length; j++) {
-      const fenceMatch = lines[j].match(/^(`{3,})\s*(\w*).*$/)
-      if (!fenceMatch || fenceMatch[1].length !== fenceLength) continue
-      if (fenceMatch[2] === '') {
-        depth--
-        if (depth === 0) {
-          lines[i] = `${openMatch[1]}${STREAMING_MERMAID_LANGUAGE}`
-          break
-        }
-      } else {
-        depth++
-      }
-    }
-  }
-
-  return lines.join('\n')
 }
 
 // ── HighlightedCode ───────────────────────────────────────────────────────────
@@ -630,16 +594,12 @@ export const MarkdownBlock = memo(function MarkdownBlock({
     () => fixNestedFences(normalizeProposedPlanTags(displayContent)),
     [displayContent],
   )
-  const renderedContent = useMemo(
-    () => isStreaming ? markClosedStreamingMermaidFences(fixedContent) : fixedContent,
-    [fixedContent, isStreaming],
-  )
   const [streamed, setStreamed] = useState(isStreaming)
   if (isStreaming && !streamed) setStreamed(true)
   const [chunk] = useState(() => createMarkdownChunker(parseMarkdownText))
   const chunks = useMemo(
-    () => (streamed ? chunk(renderedContent, !isStreaming) : null),
-    [streamed, chunk, renderedContent, isStreaming],
+    () => (streamed ? chunk(fixedContent, !isStreaming) : null),
+    [streamed, chunk, fixedContent, isStreaming],
   )
 
   return (
@@ -655,7 +615,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({
               headingIds={false}
               components={MARKDOWN_COMPONENTS}
             >
-              {renderedContent}
+              {fixedContent}
             </Markdown>
           )}
         </div>
@@ -694,11 +654,6 @@ function MarkdownPre(props: React.HTMLAttributes<HTMLPreElement> & { 'data-lang'
   const rawLanguage = props['data-lang']
   const language = !rawLanguage || rawLanguage === 'plaintext' ? undefined : rawLanguage
   const normalizedLanguage = language?.toLowerCase()
-  const isMermaid = normalizedLanguage === 'mermaid'
-    || normalizedLanguage === STREAMING_MERMAID_LANGUAGE
-  if (isMermaid && (!isStreaming || normalizedLanguage === STREAMING_MERMAID_LANGUAGE)) {
-    return <MermaidBlock source={codeText} highlightedCode={codeText} />
-  }
   if (normalizedLanguage === 'math' || normalizedLanguage === 'katex') {
     return <MathBlock math={codeText} />
   }

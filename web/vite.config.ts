@@ -107,7 +107,7 @@ export default defineConfig({
             { name: "syntax", test: /node_modules[\\/]@tanstack[\\/]highlight[\\/]/, priority: 85 },
             // Do not force the markdown dependency graph into a named group:
             // Rolldown can otherwise emit a vendor chunk that imports its own
-            // dynamic entry (Mermaid), which crashes production WebViews
+            // dynamic entry (such as KaTeX), which crashes production WebViews
             // during module init.
             // Icons (lucide ships many SVGs).
             { name: "icons", test: /node_modules[\\/]lucide-react[\\/]/, priority: 70 },
@@ -126,7 +126,7 @@ export default defineConfig({
     },
     // index chunk contains the whole app — shell, routes, Settings,
     // Telemetry, the review dock and Markdown — so no surface waits on a
-    // chunk when it opens. Only Mermaid, PDF.js and xterm load on demand;
+    // chunk when it opens. Only KaTeX, PDF.js and xterm load on demand;
     // Tauri/icons/motion are split into separate eager chunks. Measured:
     // ~1898 kB minified / ~552 kB gzip. The limit sits just above it so any
     // regression is visible in Vite output. check:budget enforces the actual
