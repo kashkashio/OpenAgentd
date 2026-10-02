@@ -196,7 +196,7 @@ export function QuestionCard({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         <fieldset className="min-w-0 border-0 p-0">
-          <legend className="mb-2.5 block text-[13px] leading-relaxed text-(--color-text)">
+          <legend className="selectable-text mb-2.5 block text-[13px] leading-relaxed text-(--color-text)">
             <InlineMarkdown text={current.question} />
           </legend>
 
