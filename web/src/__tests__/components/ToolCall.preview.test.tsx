@@ -35,6 +35,8 @@ describe('preview tool card', () => {
       [{ action: 'navigate', to: '/pricing' }, 'Go to /pricing'],
       [{ action: 'wait', text: 'Saved', gone: true }, 'Wait for "Saved" to go'],
       [{ action: 'scroll', to: 'bottom' }, 'Scroll to bottom'],
+      [{ action: 'chain' }, 'Chain'],
+      [{ action: 'chain', steps: [{ action: 'fill', ref: 'e1', value: 'x' }, { action: 'click', ref: 'e4' }] }, 'Fill e1 → Click e4'],
     ]
     for (const [args, label] of cases) {
       render(<ToolCall name="preview" args={JSON.stringify(args)} done result="Clicked <button>. Page is now /." />)
@@ -42,6 +44,13 @@ describe('preview tool card', () => {
       expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
       cleanup()
     }
+  })
+
+  it('shortens long chains in the header and keeps every step in its title', () => {
+    const steps = [{ action: 'fill', ref: 'e1' }, { action: 'fill', ref: 'e2' }, { action: 'click', ref: 'e4' }, { action: 'wait', text: 'Saved' }, { action: 'snapshot' }]
+    render(<ToolCall name="preview" args={JSON.stringify({ action: 'chain', steps })} />)
+    const node = header('Preview: Fill e1 → Fill e2 → Click e4 → Wait for "Saved" → Page snapshot')
+    expect(node?.textContent).toContain('Fill e1 → Fill e2 → Click e4 +2 more')
   })
 
   it('offers Open preview once the page opened, and asks the shell for it', () => {
