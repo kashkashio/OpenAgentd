@@ -9,10 +9,8 @@
  *
  * Tabs are plain buttons with ``aria-current`` rather than an ARIA
  * ``tablist`` (each has a sibling close button and a context menu, which
- * tab semantics do not model), but the whole strip is one focus zone: a
- * single Tab stop, entered on the active tab, with Left/Right across tabs
- * and actions. Close buttons are out of Tab order; ⌘W, middle-click and
- * the tab menu (right-click or Shift+F10) close tabs from the keyboard.
+ * tab semantics do not model). ⌘W, middle-click and the tab menu
+ * (right-click or Shift+F10) also close tabs.
  *
  * Tabs move by drag (fine pointers, see ``useTabDrag``), ⌥⇧←/→ on a
  * focused tab, or Move Left / Move Right in the tab menu.
@@ -25,7 +23,6 @@ import { FileTypeIcon } from '../FileTypeIcon'
 import { TerminalTabButton } from '../Terminal/TerminalTabButton'
 import type { OS } from '@/hooks/use-platform'
 import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
-import { useFocusZone } from '@/lib/focus/zones'
 import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import type { TerminalSessionMeta } from '@/stores/useTerminalStore'
@@ -176,7 +173,6 @@ export function DockTabBar({
   onToggleMaximized,
 }: DockTabBarProps) {
   const stripRef = useRef<HTMLDivElement>(null)
-  useFocusZone(stripRef, { orientation: 'horizontal', entry: 'active', wrap: true })
   const drag = useTabDrag({ enabled: !mobile && onMove !== undefined, onMove: onMove ?? (() => {}) })
   // A moved tab's node is re-inserted, which drops its focus: put it back
   // when the move came from the keyboard or the tab menu.
@@ -278,7 +274,7 @@ export function DockTabBar({
               ) : tabButton}
               <button
                 type="button"
-                data-zone-skip
+                data-dock-tab-close
                 onClick={() => onClose(tab.id)}
                 className={dockTabCloseClass(active)}
                 aria-label={`Close ${label}`}

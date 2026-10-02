@@ -29,7 +29,6 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { usePlatform } from '@/hooks/use-platform'
 import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
-import { useFocusZone } from '@/lib/focus/zones'
 import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/ResizableAside'
 import { useViewportWidth } from '@/hooks/use-viewport-width'
@@ -279,12 +278,6 @@ export function Sidebar({
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchFocusKey, setSearchFocusKey] = useState(0)
   const searchButtonRef = useRef<HTMLButtonElement>(null)
-  // Two Tab stops: the header actions (a toolbar) and the list, where the
-  // arrow keys walk Needs-you rows, workspaces, sessions and scheduled tasks.
-  const sidebarListRef = useRef<HTMLDivElement>(null)
-  const sidebarActionsRef = useRef<HTMLDivElement>(null)
-  useFocusZone(sidebarListRef, { orientation: 'vertical', entry: 'active' })
-  useFocusZone(sidebarActionsRef, { orientation: 'horizontal', role: 'toolbar', label: 'Workspace actions', wrap: true })
   const [worktreeEditTarget, setWorktreeEditTarget] = useState<WorktreeInfo | null>(null)
   const [worktreeEditTitle, setWorktreeEditTitle] = useState('')
   const [worktreeEditLoading, setWorktreeEditLoading] = useState(false)
@@ -786,7 +779,6 @@ export function Sidebar({
       {!isMobile && !desktopCollapsed && <PanelResizeHandle edge="right" />}
 
       <div
-        ref={sidebarListRef}
         className="flex min-h-0 flex-1 flex-col"
         onKeyDown={(event) => {
           // Left on a session row climbs to its workspace, like a tree.
@@ -810,7 +802,7 @@ export function Sidebar({
         <span className="truncate text-[11px] font-semibold uppercase leading-none tracking-[0.05em] text-(--color-text-subtle)">
           Workspaces
         </span>
-        <div ref={sidebarActionsRef} className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-0.5">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -1005,7 +997,6 @@ export function Sidebar({
                     render={
                       <button
                         type="button"
-                        data-zone-skip
                         onClick={() => { void selectWorkspace(sessionTarget, { create: true }) }}
                         className={`ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-xs border border-(--color-border) text-(--color-text-muted) transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) pointer-coarse:size-9 ${mobileLongPressActions ? 'hidden' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'}`}
                         aria-label={selectedWorktree ? `New session in worktree ${selectedWorktree.name}` : `New session in ${sourceLabel}`}
@@ -1022,7 +1013,6 @@ export function Sidebar({
                       render={
                         <button
                           type="button"
-                          data-zone-skip
                           onClick={(event) => setDesktopWorkspaceActions({ path, sessionPath: sessionTarget, x: event.clientX, y: event.clientY })}
                           className={`mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-xs text-(--color-text-subtle) transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) pointer-coarse:size-9 ${mobileLongPressActions ? 'hidden' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'}`}
                           aria-label={`Actions for ${sourceLabel}`}

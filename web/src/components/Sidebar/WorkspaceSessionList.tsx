@@ -103,7 +103,7 @@ function WorkspaceSessionRowView({
       : (isCurrent || hasActiveWork))
   const subagentToggleLabel = `${isExpanded ? 'Collapse' : 'Expand'} ${subagents.length} subagents`
 
-  // Keyboard paths for the hover-only row actions (see lib/focus/zones.ts).
+  // Keyboard shortcuts for the hover-revealed row actions.
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (isRenameKey(event)) {
       event.preventDefault()
@@ -196,7 +196,6 @@ function WorkspaceSessionRowView({
         {hasSubagents && !isEditing && (
           <button
             type="button"
-            data-zone-skip
             onClick={(e) => {
               e.stopPropagation()
               e.preventDefault()
@@ -237,7 +236,7 @@ function WorkspaceSessionRowView({
             {sessionAge}
           </span>
         )}
-        <div data-zone-skip className={`shrink-0 items-center ${isEditing ? 'hidden' : actionsVisibility}`}>
+        <div className={`shrink-0 items-center ${isEditing ? 'hidden' : actionsVisibility}`}>
           <button
             type="button"
             onClick={(e) => {
@@ -325,7 +324,6 @@ function WorkspaceSessionRowView({
               </Tooltip>
               <button
                 type="button"
-                data-zone-skip
                 onClick={(e) => onSessionDelete(e, subSessionPayload)}
                 className={`${ROW_ACTION} h-5 w-5 hover:bg-(--color-error-subtle) hover:text-(--color-error) ${mobileLongPressActions ? 'hidden' : 'hidden group-hover/sub:flex group-focus-within/sub:flex pointer-coarse:flex'}`}
                 aria-label={`Delete subagent session ${sub.member_id}`}

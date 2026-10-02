@@ -20,7 +20,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { usePlatform } from '@/hooks/use-platform'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { isPrimaryModifierOS } from '@/lib/keyboard-shortcut'
-import { useFocusZone } from '@/lib/focus/zones'
+import { focusQuietly } from '@/lib/focus/quiet'
 import { SessionModeToggle } from './SessionModeToggle'
 
 // Re-export the public type so callers can import ``FileRef`` from this module
@@ -289,11 +289,6 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
   }, [mentionRanges])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const expandButtonRef = useRef<HTMLButtonElement>(null)
-  // The action row (attach, mode, send) is one Tab stop beside the textarea:
-  // Shift+Tab from the textarea reaches it, Left/Right walk it. Tab inside
-  // the textarea keeps switching Plan/Code mode.
-  const toolbarRef = useRef<HTMLDivElement>(null)
-  useFocusZone(toolbarRef, { orientation: 'horizontal', entry: 'active', wrap: true, role: 'toolbar', label: 'Message actions' })
   const isMobile = useIsMobile()
   const { os } = usePlatform()
   const prefersReducedMotion = useReducedMotion()
@@ -428,8 +423,13 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
 
   useImperativeHandle(ref, () => ({
     focus: (options) => {
-      const target = options?.expand === false && minimized ? expandButtonRef.current : textareaRef.current
-      target?.focus()
+      const pill = options?.expand === false && minimized ? expandButtonRef.current : null
+      // Handing focus back (page load, dock close) isn't keyboard-steered, but
+      // a script focus() on a fresh page counts as :focus-visible and rings
+      // the pill. Focus it quietly: Tab still continues from here, and the
+      // ring returns on the next control the keyboard reaches.
+      if (pill) focusQuietly(pill, {})
+      else textareaRef.current?.focus()
     },
     setValue: (text: string) => {
       // A restored message's design feedback blocks come back as chips.
@@ -791,7 +791,6 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
     <button
       ref={expandButtonRef}
       type="button"
-      data-zone-active
       onClick={(e) => { stopClick(e); handleExpand() }}
       aria-label="Expand input bar"
       className={actionBtnClass}
@@ -984,7 +983,6 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
     // stopClick so they don't trigger this. No ARIA role — the Send button is
     // the keyboard-accessible "Expand input bar" affordance.
     <div
-      ref={toolbarRef}
       onClick={minimized ? handleExpand : undefined}
       className={`flex w-full flex-wrap items-center gap-2 ${minimized ? 'cursor-text' : ''}`}
     >

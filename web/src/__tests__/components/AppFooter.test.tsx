@@ -95,18 +95,12 @@ describe('AppFooter', () => {
     expect(screen.getByRole('button', { name: /Connected\. Change backend connection/ })).toBeTruthy()
   })
 
-  it('is one Tab stop whose items Left/Right walk', async () => {
-    const user = userEvent.setup()
+  it('keeps every status item in Tab order', () => {
     renderWithQueryClient(<AppFooter />)
     const footer = screen.getByRole('status', { name: 'Application status' })
     const buttons = Array.from(footer.querySelectorAll<HTMLElement>('button'))
     expect(buttons.length).toBeGreaterThan(1)
-    expect(buttons.filter((el) => el.tabIndex === 0)).toHaveLength(1)
-    buttons[0].focus()
-    await user.keyboard('{ArrowRight}')
-    expect(document.activeElement).toBe(buttons[1])
-    await user.keyboard('{ArrowLeft}{ArrowLeft}')
-    expect(document.activeElement).toBe(buttons.at(-1))
+    expect(buttons.every((el) => el.tabIndex === 0)).toBe(true)
   })
 
   it('shows the backend indicator when the backend is unhealthy', () => {

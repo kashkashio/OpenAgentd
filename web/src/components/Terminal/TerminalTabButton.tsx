@@ -125,7 +125,7 @@ export function TerminalTabButton({
         {!mobile && (
           <button
             type="button"
-            data-zone-skip
+            data-dock-tab-close
             onClick={(e) => {
               e.stopPropagation()
               close()

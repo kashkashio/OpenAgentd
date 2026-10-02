@@ -314,19 +314,22 @@ run from the terminal (the native Rust binary since v3.0.0).
   page uses itself stay with it), so `⌘W` there closes the tab instead of the
   window. **Keyboard Shortcuts** (`⌘/`/`Ctrl+/`, or the palette) lists every
   shortcut by area.
-- **Keyboard areas, like a desktop app** `[v3.5.0]` — Tab and Shift+Tab move
+- **Keyboard areas, like a desktop app** `[v3.5.0]` *(deprecated — removed in
+  v3.5.1: Tab and Shift+Tab move through every control in page order again,
+  and arrow keys no longer walk between buttons)* — Tab and Shift+Tab moved
   between areas (header, sidebar, chat, composer, dock, status bar) instead of
-  through every button; arrow keys, Home and End move inside an area. About a
-  dozen Tab stops replace 100 or more.
-  - Clicking an item sets the keyboard position, so arrow keys continue from it.
-  - Row actions that only show on hover are out of Tab order and have keys:
+  through every button; arrow keys, Home and End moved inside an area.
+- **Keyboard paths and focus continuity** `[v3.5.0, v3.5.1]`:
+  - Row actions that only show on hover also appear on keyboard focus and keep keys:
     F2 renames, Delete (or `⌘⌫` / `Ctrl+Backspace`) deletes, Shift+F10 or
     the Menu key opens the row's menu. In the sidebar, Left and Right
     collapse and expand a workspace.
   - Focus never drops to the page: after sending, Escape or a deleted row it
     returns to the composer, and a collapsed sidebar or closed drawer cannot
     take it. In the composer, Tab still switches Plan and Code; Shift+Tab or
-    Escape leaves it.
+    Escape leaves it. Focus handed back on page load draws no focus ring
+    until you press a key `[v3.5.1]`.
+  - The desktop app shows **Skip to main content** on the first Tab `[v3.5.1]`.
   - The Keyboard Shortcuts sheet lists the new keys under **Moving around**.
 - **Desktop app polish** `[v3.5.0]` — in the desktop app, dragging across UI
   chrome no longer highlights it (chat, code, diffs and the terminal still

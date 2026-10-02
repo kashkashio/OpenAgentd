@@ -1,4 +1,4 @@
-import { memo, useRef, useState, type Dispatch, type HTMLAttributes, type SetStateAction } from 'react'
+import { memo, useState, type Dispatch, type HTMLAttributes, type SetStateAction } from 'react'
 import { ListTodo, PanelLeft, PanelRight, SlidersHorizontal } from 'lucide-react'
 
 import { AgentTopbar, type AgentTopbarTokens } from '@/components/AgentTopbar'
@@ -6,7 +6,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { InlineTitleInput } from '@/components/ui/inline-title-input'
 import { usePlatform } from '@/hooks/use-platform'
 import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
-import { useFocusZone } from '@/lib/focus/zones'
 import { useTranscriptFollowStore } from '@/stores/useTranscriptFollowStore'
 import { MobileHeaderAction } from './MobileHeaderAction'
 import { MobileChatActions } from './MobileChatActions'
@@ -81,9 +80,6 @@ export const AgentChatHeader = memo(function AgentChatHeader({
   onRenameSession,
 }: AgentChatHeaderProps) {
   const { os } = usePlatform()
-  // One Tab stop; Left/Right walk the header's controls.
-  const headerRef = useRef<HTMLElement>(null)
-  useFocusZone(headerRef, { orientation: 'horizontal', wrap: true })
   // Published by the mounted transcript; a new chat has no prompts to step.
   const publishedJumpToPrompt = useTranscriptFollowStore((s) => s.jumpToPrompt)
   const jumpToPrompt = sessionId ? publishedJumpToPrompt : null
@@ -107,7 +103,6 @@ export const AgentChatHeader = memo(function AgentChatHeader({
 
   return (
     <header
-      ref={headerRef}
       {...dragHandlers}
       // Desktop zoning (dark only): the header joins the sidebar and status
       // bar on the recessed rail tone; light mode keeps one page tone.

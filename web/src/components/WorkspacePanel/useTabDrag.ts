@@ -81,7 +81,7 @@ export function useTabDrag({ enabled, onMove }: { enabled: boolean; onMove: (id:
     if (!enabled || event.button !== 0 || event.pointerType === 'touch') return
     const target = event.target as Element
     // The close button is a click target, not a handle.
-    if (target.closest('[data-zone-skip]')) return
+    if (target.closest('[data-dock-tab-close]')) return
     const id = target.closest(`[${DOCK_TAB_ATTR}]`)?.getAttribute(DOCK_TAB_ATTR)
     if (!id) return
     stripRef.current = event.currentTarget

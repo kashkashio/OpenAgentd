@@ -2,15 +2,13 @@
  * DockLauncher — what an empty review dock shows.
  *
  * The dock starts with no tabs (Git opens on demand, like any other tab),
- * so this lists what it can open, each with its shortcut. One focus zone:
- * a single Tab stop with Up/Down across the rows.
+ * so this lists what it can open, each with its shortcut.
  */
-import { useRef, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { GitCompare, Globe, Search, TerminalSquare } from 'lucide-react'
 
 import type { OS } from '@/hooks/use-platform'
 import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
-import { useFocusZone } from '@/lib/focus/zones'
 
 interface LauncherRow {
   label: string
@@ -27,8 +25,6 @@ export function DockLauncher({ os, onOpenGit, onOpenTerminal, onOpenPreview, onO
   onOpenPreview?: () => void
   onOpenFile?: () => void
 }) {
-  const listRef = useRef<HTMLDivElement>(null)
-  useFocusZone(listRef, { orientation: 'vertical', wrap: true })
   const rows: LauncherRow[] = []
   if (onOpenGit) rows.push({ label: 'Git', icon: <GitCompare size={14} aria-hidden="true" />, shortcut: shortcutLabel(APP_SHORTCUTS.openGit, os), run: onOpenGit })
   if (onOpenTerminal) rows.push({ label: 'Terminal', icon: <TerminalSquare size={14} aria-hidden="true" />, shortcut: shortcutLabel(APP_SHORTCUTS.terminal, os), run: onOpenTerminal })
@@ -36,7 +32,7 @@ export function DockLauncher({ os, onOpenGit, onOpenTerminal, onOpenPreview, onO
   if (onOpenFile) rows.push({ label: 'Open File', icon: <Search size={14} aria-hidden="true" />, shortcut: shortcutLabel(APP_SHORTCUTS.quickOpen, os), run: onOpenFile })
   return (
     <div data-dock-launcher className="flex h-full items-center justify-center px-4">
-      <div ref={listRef} role="group" aria-label="Open in the dock" className="flex w-full max-w-60 flex-col gap-0.5">
+      <div role="group" aria-label="Open in the dock" className="flex w-full max-w-60 flex-col gap-0.5">
         {rows.map((row) => (
           <button
             key={row.label}

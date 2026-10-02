@@ -1110,7 +1110,7 @@ html[data-app-hidden="true"] *::after {
   outline-offset: 2px;
 }
 /* Focus given by a click or a tab switch, not steered by keyboard; see
- * focusQuietly in lib/focus/zones.ts. Clears on blur. */
+ * focusQuietly in lib/focus/quiet.ts. Clears on blur. */
 [data-quiet-focus]:focus-visible {
   outline: none;
 }
