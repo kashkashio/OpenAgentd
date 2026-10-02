@@ -8,11 +8,15 @@ import { formatCompactRelative, formatRelativeDate } from '@/utils/format'
 import { LongPressButton } from '@/components/ui/long-press-button'
 import { InlineTitleInput } from '@/components/ui/inline-title-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { isDeleteKey, isMenuKey, isRenameKey, menuPointFor } from '@/lib/focus/item-keys'
 import { SessionStatusMark, sessionStatus } from './SessionStatusMark'
 
 function isModifiedPrimaryClick(event: React.MouseEvent): boolean {
   return event.button === 0 && (event.metaKey || event.ctrlKey)
 }
+
+/** Where a session's context menu opens: the pointer, or the row for keys. */
+export type MenuPoint = Pick<React.MouseEvent, 'clientX' | 'clientY'>
 
 /** Inline row action: in-flow (never overlays the title), 24px target. */
 const ROW_ACTION =
@@ -43,12 +47,12 @@ function WorkspaceSessionRowView({
   checkoutName: string | null
   mobileLongPressActions: boolean
   onSessionSelect: (session: SessionResponse, workspacePath: string, event?: React.MouseEvent) => void
-  onSessionDelete: (e: React.MouseEvent, session: SessionResponse) => void
+  onSessionDelete: (e: React.SyntheticEvent, session: SessionResponse) => void
   onSessionEdit: (session: SessionResponse) => void
   onSessionRename: (session: SessionResponse, title: string) => void
   onSessionRenameCancel: () => void
   onSessionLongPress: (session: SessionResponse) => void
-  onSessionContextActions: (session: SessionResponse, event: React.MouseEvent) => void
+  onSessionContextActions: (session: SessionResponse, at: MenuPoint) => void
 }) {
   const unread = useUnreadStore((state) => state.ids.includes(session.id))
   const status = sessionStatus(session, unread)
@@ -99,6 +103,27 @@ function WorkspaceSessionRowView({
       : (isCurrent || hasActiveWork))
   const subagentToggleLabel = `${isExpanded ? 'Collapse' : 'Expand'} ${subagents.length} subagents`
 
+  // Keyboard paths for the hover-only row actions (see lib/focus/zones.ts).
+  const handleRowKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (isRenameKey(event)) {
+      event.preventDefault()
+      onSessionEdit(session)
+    } else if (isDeleteKey(event)) {
+      event.preventDefault()
+      onSessionDelete(event, session)
+    } else if (isMenuKey(event) && !mobileLongPressActions) {
+      event.preventDefault()
+      onSessionContextActions(session, menuPointFor(event.currentTarget))
+    } else if (hasSubagents && event.key === 'ArrowRight' && !isExpanded) {
+      event.preventDefault()
+      setExpandedOverride(true)
+    } else if (hasSubagents && event.key === 'ArrowLeft' && isExpanded && !isChildActive) {
+      // Otherwise Left moves up to the workspace (Sidebar handles it).
+      event.preventDefault()
+      setExpandedOverride(false)
+    }
+  }
+
   return (
     <div className="space-y-px">
       <div
@@ -130,6 +155,9 @@ function WorkspaceSessionRowView({
                 enabled={mobileLongPressActions}
                 onLongPress={() => onSessionLongPress(session)}
                 type="button"
+                data-sidebar-session=""
+                aria-current={isCurrent ? 'page' : undefined}
+                onKeyDown={handleRowKeyDown}
                 onMouseDown={(e) => {
                   if (!isModifiedPrimaryClick(e)) return
                   onSessionSelect(session, path, e)
@@ -168,6 +196,7 @@ function WorkspaceSessionRowView({
         {hasSubagents && !isEditing && (
           <button
             type="button"
+            data-zone-skip
             onClick={(e) => {
               e.stopPropagation()
               e.preventDefault()
@@ -208,7 +237,7 @@ function WorkspaceSessionRowView({
             {sessionAge}
           </span>
         )}
-        <div className={`shrink-0 items-center ${isEditing ? 'hidden' : actionsVisibility}`}>
+        <div data-zone-skip className={`shrink-0 items-center ${isEditing ? 'hidden' : actionsVisibility}`}>
           <button
             type="button"
             onClick={(e) => {
@@ -259,6 +288,13 @@ function WorkspaceSessionRowView({
                   render={
                     <button
                       type="button"
+                      data-sidebar-session=""
+                      aria-current={isSubCurrent ? 'page' : undefined}
+                      onKeyDown={(e) => {
+                        if (!isDeleteKey(e)) return
+                        e.preventDefault()
+                        onSessionDelete(e, subSessionPayload)
+                      }}
                       onClick={(e) => {
                         onSessionSelect(subSessionPayload, path, e)
                       }}
@@ -289,6 +325,7 @@ function WorkspaceSessionRowView({
               </Tooltip>
               <button
                 type="button"
+                data-zone-skip
                 onClick={(e) => onSessionDelete(e, subSessionPayload)}
                 className={`${ROW_ACTION} h-5 w-5 hover:bg-(--color-error-subtle) hover:text-(--color-error) ${mobileLongPressActions ? 'hidden' : 'hidden group-hover/sub:flex group-focus-within/sub:flex pointer-coarse:flex'}`}
                 aria-label={`Delete subagent session ${sub.member_id}`}
@@ -349,12 +386,12 @@ export function WorkspaceSessionList({
   mobileLongPressActions?: boolean
   className?: string
   onSessionSelect: (session: SessionResponse, workspacePath: string, event?: React.MouseEvent) => void
-  onSessionDelete: (e: React.MouseEvent, session: SessionResponse) => void
+  onSessionDelete: (e: React.SyntheticEvent, session: SessionResponse) => void
   onSessionEdit: (session: SessionResponse) => void
   onSessionRename?: (session: SessionResponse, title: string) => void
   onSessionRenameCancel?: () => void
   onSessionLongPress: (session: SessionResponse) => void
-  onSessionContextActions: (session: SessionResponse, event: React.MouseEvent) => void
+  onSessionContextActions: (session: SessionResponse, at: MenuPoint) => void
 }) {
   const multiCheckout = paths !== undefined && paths.length > 1
   const sessions = useWorkspaceSessionsQuery(multiCheckout ? paths : path, !collapsed)

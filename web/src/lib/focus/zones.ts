@@ -9,9 +9,10 @@
  *
  * Items are the zone's focusable descendants except:
  * - text fields (they keep their own Tab stop and arrow keys),
- * - anything under ``[data-zone-skip]`` (hover-revealed row actions, which
- *   must have a keyboard path of their own: F2, Delete, Shift+F10, a
- *   shortcut) or under a nested zone,
+ * - anything under ``[data-zone-skip]``: hover-revealed row actions. The
+ *   zone takes them out of Tab order (``tabIndex`` -1), so each needs a
+ *   keyboard path of its own: F2, Delete, Shift+F10, a shortcut,
+ * - anything under a nested zone,
  * - controls that are natively ``tabIndex=-1`` (scroll containers, inactive
  *   tabs of a tablist: only the selected tab of a tablist is an item, the
  *   tablist keeps its own arrow keys),
@@ -78,6 +79,13 @@ export function zoneItems(zone: Element): HTMLElement[] {
   return Array.from(zone.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => isItem(zone, el))
 }
 
+/** Skipped controls of this zone (not of a nested one). */
+function skippedControls(zone: Element): HTMLElement[] {
+  return Array.from(zone.querySelectorAll<HTMLElement>('[data-zone-skip]'))
+    .flatMap((root) => [root, ...Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE))])
+    .filter((el) => el.matches(FOCUSABLE) && el.closest(`[${ZONE}]`) === zone && !isTextField(el))
+}
+
 interface ZoneState {
   current: HTMLElement | null
 }
@@ -115,6 +123,9 @@ export function rove(zone: Element, entry: ZoneEntry = 'first'): HTMLElement | n
     const index = item === current ? '0' : '-1'
     if (item.getAttribute('tabindex') !== index) item.setAttribute('tabindex', index)
   }
+  for (const skipped of skippedControls(zone)) {
+    if (skipped.getAttribute('tabindex') !== '-1') skipped.setAttribute('tabindex', '-1')
+  }
   return current
 }
 
@@ -122,6 +133,7 @@ function setCurrent(zone: Element, item: HTMLElement): void {
   const state = states.get(zone)
   if (state) state.current = item
   for (const other of zoneItems(zone)) {
+    other.setAttribute(ITEM, '')
     const index = other === item ? '0' : '-1'
     if (other.getAttribute('tabindex') !== index) other.setAttribute('tabindex', index)
   }
@@ -190,7 +202,8 @@ export function useFocusZone<T extends HTMLElement>(ref: RefObject<T | null>, op
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
       const item = itemOf(zone, event.target)
-      if (!item || item.getAttribute('aria-expanded') === 'true') return
+      // An open menu or listbox owns the arrow keys of its trigger.
+      if (!item || (item.hasAttribute('aria-haspopup') && item.getAttribute('aria-expanded') === 'true')) return
       const { orientation: axis, wrap = false } = latest.current
       const back = axis === 'vertical' ? 'ArrowUp' : 'ArrowLeft'
       const forward = axis === 'vertical' ? 'ArrowDown' : 'ArrowRight'

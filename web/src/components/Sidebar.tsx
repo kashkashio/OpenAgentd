@@ -29,6 +29,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { usePlatform } from '@/hooks/use-platform'
 import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
+import { useFocusZone } from '@/lib/focus/zones'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/ResizableAside'
 import { useViewportWidth } from '@/hooks/use-viewport-width'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
@@ -277,6 +279,12 @@ export function Sidebar({
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchFocusKey, setSearchFocusKey] = useState(0)
   const searchButtonRef = useRef<HTMLButtonElement>(null)
+  // Two Tab stops: the header actions (a toolbar) and the list, where the
+  // arrow keys walk Needs-you rows, workspaces, sessions and scheduled tasks.
+  const sidebarListRef = useRef<HTMLDivElement>(null)
+  const sidebarActionsRef = useRef<HTMLDivElement>(null)
+  useFocusZone(sidebarListRef, { orientation: 'vertical', entry: 'active' })
+  useFocusZone(sidebarActionsRef, { orientation: 'horizontal', role: 'toolbar', label: 'Workspace actions', wrap: true })
   const [worktreeEditTarget, setWorktreeEditTarget] = useState<WorktreeInfo | null>(null)
   const [worktreeEditTitle, setWorktreeEditTitle] = useState('')
   const [worktreeEditLoading, setWorktreeEditLoading] = useState(false)
@@ -689,7 +697,7 @@ export function Sidebar({
     })
   }
 
-  const handleSessionDelete = (e: React.MouseEvent, session: SessionResponse) => {
+  const handleSessionDelete = (e: React.SyntheticEvent, session: SessionResponse) => {
     e.stopPropagation()
     setDeleteTarget(session)
   }
@@ -777,6 +785,20 @@ export function Sidebar({
     >
       {!isMobile && !desktopCollapsed && <PanelResizeHandle edge="right" />}
 
+      <div
+        ref={sidebarListRef}
+        className="flex min-h-0 flex-1 flex-col"
+        onKeyDown={(event) => {
+          // Left on a session row climbs to its workspace, like a tree.
+          if (event.defaultPrevented || event.key !== 'ArrowLeft' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+          const target = event.target as HTMLElement
+          if (!target.closest('[data-sidebar-session]')) return
+          const header = target.closest('[data-sidebar-workspace-group]')?.querySelector<HTMLElement>('[data-sidebar-workspace]')
+          if (!header) return
+          event.preventDefault()
+          header.focus()
+        }}
+      >
       <NeedsYouSection
         currentSessionId={currentSessionId}
         workspaceName={(path) => (isChatPath(path) ? (chatWorkspace?.name ?? path) : workspaceLabel(path))}
@@ -788,7 +810,7 @@ export function Sidebar({
         <span className="truncate text-[11px] font-semibold uppercase leading-none tracking-[0.05em] text-(--color-text-subtle)">
           Workspaces
         </span>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div ref={sidebarActionsRef} className="flex shrink-0 items-center gap-0.5">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -887,7 +909,7 @@ export function Sidebar({
           const checkoutLabel = selectedWorktree?.name ?? (checkouts.selected ? 'main worktree' : 'all')
 
           return (
-            <div key={path} className="relative">
+            <div key={path} className="relative" data-sidebar-workspace-group="">
               <div className="group mx-1.5 flex h-(--spacing-list-row) items-center rounded-sm hover:bg-(--bg-key)/40">
                 <Tooltip className="min-w-0 flex-1">
                   <TooltipTrigger
@@ -900,7 +922,20 @@ export function Sidebar({
                         // way left to start a new chat session.
                         onLongPress={() => setMobileWorkspaceActions({ path, sessionPath: sessionTarget, kind: sourceIsChat ? 'chat' : 'main' })}
                         type="button"
+                        data-sidebar-workspace=""
                         onClick={() => toggleWorkspaceExpanded(path)}
+                        onKeyDown={(event) => {
+                          const expandKey = event.key === 'ArrowRight' && !sourceIsExpanded
+                          const collapseKey = event.key === 'ArrowLeft' && sourceIsExpanded
+                          if (expandKey || collapseKey) {
+                            event.preventDefault()
+                            toggleWorkspaceExpanded(path)
+                          } else if (isMenuKey(event) && !mobileLongPressActions && !sourceIsChat) {
+                            event.preventDefault()
+                            const at = menuPointFor(event.currentTarget)
+                            setDesktopWorkspaceActions({ path, sessionPath: sessionTarget, x: at.clientX, y: at.clientY })
+                          }
+                        }}
                         onContextMenu={(event) => {
                           if (mobileLongPressActions || sourceIsChat) return
                           event.preventDefault()
@@ -970,6 +1005,7 @@ export function Sidebar({
                     render={
                       <button
                         type="button"
+                        data-zone-skip
                         onClick={() => { void selectWorkspace(sessionTarget, { create: true }) }}
                         className={`ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-xs border border-(--color-border) text-(--color-text-muted) transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) pointer-coarse:size-9 ${mobileLongPressActions ? 'hidden' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'}`}
                         aria-label={selectedWorktree ? `New session in worktree ${selectedWorktree.name}` : `New session in ${sourceLabel}`}
@@ -986,6 +1022,7 @@ export function Sidebar({
                       render={
                         <button
                           type="button"
+                          data-zone-skip
                           onClick={(event) => setDesktopWorkspaceActions({ path, sessionPath: sessionTarget, x: event.clientX, y: event.clientY })}
                           className={`mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-xs text-(--color-text-subtle) transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) pointer-coarse:size-9 ${mobileLongPressActions ? 'hidden' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'}`}
                           aria-label={`Actions for ${sourceLabel}`}
@@ -1054,6 +1091,7 @@ export function Sidebar({
       )}
 
       <ScheduledSection onMobileClose={onMobileClose} />
+      </div>
 
       {/* Mobile drawer footer — on desktop this lives in AppFooter status bar */}
       <div className="flex md:hidden items-center justify-between gap-2 border-t border-(--color-border) px-3 py-2 pb-safe">

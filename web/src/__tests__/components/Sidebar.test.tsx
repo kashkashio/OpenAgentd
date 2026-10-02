@@ -2003,6 +2003,71 @@ describe('Sidebar workspace trust flow', () => {
     expect(screen.queryByText('Edit session title')).toBeNull()
   })
 
+  describe('keyboard', () => {
+    const twoSessions = () => {
+      sessionsData = ['First', 'Second'].map((title, i) => ({
+        id: `session-${i + 1}`,
+        title,
+        agent_name: 'lead',
+        created_at: `2026-05-1${3 - i}T00:00:00Z`,
+        updated_at: `2026-05-1${3 - i}T00:00:00Z`,
+        mode: 'coding',
+        workspace: '/repo/project',
+      }))
+      workspaceSessionsData = sessionsData
+    }
+    const frame = () => act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+    const row = (title: string) =>
+      Array.from(document.querySelectorAll<HTMLElement>('[data-sidebar-session]')).find((el) => el.textContent?.includes(title))!
+
+    it('is one Tab stop that enters on the open session, with hover actions out of Tab order', async () => {
+      twoSessions()
+      await renderSidebarForSessions('session-1')
+      await frame()
+      expect(row('First').tabIndex).toBe(0)
+      expect(row('First').getAttribute('aria-current')).toBe('page')
+      expect(row('Second').tabIndex).toBe(-1)
+      expect(screen.getByLabelText('Collapse repository project').tabIndex).toBe(-1)
+      expect(screen.getByLabelText('Edit session First').tabIndex).toBe(-1)
+      expect(screen.getByLabelText('Delete session First').tabIndex).toBe(-1)
+      expect(screen.getByLabelText('Actions for project').tabIndex).toBe(-1)
+      expect(screen.getByRole('toolbar', { name: 'Workspace actions' })).toBeTruthy()
+    })
+
+    it('walks rows with arrows and climbs and folds the workspace with Left/Right', async () => {
+      const user = userEvent.setup()
+      twoSessions()
+      await renderSidebarForSessions('session-1')
+      row('First').focus()
+      await user.keyboard('{ArrowDown}')
+      expect(document.activeElement).toBe(row('Second'))
+      await user.keyboard('{ArrowLeft}')
+      const header = screen.getByLabelText('Collapse repository project')
+      expect(document.activeElement).toBe(header)
+      await user.keyboard('{ArrowLeft}')
+      expect(screen.getByLabelText('Expand repository project')).toBe(header)
+      await user.keyboard('{ArrowRight}')
+      expect(screen.getByLabelText('Collapse repository project')).toBe(header)
+    })
+
+    it('renames with F2, deletes with Delete and opens the row menu with Shift+F10', async () => {
+      const user = userEvent.setup()
+      twoSessions()
+      await renderSidebarForSessions('session-1')
+      row('Second').focus()
+      await user.keyboard('{Shift>}{F10}{/Shift}')
+      expect(screen.getByRole('menu', { name: 'Actions for Second' })).toBeTruthy()
+      await user.keyboard('{Escape}')
+      row('Second').focus()
+      await user.keyboard('{Delete}')
+      expect(screen.getByText('Delete session')).toBeTruthy()
+      await user.keyboard('{Escape}')
+      row('Second').focus()
+      await user.keyboard('{F2}')
+      expect(screen.getByLabelText('Session title')).toBeTruthy()
+    })
+  })
+
   it('trims title edits before submitting', async () => {
     const user = userEvent.setup()
     sessionsData = [

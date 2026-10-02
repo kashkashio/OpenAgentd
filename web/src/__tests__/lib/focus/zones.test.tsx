@@ -99,6 +99,7 @@ describe('useFocusZone', () => {
     )
     expect(screen.getByLabelText('field').tabIndex).toBe(0)
     expect(screen.getByTestId('scroller').tabIndex).toBe(-1)
+    expect(screen.getByRole('button', { name: 'hover action' }).tabIndex).toBe(-1)
     screen.getByRole('button', { name: 'one' }).focus()
     await user.keyboard('{ArrowDown}')
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'two' }))
