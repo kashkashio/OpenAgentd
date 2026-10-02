@@ -1427,6 +1427,8 @@ MCP.
   (`lsp:`) → built-in defaults**. Python is special-cased to run *multiple*
   complementary servers and merge results — a type checker (`ty`/`pyright`) **and**
   a linter (`ruff`) — because neither alone catches both type errors and lint;
+  only one type checker runs, `ty` when it starts, else `pyright`, else `pylsp`
+  `[v3.5.0]`;
   `ruff`/`ty` are **not bundled** with the runtime: when a project pins them (or
   declares them bare), the backend silently downloads the checksum-verified
   wheel for the project's exact `==` pin (PyPI latest for ranges) into the user
