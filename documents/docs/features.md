@@ -1302,6 +1302,12 @@ MCP.
   refs (`e1`, `e2`, …), and it can **click**, **fill** fields, **press**
   keys, **scroll**, **navigate**, **wait** for text, and **inspect** an
   element's source, styles and HTML. Acted-on elements flash in the page.
+  A cursor in the page glides to each element it acts on, labeled with what
+  it is doing (*Clicking*, *Typing*), so you can follow along `[v3.5.0]`.
+  It can **chain** up to 20 of these actions in one call, such as filling a
+  form, submitting it and taking a snapshot, stopping at the first step that
+  fails `[v3.5.0]`. Session settings list `preview` among the agent's tools
+  in coding workspaces `[v3.5.0]`.
   Only loopback URLs are accepted, never the OpenAgentd API port. Everything
   works only while the page is open in the Preview tab; there is no headless
   browser and no screenshots.

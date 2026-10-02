@@ -925,8 +925,11 @@ The app CSP gains `frame-src 'self' http://127.0.0.1:*`. The lead's
 page: the inspector long-polls `/__openagentd/agent` on the preview origin
 for commands (snapshot, click, fill, press, scroll, navigate, wait, inspect)
 and posts results back there, so commands fail fast when no Preview tab has
-the page open. Its definition lives in `crates/agent/src/tools/preview.rs`,
-not in the v2 tool contract. Design feedback travels inside the user message
-as a `<design-feedback>` block that the web UI renders as a card; the wire
-format is unchanged.
+the page open. `action: "chain"` runs up to 20 such commands from `steps`
+in order in one call, stopping at the first failure. A virtual cursor in
+the inspector's overlay glides to each acted-on element and labels the
+action. Its definition lives in `crates/agent/src/tools/preview.rs`, not in
+the v2 tool contract; `GET /agents` lists it for coding workspaces. Design
+feedback travels inside the user message as a `<design-feedback>` block
+that the web UI renders as a card; the wire format is unchanged.
 Not done: `wss://` relays, LAN or mobile access, and headless capture.
