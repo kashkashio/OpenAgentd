@@ -153,92 +153,105 @@ function itemOf(zone: Element, target: EventTarget | null): HTMLElement | null {
   return el && zone.contains(el) && isItem(zone, el) ? el : null
 }
 
+function attachZone(zone: HTMLElement, latest: { readonly current: FocusZoneOptions }): () => void {
+  states.set(zone, { current: null })
+  zone.setAttribute(ZONE, latest.current.orientation)
+  const { role, label, orientation } = latest.current
+  if (role) {
+    zone.setAttribute('role', role)
+    zone.setAttribute('aria-orientation', orientation)
+  }
+  if (label) zone.setAttribute('aria-label', label)
+
+  const entry = () => latest.current.entry ?? 'first'
+  let frame: number | null = null
+  const schedule = () => {
+    if (frame !== null) return
+    frame = requestAnimationFrame(() => {
+      frame = null
+      rove(zone, entry())
+    })
+  }
+  rove(zone, entry())
+
+  const observer = new MutationObserver(schedule)
+  observer.observe(zone, { childList: true, subtree: true, attributes: true, attributeFilter: OBSERVED })
+
+  const onFocusIn = (event: FocusEvent) => {
+    const item = itemOf(zone, event.target)
+    if (item) setCurrent(zone, item)
+  }
+
+  // A click sets the keyboard position, so arrows continue from the row
+  // that was clicked. WebKit does not focus buttons on click by itself.
+  const onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) return
+    const item = itemOf(zone, event.target)
+    if (!item) return
+    setCurrent(zone, item)
+    if (document.activeElement !== item) item.focus({ preventScroll: true })
+  }
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    const item = itemOf(zone, event.target)
+    // An open menu or listbox owns the arrow keys of its trigger.
+    if (!item || (item.hasAttribute('aria-haspopup') && item.getAttribute('aria-expanded') === 'true')) return
+    const { orientation: axis, wrap = false } = latest.current
+    const back = axis === 'vertical' ? 'ArrowUp' : 'ArrowLeft'
+    const forward = axis === 'vertical' ? 'ArrowDown' : 'ArrowRight'
+    if (![back, forward, 'Home', 'End'].includes(event.key)) return
+    const items = zoneItems(zone).filter(isRendered)
+    const index = items.indexOf(item)
+    if (index < 0) return
+    let next = index
+    if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = items.length - 1
+    else {
+      next = index + (event.key === forward ? 1 : -1)
+      if (wrap) next = (next + items.length) % items.length
+      else next = Math.max(0, Math.min(items.length - 1, next))
+    }
+    // Handled even at an edge: WebKit beeps on unhandled arrow keys.
+    event.preventDefault()
+    const target = items[next]
+    if (!target || target === item) return
+    setCurrent(zone, target)
+    target.focus({ preventScroll: true })
+    target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  }
+
+  zone.addEventListener('focusin', onFocusIn)
+  zone.addEventListener('pointerdown', onPointerDown)
+  zone.addEventListener('keydown', onKeyDown)
+  return () => {
+    observer.disconnect()
+    if (frame !== null) cancelAnimationFrame(frame)
+    zone.removeEventListener('focusin', onFocusIn)
+    zone.removeEventListener('pointerdown', onPointerDown)
+    zone.removeEventListener('keydown', onKeyDown)
+    zone.removeAttribute(ZONE)
+    states.delete(zone)
+  }
+}
+
 export function useFocusZone<T extends HTMLElement>(ref: RefObject<T | null>, options: FocusZoneOptions): void {
   const latest = useRef(options)
   latest.current = options
   const enabled = options.enabled ?? true
+  const attached = useRef<{ el: HTMLElement; detach: () => void } | null>(null)
 
+  // Checked after every render: the zone element can be replaced (a parent
+  // switching between a plain and an animated wrapper) without the ref
+  // object changing.
   useEffect(() => {
-    const zone = ref.current
-    if (!zone || !enabled) return undefined
-    states.set(zone, { current: null })
-    zone.setAttribute(ZONE, latest.current.orientation)
-    const { role, label, orientation } = latest.current
-    if (role) {
-      zone.setAttribute('role', role)
-      zone.setAttribute('aria-orientation', orientation)
-    }
-    if (label) zone.setAttribute('aria-label', label)
-
-    const entry = () => latest.current.entry ?? 'first'
-    let frame: number | null = null
-    const schedule = () => {
-      if (frame !== null) return
-      frame = requestAnimationFrame(() => {
-        frame = null
-        rove(zone, entry())
-      })
-    }
-    rove(zone, entry())
-
-    const observer = new MutationObserver(schedule)
-    observer.observe(zone, { childList: true, subtree: true, attributes: true, attributeFilter: OBSERVED })
-
-    const onFocusIn = (event: FocusEvent) => {
-      const item = itemOf(zone, event.target)
-      if (item) setCurrent(zone, item)
-    }
-
-    // A click sets the keyboard position, so arrows continue from the row
-    // that was clicked. WebKit does not focus buttons on click by itself.
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return
-      const item = itemOf(zone, event.target)
-      if (!item) return
-      setCurrent(zone, item)
-      if (document.activeElement !== item) item.focus({ preventScroll: true })
-    }
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
-      const item = itemOf(zone, event.target)
-      // An open menu or listbox owns the arrow keys of its trigger.
-      if (!item || (item.hasAttribute('aria-haspopup') && item.getAttribute('aria-expanded') === 'true')) return
-      const { orientation: axis, wrap = false } = latest.current
-      const back = axis === 'vertical' ? 'ArrowUp' : 'ArrowLeft'
-      const forward = axis === 'vertical' ? 'ArrowDown' : 'ArrowRight'
-      if (![back, forward, 'Home', 'End'].includes(event.key)) return
-      const items = zoneItems(zone).filter(isRendered)
-      const index = items.indexOf(item)
-      if (index < 0) return
-      let next = index
-      if (event.key === 'Home') next = 0
-      else if (event.key === 'End') next = items.length - 1
-      else {
-        next = index + (event.key === forward ? 1 : -1)
-        if (wrap) next = (next + items.length) % items.length
-        else next = Math.max(0, Math.min(items.length - 1, next))
-      }
-      // Handled even at an edge: WebKit beeps on unhandled arrow keys.
-      event.preventDefault()
-      const target = items[next]
-      if (!target || target === item) return
-      setCurrent(zone, target)
-      target.focus({ preventScroll: true })
-      target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
-    }
-
-    zone.addEventListener('focusin', onFocusIn)
-    zone.addEventListener('pointerdown', onPointerDown)
-    zone.addEventListener('keydown', onKeyDown)
-    return () => {
-      observer.disconnect()
-      if (frame !== null) cancelAnimationFrame(frame)
-      zone.removeEventListener('focusin', onFocusIn)
-      zone.removeEventListener('pointerdown', onPointerDown)
-      zone.removeEventListener('keydown', onKeyDown)
-      zone.removeAttribute(ZONE)
-      states.delete(zone)
-    }
-  }, [ref, enabled])
+    const el = enabled ? ref.current : null
+    if (attached.current?.el === el) return
+    attached.current?.detach()
+    attached.current = el ? { el, detach: attachZone(el, latest) } : null
+  })
+  useEffect(() => () => {
+    attached.current?.detach()
+    attached.current = null
+  }, [])
 }

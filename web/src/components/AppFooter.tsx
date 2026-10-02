@@ -32,6 +32,7 @@ import { formatSpend } from '@/utils/telemetryFormat'
 import { queryKeys } from '@/queries/keys'
 import { getCodingWorkspaceStatus } from '@/api/client'
 import { cn } from '@/lib/utils'
+import { useFocusZone } from '@/lib/focus/zones'
 
 // The summary endpoint only refreshes on demand. Spend moves only while a
 // model call runs, so poll each minute then; idle, a slow poll still lets the
@@ -160,9 +161,13 @@ export const AppFooter = memo(function AppFooter({
     dirtyTotal > 0 ? `${dirtyTotal} changed files` : null,
     sync,
   ].filter(Boolean).join(' · ')
+  // One Tab stop; Left/Right walk the status items.
+  const footerRef = useRef<HTMLElement>(null)
+  useFocusZone(footerRef, { orientation: 'horizontal', wrap: true })
 
   return (
     <footer
+      ref={footerRef}
       className={cn(
         'hidden h-(--spacing-status-bar) shrink-0 select-none items-center justify-between gap-2 border-t border-(--color-border) bg-(--bg-page) px-2 text-[11px] text-(--color-text-muted) md:flex dark:bg-(--bg-sidebar)',
         className,

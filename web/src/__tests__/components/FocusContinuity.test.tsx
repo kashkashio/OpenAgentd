@@ -61,6 +61,27 @@ describe('stranded focus guard', () => {
 })
 
 describe('composer minimize keeps focus', () => {
+  it('puts the action row one Shift+Tab before the textarea', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    render(<InputComposer onSubmit={() => {}} minimized={false} onInteractionModeChange={() => {}} interactionMode="code" />)
+    const toolbar = screen.getByRole('toolbar', { name: 'Message actions' })
+    const stops = Array.from(toolbar.querySelectorAll<HTMLElement>('button')).filter((el) => el.tabIndex === 0 && !(el as HTMLButtonElement).disabled)
+    expect(stops).toHaveLength(1)
+    screen.getByRole('textbox').focus()
+    await user.tab({ shift: true })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Attach file' }))
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Attach file' }))
+    expect(toolbar.contains(document.activeElement)).toBe(true)
+  })
+
+  it('is a single stop on the pill while minimized', () => {
+    render(<InputComposer onSubmit={() => {}} minimized />)
+    expect(screen.getByRole('button', { name: 'Expand input bar' }).tabIndex).toBe(0)
+    expect(screen.getByRole('button', { name: 'Attach file' }).tabIndex).toBe(-1)
+  })
+
   it('moves focus from the textarea to the pill when the bar minimizes (send, Esc)', () => {
     const { rerender } = render(<InputComposer onSubmit={() => {}} minimized={false} />)
     screen.getByRole('textbox').focus()

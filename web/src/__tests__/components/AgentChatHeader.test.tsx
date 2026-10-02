@@ -59,6 +59,18 @@ describe('AgentChatHeader', () => {
     expect(screen.getByText('Fix updater restart')).toBeInTheDocument()
   })
 
+  it('is one Tab stop whose controls Left/Right walk', async () => {
+    const user = userEvent.setup()
+    const { container } = renderHeader({ isMobile: false, onRenameSession: () => undefined })
+    const stops = Array.from(container.querySelectorAll<HTMLElement>('header button')).filter((el) => el.tabIndex === 0)
+    expect(stops).toHaveLength(1)
+    const toggle = screen.getByRole('button', { name: 'Toggle sidebar' })
+    expect(stops[0]).toBe(toggle)
+    toggle.focus()
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Rename session Fix updater restart' }))
+  })
+
   it('renames the session from its title on desktop', async () => {
     const user = userEvent.setup()
     const onRenameSession = mock((..._args: unknown[]) => {})
