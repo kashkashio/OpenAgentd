@@ -931,7 +931,8 @@ agent against it.
     source, attached like an `@path#Lx-Ly` mention. React 19 sources come
     from where the JSX ran, mapped through the dev server's source maps.
     In the chat the feedback shows as a card of numbered comments, and
-    restoring the message (undo, edit, history) brings the chip back.
+    restoring the message (undo, edit, history) brings the chip back. The card
+    also shows after a reload, with or without text before it `[v3.5.1]`.
     While the agent uses the page, the toolbar shows **Agent**.
     Tabs keep their page and comments while another tab is open. Previews
     need the backend on the same computer; remote servers and the mobile app

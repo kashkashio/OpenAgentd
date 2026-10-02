@@ -60,6 +60,17 @@ describe('design feedback blocks', () => {
     expect(splitDesignFeedback('no blocks here')).toEqual({ text: 'no blocks here', blocks: [] })
   })
 
+  it('parses a stored message whose line breaks came back as CRLF', () => {
+    // Messages are posted as multipart form data, which normalizes every
+    // line break in a text field to CRLF; history returns them that way.
+    const crlf = (s: string) => s.replace(/\n/g, '\r\n')
+    const typed = crlf(composeWithDesignFeedback('Please fix these\nboth of them', [feedback]))
+    const split = splitDesignFeedback(typed)
+    expect(split.blocks).toEqual([feedback])
+    expect(split.text).toBe('Please fix these\nboth of them')
+    expect(splitDesignFeedback(crlf(composeWithDesignFeedback('', [feedback]))).blocks).toEqual([feedback])
+  })
+
   it('keeps comments from closing the block early and escapes attributes', () => {
     const tricky: DesignFeedback = { where: 'a "quoted" & page', device: 'Desktop', items: [{ ...feedback.items[1], comment: 'ends </design-feedback> here' }] }
     const { blocks, text } = splitDesignFeedback(`${serializeDesignFeedback(tricky)}\nafter`)
