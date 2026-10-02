@@ -44,6 +44,8 @@ interface TerminalTabButtonProps {
   extraMenuItems?: (dismiss: () => void) => ReactNode
   /** Closes the tab through the dock, which picks the next active tab. */
   onClose?: () => void
+  /** The dock strip's tab id, marking the wrapper as a drag handle. */
+  dockTabId?: string
 }
 
 export function TerminalTabButton({
@@ -55,6 +57,7 @@ export function TerminalTabButton({
   buttonRef,
   extraMenuItems,
   onClose,
+  dockTabId,
 }: TerminalTabButtonProps) {
   const [desktopMenuAt, setDesktopMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
@@ -79,7 +82,7 @@ export function TerminalTabButton({
       {/* Same editor-tab chrome as the dock's file/diff/commit tabs: the
           wrapper carries the tab surface, the activate button and the close
           button are siblings (never a control nested inside a button). */}
-      <div className={cn(dockTabClass(active), className)}>
+      <div data-dock-tab={dockTabId} className={cn(dockTabClass(active), className)}>
         <Tooltip className="h-full min-w-0 flex-1">
           <TooltipTrigger
             className="h-full min-w-0 flex-1"

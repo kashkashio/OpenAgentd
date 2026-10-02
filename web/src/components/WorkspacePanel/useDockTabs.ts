@@ -36,13 +36,17 @@ import {
   viewTab,
 } from './dock-tabs'
 
-/** Insert a tab before the terminal group so terminals stay at the end. */
-function withTab(current: DockTab[], tab: DockTab): DockTab[] {
+/**
+ * Open ``tab``: an open one is updated in place; a new one goes right after
+ * ``afterId`` (the active tab), as in editors and browsers. New terminals
+ * go at the end.
+ */
+function withTab(current: DockTab[], tab: DockTab, afterId: string): DockTab[] {
   const index = current.findIndex((item) => item.id === tab.id)
   if (index >= 0) return current.map((item, i) => (i === index ? tab : item))
-  const firstTerminal = current.findIndex((item) => item.type === 'terminal')
-  if (tab.type === 'terminal' || firstTerminal < 0) return [...current, tab]
-  return [...current.slice(0, firstTerminal), tab, ...current.slice(firstTerminal)]
+  const after = tab.type === 'terminal' ? -1 : current.findIndex((item) => item.id === afterId)
+  if (after < 0) return [...current, tab]
+  return [...current.slice(0, after + 1), tab, ...current.slice(after + 1)]
 }
 
 interface DockTabsOptions {
@@ -105,6 +109,11 @@ export function useDockTabs({
   // construction time.
   const visibleTabs = chatWorkspace ? tabs.filter((tab) => tab.type !== 'review') : tabs
   const [activeTabId, setActiveTabId] = useState('')
+  // Read by the tab-opening updaters, which insert after the active tab.
+  const activeTabIdRef = useRef(activeTabId)
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId
+  }, [activeTabId])
   // The dock stays open across workspace switches, so this instance can be
   // handed another workspace. Tabs belong to the workspace they were opened
   // in: start over empty (no file tabs pointing into the old tree). Terminal
@@ -135,7 +144,7 @@ export function useDockTabs({
   }, [visibleTabs, activeTabId, terminalMetas])
 
   const openTab = useCallback((tab: DockTab) => {
-    setTabs((current) => withTab(current, tab))
+    setTabs((current) => withTab(current, tab, activeTabIdRef.current))
     setActiveTabId(tab.id)
   }, [])
 
@@ -159,7 +168,7 @@ export function useDockTabs({
       const existing = current.find((item) => item.id === id)
       if (existing && options?.focusOnly) return current
       const navKey = existing?.type === 'preview' ? existing.navKey + 1 : 0
-      return withTab(current, { id, type: 'preview', title: previewTabTitle(target), target, navKey })
+      return withTab(current, { id, type: 'preview', title: previewTabTitle(target), target, navKey }, activeTabIdRef.current)
     })
     setActiveTabId(id)
   }, [])
@@ -169,21 +178,48 @@ export function useDockTabs({
     if (!chatWorkspace) openTab(REVIEW_TAB)
   }, [chatWorkspace, openTab])
 
+  /** Move a tab to ``toIndex`` of the strip (drag, ⌥⇧←/→, the tab menu). */
+  const moveTab = useCallback((id: string, toIndex: number) => {
+    setTabs((current) => {
+      const from = current.findIndex((item) => item.id === id)
+      if (from < 0) return current
+      const to = Math.max(0, Math.min(current.length - 1, toIndex))
+      if (from === to) return current
+      const next = [...current]
+      const [tab] = next.splice(from, 1)
+      next.splice(to, 0, tab)
+      return next
+    })
+  }, [])
+
+  // Keep terminal tabs in step with the store without re-sorting the strip:
+  // a terminal stays where the user put it. Gone sessions drop out, renamed
+  // ones update in place, and new ones join at the end.
   useEffect(() => {
     setTabs((current) => {
-      const nonTerminal = current.filter((item) => item.type !== 'terminal')
-      const terminalTabs = terminalMetas.map((meta) => {
-        const existing = current.find(
-          (item) => item.type === 'terminal' && item.termId === meta.id,
-        )
-        return existing && existing.title === meta.title
-          ? existing
-          : { id: terminalTabId(meta.id), type: 'terminal' as const, title: meta.title, termId: meta.id }
-      })
-      const changed =
-        current.length !== nonTerminal.length + terminalTabs.length ||
-        terminalTabs.some((tab) => !current.includes(tab))
-      return changed ? [...nonTerminal, ...terminalTabs] : current
+      const metas = new Map(terminalMetas.map((meta) => [meta.id, meta]))
+      let changed = false
+      const kept: DockTab[] = []
+      for (const item of current) {
+        if (item.type !== 'terminal') {
+          kept.push(item)
+          continue
+        }
+        const meta = metas.get(item.termId)
+        if (!meta) {
+          changed = true
+        } else if (meta.title !== item.title) {
+          changed = true
+          kept.push({ ...item, title: meta.title })
+        } else {
+          kept.push(item)
+        }
+      }
+      const present = new Set(kept.map((item) => (item.type === 'terminal' ? item.termId : null)))
+      const added: DockTab[] = terminalMetas
+        .filter((meta) => !present.has(meta.id))
+        .map((meta) => ({ id: terminalTabId(meta.id), type: 'terminal', title: meta.title, termId: meta.id }))
+      return changed || added.length > 0 ? [...kept, ...added] : current
     })
   }, [terminalMetas])
 
@@ -257,8 +293,12 @@ export function useDockTabs({
 
   useEffect(() => {
     // The active tab went away without a close (its terminal exited, or a
-    // chat workspace hides Git): show the first tab, or the launcher.
-    if (activeTabId === '') return
+    // chat workspace hides Git), or tabs appeared on the launcher (terminals
+    // adopted on mount): show the first tab, or the launcher.
+    if (activeTabId === '') {
+      if (visibleTabs.length > 0) setActiveTabId(visibleTabs[0].id)
+      return
+    }
     const termId = terminalIdFromTabId(activeTabId)
     const known = visibleTabs.some((tab) => tab.id === activeTabId)
     const liveTerminal = termId !== null && terminalMetas.some((m) => m.id === termId)
@@ -375,6 +415,7 @@ export function useDockTabs({
     openPreviewTab,
     openGitTab,
     openTerminal,
+    moveTab,
     closeTab,
     closeOtherTabs,
     closeTabsToRight,

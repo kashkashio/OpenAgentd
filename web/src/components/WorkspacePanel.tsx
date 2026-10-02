@@ -225,6 +225,7 @@ export function WorkspacePanel({
     openPreviewTab,
     openGitTab,
     openTerminal,
+    moveTab,
     closeTab,
     closeOtherTabs,
     closeTabsToRight,
@@ -620,6 +621,7 @@ export function WorkspacePanel({
           onClose={closeTab}
           onCloseOthers={closeOtherTabs}
           onCloseToRight={closeTabsToRight}
+          onMove={moveTab}
           onNewTerminal={openTerminal}
           onNewPreview={previewsAvailable ? openNewPreview : undefined}
           onRefresh={handleRefresh}

@@ -13,6 +13,9 @@
  * single Tab stop, entered on the active tab, with Left/Right across tabs
  * and actions. Close buttons are out of Tab order; ⌘W, middle-click and
  * the tab menu (right-click or Shift+F10) close tabs from the keyboard.
+ *
+ * Tabs move by drag (fine pointers, see ``useTabDrag``), ⌥⇧←/→ on a
+ * focused tab, or Move Left / Move Right in the tab menu.
  */
 import { useRef, useState, type ReactNode } from 'react'
 import { CalendarClock, Copy, FileDiff, FileText, GitCommitHorizontal, GitCompare, Globe, ListTodo, Maximize2, Minimize2, RefreshCw, TerminalSquare, X } from 'lucide-react'
@@ -33,6 +36,7 @@ import {
   dockTabCloseClass,
 } from './dock-tab-styles'
 import { type DockTab, dockTabLabel, dockTabTooltip, isViewTab } from './dock-tabs'
+import { DOCK_TAB_ATTR, useTabDrag } from './useTabDrag'
 
 
 export interface DockTabBarProps {
@@ -48,6 +52,8 @@ export interface DockTabBarProps {
   /** Tab menu: close every other tab / the tabs after this one. */
   onCloseOthers?: (id: string) => void
   onCloseToRight?: (id: string) => void
+  /** Moves a tab to an index of ``tabs``; omitted, tabs stay put. */
+  onMove?: (id: string, toIndex: number) => void
   onNewTerminal: () => void
   /** Opens a web preview tab; omitted when previews are unavailable. */
   onNewPreview?: () => void
@@ -106,7 +112,7 @@ function tabPath(tab: DockTab, workspace: string): string | null {
  * The tab-strip items every tab's menu shares (terminal tabs add theirs
  * first). ``dismiss`` closes the menu before the action runs.
  */
-export function DockTabMenuItems({ tab, tabs, workspace, dismiss, onClose, onCloseOthers, onCloseToRight }: {
+export function DockTabMenuItems({ tab, tabs, workspace, dismiss, onClose, onCloseOthers, onCloseToRight, onMove }: {
   tab: DockTab
   tabs: DockTab[]
   workspace: string
@@ -114,6 +120,7 @@ export function DockTabMenuItems({ tab, tabs, workspace, dismiss, onClose, onClo
   onClose?: (id: string) => void
   onCloseOthers?: (id: string) => void
   onCloseToRight?: (id: string) => void
+  onMove?: (id: string, toIndex: number) => void
 }): ReactNode {
   const index = tabs.findIndex((item) => item.id === tab.id)
   const hasOthers = tabs.length > 1
@@ -136,9 +143,17 @@ export function DockTabMenuItems({ tab, tabs, workspace, dismiss, onClose, onClo
       {onClose && item('Close', () => onClose(tab.id), <X size={12} aria-hidden="true" />)}
       {onCloseOthers && item('Close Others', () => onCloseOthers(tab.id), undefined, !hasOthers)}
       {onCloseToRight && item('Close to the Right', () => onCloseToRight(tab.id), undefined, !hasRight)}
+      {onMove && item('Move Left', () => onMove(tab.id, index - 1), undefined, index <= 0)}
+      {onMove && item('Move Right', () => onMove(tab.id, index + 1), undefined, !hasRight)}
       {path && item('Copy Path', () => { void navigator.clipboard?.writeText(path) }, <Copy size={12} aria-hidden="true" />)}
     </>
   )
+}
+
+/** Focus a tab's activate button (the first button in its wrapper). */
+function focusTabButton(strip: HTMLElement | null, id: string) {
+  const node = Array.from(strip?.querySelectorAll(`[${DOCK_TAB_ATTR}]`) ?? []).find((el) => el.getAttribute(DOCK_TAB_ATTR) === id)
+  node?.querySelector<HTMLElement>('button')?.focus()
 }
 
 export function DockTabBar({
@@ -153,6 +168,7 @@ export function DockTabBar({
   onClose,
   onCloseOthers,
   onCloseToRight,
+  onMove,
   onNewTerminal,
   onNewPreview,
   onRefresh,
@@ -161,6 +177,13 @@ export function DockTabBar({
 }: DockTabBarProps) {
   const stripRef = useRef<HTMLDivElement>(null)
   useFocusZone(stripRef, { orientation: 'horizontal', entry: 'active', wrap: true })
+  const drag = useTabDrag({ enabled: !mobile && onMove !== undefined, onMove: onMove ?? (() => {}) })
+  // A moved tab's node is re-inserted, which drops its focus: put it back
+  // when the move came from the keyboard or the tab menu.
+  const moveAndFocus = onMove && ((id: string, toIndex: number) => {
+    onMove(id, toIndex)
+    requestAnimationFrame(() => focusTabButton(stripRef.current, id))
+  })
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const menuTab = menu ? tabs.find((tab) => tab.id === menu.id) : undefined
   const sharedMenu = (tab: DockTab, dismiss: () => void) => (
@@ -171,17 +194,37 @@ export function DockTabBar({
       dismiss={dismiss}
       onCloseOthers={onCloseOthers}
       onCloseToRight={onCloseToRight}
+      onMove={moveAndFocus}
     />
   )
+  // ⌥⇧←/→ moves the focused tab one place; focus stays on it.
+  const handleStripKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!moveAndFocus || !event.altKey || !event.shiftKey || event.metaKey || event.ctrlKey) return
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    const id = (event.target as Element).closest(`[${DOCK_TAB_ATTR}]`)?.getAttribute(DOCK_TAB_ATTR)
+    const index = id ? tabs.findIndex((tab) => tab.id === id) : -1
+    if (!id || index < 0) return
+    event.preventDefault()
+    const to = index + (event.key === 'ArrowLeft' ? -1 : 1)
+    if (to < 0 || to >= tabs.length) return
+    moveAndFocus(id, to)
+  }
   return (
     <div ref={stripRef} className="flex h-(--spacing-tab-bar) min-w-0 shrink-0 bg-(--bg-sidebar)">
-      <div className="scrollbar-none flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
+      <div
+        className="scrollbar-none flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
+        onKeyDown={handleStripKeyDown}
+        {...drag.handlers}
+      >
         {tabs.map((tab) => {
           const active = activeTabId === tab.id
+          const dragging = drag.draggingId === tab.id
           if (tab.type === 'terminal') {
             return (
               <TerminalTabButton
                 key={tab.id}
+                dockTabId={tab.id}
+                className={dragging ? 'opacity-60' : undefined}
                 buttonRef={(node) => registerTabRef(tab.id, node)}
                 meta={terminalMetas.find((m) => m.id === tab.termId) ?? {
                   id: tab.termId, contextKey: workspace, title: tab.title, status: 'connecting', order: 0,
@@ -226,7 +269,7 @@ export function DockTabBar({
             </button>
           )
           return (
-            <div key={tab.id} className={dockTabClass(active)}>
+            <div key={tab.id} data-dock-tab={tab.id} className={cn(dockTabClass(active), dragging && 'opacity-60')}>
               {tooltip ? (
                 <Tooltip className="h-full min-w-0 flex-1">
                   <TooltipTrigger className="h-full min-w-0 flex-1" render={tabButton} />
@@ -280,6 +323,7 @@ export function DockTabBar({
             onClose={onClose}
             onCloseOthers={onCloseOthers}
             onCloseToRight={onCloseToRight}
+            onMove={moveAndFocus}
           />
         </ContextMenu>
       )}

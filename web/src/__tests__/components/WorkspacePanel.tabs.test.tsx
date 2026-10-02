@@ -168,12 +168,13 @@ describe('Review dock diff tabs', () => {
     expect(screen.getByRole('button', { name: 'app.ts' }).getAttribute('aria-current')).toBe('true')
   })
 
-  it('closing the active tab focuses its left neighbour', async () => {
+  it('opens a tab after the active one, and closing it focuses its right neighbour', async () => {
     const user = userEvent.setup()
     await renderPanel()
 
     await user.click(screen.getByRole('button', { name: 'Open src/app.ts' }))
     await user.click(screen.getByRole('button', { name: 'Git' }))
+    // [Git, app.ts] → the diff opens right after Git: [Git, app.ts diff, app.ts].
     await user.click(screen.getByRole('button', { name: 'Open diff tab for src/app.ts' }))
     await user.click(screen.getByRole('button', { name: 'Close app.ts diff' }))
 

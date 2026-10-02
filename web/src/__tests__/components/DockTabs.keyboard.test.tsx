@@ -61,7 +61,10 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-/** By default Git plus three terminals: [Git, Terminal 1, Terminal 2, Terminal 3]. */
+/**
+ * By default three terminals, then Git: [Terminal 1, Terminal 2, Terminal 3,
+ * Git], with Git active (adopted terminals come first, Git opens after them).
+ */
 async function renderDock({ open = true, exited = false, terminals = 3, git = true, onRequestClose = undefined as (() => void) | undefined } = {}) {
   for (let i = 0; i < terminals; i++) useTerminalStore.getState().open({ workspace: WORKSPACE }, WORKSPACE)
   if (exited) {
@@ -103,14 +106,14 @@ describe('dock tab keys', () => {
     await renderDock()
     expect(isActive('Git')).toBe(true)
     await press('2')
-    expect(isActive('Terminal 1')).toBe(true)
+    expect(isActive('Terminal 2')).toBe(true)
     await press('9')
-    expect(isActive('Terminal 3')).toBe(true)
-    await press('1')
     expect(isActive('Git')).toBe(true)
+    await press('1')
+    expect(isActive('Terminal 1')).toBe(true)
     // Past the last tab: nothing to pick.
     await press('6')
-    expect(isActive('Git')).toBe(true)
+    expect(isActive('Terminal 1')).toBe(true)
   })
 
   it('does nothing while the dock is closed', async () => {
@@ -137,13 +140,13 @@ describe('dock tab keys', () => {
     const outside = document.createElement('button')
     document.body.appendChild(outside)
     outside.focus()
-    await press('3')
+    await press('2')
     await frame()
     expect(isActive('Terminal 2')).toBe(true)
     expect(document.activeElement).toBe(outside)
 
     act(() => tab('Terminal 2').focus())
-    await press('4')
+    await press('3')
     await frame()
     expect(isActive('Terminal 3')).toBe(true)
     expect(document.activeElement).toBe(tab('Terminal 3'))
@@ -171,20 +174,25 @@ describe('dock tab menu', () => {
     })
     expect(screen.getByRole('menu', { name: 'Actions for Git' })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: 'Close' })).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: 'Close to the Right' })).toBeTruthy()
+    // Git is the last tab: nothing to its right.
+    expect((screen.getByRole('menuitem', { name: 'Close to the Right' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('menuitem', { name: 'Move Right' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('menuitem', { name: 'Move Left' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('Close to the Right asks before stopping running shells', async () => {
     await renderDock()
-    fireEvent.contextMenu(tab('Git'))
+    fireEvent.contextMenu(tab('Terminal 1'))
     await act(async () => { screen.getByRole('menuitem', { name: 'Close to the Right' }).click() })
-    expect(await screen.findByRole('dialog', { name: 'Close 3 terminals?' })).toBeTruthy()
+    expect(await screen.findByRole('dialog', { name: 'Close 2 terminals?' })).toBeTruthy()
     expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(3)
 
     await act(async () => { screen.getByRole('button', { name: 'Close terminals' }).click() })
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Terminal 1' })).toBeNull())
-    expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(0)
-    expect(isActive('Git')).toBe(true)
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Terminal 2' })).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Git' })).toBeNull()
+    expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(1)
+    // The active Git tab was among them: the kept tab takes over.
+    expect(isActive('Terminal 1')).toBe(true)
   })
 })
 
@@ -193,13 +201,14 @@ describe('closing tabs', () => {
     await renderDock({ exited: true })
     await press('2')
     await press('w')
-    expect(screen.queryByRole('button', { name: 'Terminal 1' })).toBeNull()
-    expect(isActive('Terminal 2')).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Terminal 2' })).toBeNull()
+    expect(isActive('Terminal 3')).toBe(true)
 
     // The × button goes through the dock too, not straight to the store.
-    await press('9')
     await act(async () => { tab('Close Terminal 3').click() })
-    expect(isActive('Terminal 2')).toBe(true)
+    expect(isActive('Git')).toBe(true)
+    await act(async () => { tab('Close Git').click() })
+    expect(isActive('Terminal 1')).toBe(true)
   })
 
   it('shows the launcher once the last tab closes, and Ctrl+W there closes the dock', async () => {
