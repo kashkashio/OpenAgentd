@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { PanelResizeHandle, ResizableAside } from '@/components/ResizableAside'
+import { PanelResizeHandle, ResizableAside, settledWidthBesidePanels } from '@/components/ResizableAside'
 
 // rAF is async in browsers: queue frames and flush them explicitly.
 const frames: FrameRequestCallback[] = []
@@ -108,5 +108,43 @@ describe('ResizableAside', () => {
       </ResizableAside>,
     )
     expect((screen.getByText('content').parentElement as HTMLElement).style.width).toBe('100%')
+  })
+})
+
+describe('settledWidthBesidePanels', () => {
+  // The sidebar mid-tween: rendered at ``rendered`` px on its way to ``target``.
+  function row(rendered: number, target: number) {
+    render(
+      <div>
+        <ResizableAside
+          aria-label="Sidebar"
+          style={{ borderRight: '1px solid' }}
+          resize={{ width: 264, min: 200, max: 500, edge: 'right', onCommit: () => {}, label: 'Resize sidebar' }}
+          getMotion={() => ({ animate: { width: target }, transition: { duration: 0 } })}
+        >
+          <p>sidebar</p>
+        </ResizableAside>
+        <div data-testid="center" />
+      </div>,
+    )
+    const sidebar = screen.getByRole('complementary', { name: 'Sidebar' })
+    sidebar.getBoundingClientRect = () => ({ width: rendered }) as DOMRect
+    const center = screen.getByTestId('center')
+    center.getBoundingClientRect = () => ({ width: 1000 - rendered }) as DOMRect
+    return center
+  }
+
+  it('measures the center for where a closing sidebar ends, down to its border', () => {
+    expect(settledWidthBesidePanels(row(120, 0))).toBe(999)
+  })
+
+  it('measures the center for where an opening sidebar ends', () => {
+    expect(settledWidthBesidePanels(row(40, 264))).toBe(736)
+  })
+
+  it('is the rendered width once the sidebar has settled', () => {
+    expect(settledWidthBesidePanels(row(264, 264))).toBe(736)
+    cleanup()
+    expect(settledWidthBesidePanels(row(1, 0))).toBe(999)
   })
 })

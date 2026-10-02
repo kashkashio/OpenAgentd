@@ -36,7 +36,7 @@ import {
   workspaceDiffQueryOptions,
 } from '@/queries/workspace-git'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
-import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/ResizableAside'
+import { PanelResizeHandle, ResizableAside, settledWidthBesidePanels, type LiveWidth } from '@/components/ResizableAside'
 import { useClaimStrandedFocus } from '@/hooks/use-dock-focus'
 import { focusQuietly } from '@/lib/focus/zones'
 import { useElementWidth } from '@/hooks/use-element-width'
@@ -278,7 +278,7 @@ export function WorkspacePanel({
   // ── Geometry ───────────────────────────────────────────────────────────────
   const dockRatio = useLayoutStore((s) => s.dockRatio)
   const dockMaximized = useLayoutStore((s) => s.dockMaximized)
-  const measuredCenter = useElementWidth(centerRef)
+  const measuredCenter = useElementWidth(centerRef, settledWidthBesidePanels)
   const center = centerWidth ?? measuredCenter
   const layout = resolveDockLayout({ centerWidth: center, ratio: dockRatio, maximized: dockMaximized })
   const overlay = !mobile && layout.mode === 'overlay'

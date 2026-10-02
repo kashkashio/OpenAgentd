@@ -13,6 +13,9 @@
  * ``pinContentWidth`` holds the body at that target width while the aside
  * tweens, so opening and closing clip the body instead of reflowing it every
  * frame (a long plan in the review dock cost ~125 ms per close).
+ *
+ * The aside publishes its target width in ``data-panel-target-width`` so a
+ * neighbour can size itself for where the tween ends (``settledWidthBesidePanels``).
  */
 import { createContext, useContext, type ComponentProps, type ReactNode } from 'react'
 import { motion, type TargetAndTransition, type Transition } from 'framer-motion'
@@ -22,6 +25,30 @@ import { panelResizeHandleClass, usePanelResize, type PanelResizeOptions } from 
 type ResizeState = ReturnType<typeof usePanelResize>
 
 const ResizeContext = createContext<ResizeState | null>(null)
+
+const PANEL_TARGET_ATTR = 'data-panel-target-width'
+
+/**
+ * ``center``'s width once the panels beside it (its siblings) finish their
+ * width tweens. A dock sized as a ratio of the measured center would chase
+ * the sidebar frame by frame, restarting its own tween each time: it lagged
+ * behind and the chat between them overshot, then snapped back. Sized for
+ * the settled center, the dock tweens once, alongside the sidebar.
+ */
+export function settledWidthBesidePanels(center: HTMLElement): number {
+  let width = center.getBoundingClientRect().width
+  for (const panel of Array.from(center.parentElement?.children ?? [])) {
+    if (panel === center || !(panel instanceof HTMLElement)) continue
+    const attr = panel.getAttribute(PANEL_TARGET_ATTR)
+    const target = attr === null ? Number.NaN : Number(attr)
+    if (!Number.isFinite(target)) continue
+    // A panel tweened to 0 still renders its border.
+    const style = getComputedStyle(panel)
+    const floor = (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0)
+    width += panel.getBoundingClientRect().width - Math.max(target, floor)
+  }
+  return width
+}
 
 export interface LiveWidth {
   width: number
@@ -46,7 +73,12 @@ export function ResizableAside({ resize, getMotion, pinContentWidth = false, chi
   const pinnedWidth = pinWidth ?? (typeof animate.width === 'number' ? animate.width : '100%')
   return (
     <ResizeContext.Provider value={state}>
-      <motion.aside {...asideProps} animate={animate} transition={transition}>
+      <motion.aside
+        {...asideProps}
+        data-panel-target-width={typeof animate.width === 'number' ? animate.width : undefined}
+        animate={animate}
+        transition={transition}
+      >
         {pinContentWidth ? <div className="h-full" style={{ width: pinnedWidth }}>{children}</div> : children}
       </motion.aside>
     </ResizeContext.Provider>

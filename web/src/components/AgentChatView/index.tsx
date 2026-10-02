@@ -34,6 +34,7 @@ import { useUIStore } from '@/stores/useUIStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useMarkSessionRead } from '@/stores/useUnreadStore'
 import { useElementWidthSelect } from '@/hooks/use-element-width'
+import { settledWidthBesidePanels } from '@/components/ResizableAside'
 import { isFocusStranded, useReturnFocusFromDock, useStrandedFocusGuard } from '@/hooks/use-dock-focus'
 import { dockOverlaysChat } from '@/lib/workbench-layout'
 import { isLocalBackend, lastPreviewUrl } from '@/api/preview'
@@ -528,7 +529,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
   // center itself; the shell subscribes to one bit so a sidebar tween or a
   // window drag does not re-render this whole tree every frame.
   const centerRef = useRef<HTMLDivElement>(null)
-  const centerTooNarrow = useElementWidthSelect(centerRef, isCenterTooNarrow)
+  const centerTooNarrow = useElementWidthSelect(centerRef, isCenterTooNarrow, settledWidthBesidePanels)
   const dockMaximized = useLayoutStore((s) => s.dockMaximized)
   // After its first open the dock stays mounted, closed or not, so its tabs
   // and their live content (preview pages, unsent comments) survive a close.

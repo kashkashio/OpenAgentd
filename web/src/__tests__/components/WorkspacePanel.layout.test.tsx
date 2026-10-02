@@ -129,6 +129,37 @@ describe('Review dock layout', () => {
     expect(screen.getByRole('complementary', { name: 'Review dock' }).className).toContain('md:absolute')
   })
 
+  // Sized from the mid-tween center, the dock chased the sidebar a frame
+  // behind and the chat between them overshot, then snapped back.
+  it('sizes for where a tweening sidebar beside the center ends', async () => {
+    const { WorkspacePanel } = await import('@/components/WorkspacePanel')
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const centerRef: { current: HTMLDivElement | null } = { current: null }
+    // Collapsing: the sidebar is still 100px wide on its way to 0.
+    const sidebar = (node: HTMLDivElement | null) => {
+      if (node) node.getBoundingClientRect = () => ({ width: 100 }) as DOMRect
+    }
+    const attach = (node: HTMLDivElement | null) => {
+      if (node) node.getBoundingClientRect = () => ({ width: 1000 }) as DOMRect
+      centerRef.current = node
+    }
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <div>
+            <div ref={sidebar} data-panel-target-width={0} />
+            <div ref={attach}>
+              <WorkspacePanel workspace={WORKSPACE} open centerRef={centerRef} />
+            </div>
+          </div>
+        </QueryClientProvider>,
+      )
+    })
+
+    // 45% of the 1100px center the sidebar leaves, not of the 1000px now.
+    expect(screen.getByRole('separator', { name: 'Resize review dock' }).getAttribute('aria-valuenow')).toBe('495')
+  })
+
   it('takes focus stranded in the covered chat so keyboard users land on the active tab', async () => {
     const chat = document.createElement('main')
     chat.setAttribute('inert', '')
