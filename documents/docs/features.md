@@ -1566,6 +1566,10 @@ Four orthogonal ways to add capability.
     MIME types (`ImageContent` and image embedded resources), which are
     translated to structured `ImageDataBlock` parts for vision models while
     preserving concise textual summaries in transcripts and history.
+    Images are capped at 2000 px on the long edge for every provider `[v3.5.0]`: tool
+    results (including `read`) are shrunk when they arrive, and requests also
+    shrink oversized images replayed from older history, so Anthropic's
+    many-image limit and other providers' pixel limits always hold.
 - **Sandboxed UI artifacts** `[v1.36.0]` *(beta)* — tool-produced HTML UI
 - **Sandboxed UI artifacts** `[v1.36.0, updated v2.17.0]` *(beta)* — tool-produced HTML UI
   resources render as sandboxed sibling chat artifacts. The first producer is
