@@ -512,7 +512,8 @@ export function PreviewTabView({ workspace, tabId, target, navKey, onPreviewId, 
           value={deviceId}
           onValueChange={(value) => setDeviceId(devicePreset(value).id)}
           align="end"
-          className="h-7 shrink-0 gap-1 px-1.5 text-[11px]"
+          // rounded-xs: the address bar's corners, not the form trigger's rounded-md.
+          className="h-7 shrink-0 gap-1 rounded-xs px-1.5 text-[11px]"
           trigger={
             <span className="flex items-center gap-1">
               <Smartphone size={12} aria-hidden="true" />
