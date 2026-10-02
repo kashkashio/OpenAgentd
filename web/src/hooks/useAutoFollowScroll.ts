@@ -1,9 +1,51 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 const SCROLL_THRESHOLD = 40
 const USER_SCROLL_INTENT_MS = 250
 const SCROLL_UP_KEYS = new Set(['PageUp', 'Home', 'ArrowUp'])
 const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
+/** How long a return to a session waits for its anchor block to render. */
+const RESTORE_WAIT_MS = 3000
+
+/**
+ * Where each session was left scrolled up: the first block in view and its
+ * offset from the viewport top. A session left at the bottom has no entry
+ * and keeps following. In memory only, like the rest of the view state.
+ */
+interface SavedPosition {
+  anchorId: string
+  offset: number
+}
+const savedPositions = new Map<string, SavedPosition>()
+
+export function _resetScrollMemoryForTests(): void {
+  savedPositions.clear()
+}
+
+/** The first ``[data-block-id]`` whose bottom is below the viewport top. */
+function firstBlockInView(root: HTMLElement): HTMLElement | null {
+  const blocks = root.querySelectorAll<HTMLElement>('[data-block-id]')
+  const top = root.getBoundingClientRect().top
+  // Blocks are in document order, so their bottoms only grow: bisect.
+  let lo = 0
+  let hi = blocks.length - 1
+  let found: HTMLElement | null = null
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (blocks[mid].getBoundingClientRect().bottom > top) {
+      found = blocks[mid]
+      hi = mid - 1
+    } else {
+      lo = mid + 1
+    }
+  }
+  return found
+}
+
+function findBlock(root: HTMLElement, id: string): HTMLElement | null {
+  for (const el of root.querySelectorAll<HTMLElement>('[data-block-id]')) if (el.dataset.blockId === id) return el
+  return null
+}
 
 function isInsideScrollableChild(root: HTMLElement, target: EventTarget | null, deltaY: number): boolean {
   if (!target || !(target instanceof Element)) return false
@@ -50,6 +92,10 @@ export function useAutoFollowScroll(options: UseAutoFollowScrollOptions = {}) {
   const userScrollIntentUntilRef = useRef(0)
   const pointerDownRef = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const sessionIdRef = useRef(sessionId)
+  // A return to a session left scrolled up, until its anchor renders.
+  const pendingRestoreRef = useRef<(SavedPosition & { until: number }) | null>(null)
+  const saveFrameRef = useRef(0)
 
   const onLoadOlderTopRef = useRef(onLoadOlderTop)
   useEffect(() => {
@@ -173,9 +219,30 @@ export function useAutoFollowScroll(options: UseAutoFollowScrollOptions = {}) {
       if (currentScrollTop <= 300) {
         onLoadOlderTopRef.current?.()
       }
+      scheduleSave()
+    }
+
+    // Remember where the reader is, once a frame while they scroll, so a
+    // switch away (whose re-render replaces the blocks) has it on record.
+    const scheduleSave = () => {
+      if (saveFrameRef.current) return
+      const sid = sessionIdRef.current
+      saveFrameRef.current = requestAnimationFrame(() => {
+        saveFrameRef.current = 0
+        if (!sid || sid !== sessionIdRef.current || pendingRestoreRef.current) return
+        if (attachedRef.current) {
+          savedPositions.delete(sid)
+          return
+        }
+        const anchor = firstBlockInView(el)
+        const anchorId = anchor?.dataset.blockId
+        if (!anchor || !anchorId) return
+        savedPositions.set(sid, { anchorId, offset: anchor.getBoundingClientRect().top - el.getBoundingClientRect().top })
+      })
     }
 
     const detachForUserScrollUp = () => {
+      pendingRestoreRef.current = null
       userScrollIntentUntilRef.current = Date.now() + USER_SCROLL_INTENT_MS
       if (!attachedRef.current) return
       if (el.scrollHeight - el.clientHeight <= 1) return
@@ -242,25 +309,62 @@ export function useAutoFollowScroll(options: UseAutoFollowScrollOptions = {}) {
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('pointercancel', onPointerUp)
       document.removeEventListener('keydown', onKeyDown)
+      cancelAnimationFrame(saveFrameRef.current)
+      saveFrameRef.current = 0
     }
   }, [syncAnchor])
 
+  /** Put a returning session back where it was left; false until its anchor renders. */
+  const tryRestore = useCallback((): boolean => {
+    const pending = pendingRestoreRef.current
+    const el = scrollRef.current
+    if (!pending || !el) return false
+    if (Date.now() > pending.until) {
+      pendingRestoreRef.current = null
+      return false
+    }
+    const anchor = findBlock(el, pending.anchorId)
+    if (!anchor) return false
+    pendingRestoreRef.current = null
+    attachedRef.current = false
+    syncAnchor()
+    el.scrollTop += anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - pending.offset
+    lastScrollTopRef.current = el.scrollTop
+    setShowScrollBtn(true)
+    return true
+  }, [syncAnchor])
+
+  // Before paint, so a scroll event the swap causes is neither saved under
+  // the session being left nor saved over the one being entered.
+  useLayoutEffect(() => {
+    sessionIdRef.current = sessionId
+    cancelAnimationFrame(saveFrameRef.current)
+    saveFrameRef.current = 0
+    const saved = sessionId ? savedPositions.get(sessionId) : undefined
+    pendingRestoreRef.current = saved ? { ...saved, until: Date.now() + RESTORE_WAIT_MS } : null
+  }, [sessionId])
+
   useEffect(() => {
+    if (tryRestore()) return
+    // Until a returning session's anchor renders, follow the bottom.
     attachedRef.current = true
     syncAnchor()
     setShowScrollBtn(false)
     scrollToBottom()
-  }, [sessionId, scrollToBottom, syncAnchor])
+  }, [sessionId, scrollToBottom, syncAnchor, tryRestore])
 
   useEffect(() => {
     if (isUserMessage) {
+      // Sending in a session returns it to the live end.
+      pendingRestoreRef.current = null
       attachedRef.current = true
     }
+    if (pendingRestoreRef.current && tryRestore()) return
     if (attachedRef.current) {
       syncAnchor()
       scrollToBottom()
     }
-  }, [totalLen, lastContent, isUserMessage, scrollToBottom, syncAnchor])
+  }, [totalLen, lastContent, isUserMessage, scrollToBottom, syncAnchor, tryRestore])
 
   useEffect(() => {
     if (!isEmpty) return

@@ -1,9 +1,11 @@
-import { memo } from 'react'
+import { memo, useRef } from 'react'
 import { ChevronRight, ExternalLink, FileDiff } from 'lucide-react'
 import { LongPressButton } from '@/components/ui/long-press-button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DiffPreview } from '../FileViewerPanel'
 import { FileTypeIcon } from '../FileTypeIcon'
+import { useFocusZone } from '@/lib/focus/zones'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import type { WorkspaceFileInfo, WorkspaceGitDiffResponse } from '@/api/types'
 import { ChangeCounts } from './ChangeCounts'
@@ -52,6 +54,10 @@ function GitReviewSubPanelView({
   setMobileFileActions,
   setDesktopFileActions,
 }: GitReviewSubPanelProps) {
+  // One Tab stop; Up/Down walk the rows. The hover actions are out of Tab
+  // order: Shift+F10 opens the same actions as a menu.
+  const listRef = useRef<HTMLUListElement>(null)
+  useFocusZone(listRef, { orientation: 'vertical', entry: 'active' })
   if (diff.isLoading || files.isLoading) return <DockListNotice>Loading changed files…</DockListNotice>
   if (diff.isError) return <DockListNotice tone="error">Failed to load changed files</DockListNotice>
   if (!diff.data?.is_git_repo) return <DockListNotice>Not a git repository</DockListNotice>
@@ -64,7 +70,7 @@ function GitReviewSubPanelView({
           Changed list may be incomplete because the diff was truncated.
         </p>
       )}
-      <ul className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
+      <ul ref={listRef} aria-label="Changed files" className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
         {changedFiles.map((changedFile) => {
           const isSelected = selectedFilePath === changedFile.path
           const expanded = expandedDiffs.has(changedFile.path)
@@ -85,6 +91,12 @@ function GitReviewSubPanelView({
                           if (mobile) return
                           e.preventDefault()
                           setDesktopFileActions({ file: changedFile, x: e.clientX, y: e.clientY })
+                        }}
+                        onKeyDown={(e) => {
+                          if (mobile || !isMenuKey(e)) return
+                          e.preventDefault()
+                          const at = menuPointFor(e.currentTarget)
+                          setDesktopFileActions({ file: changedFile, x: at.clientX, y: at.clientY })
                         }}
                         className={cn(
                           'flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 pl-3 text-left text-xs outline-none hover:text-(--color-text) focus-visible:bg-(--bg-key)/60',
@@ -111,7 +123,7 @@ function GitReviewSubPanelView({
                   <TooltipContent>{changedFile.path}</TooltipContent>
                 </Tooltip>
                 {!mobile && (
-                  <div className="hidden shrink-0 items-center gap-0.5 md:group-hover/row:flex md:group-focus-within/row:flex">
+                  <div data-zone-skip className="hidden shrink-0 items-center gap-0.5 md:group-hover/row:flex md:group-focus-within/row:flex">
                     <button
                       type="button"
                       onClick={() => openDiffTab(changedFile)}

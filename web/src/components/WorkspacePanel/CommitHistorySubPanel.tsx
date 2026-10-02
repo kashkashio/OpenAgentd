@@ -4,6 +4,8 @@ import { ExternalLink } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { LongPressButton } from '@/components/ui/long-press-button'
 import { Button } from '@/components/ui/button'
+import { useFocusZone } from '@/lib/focus/zones'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import type { GitCommit } from '@/api/types'
 import {
@@ -90,6 +92,10 @@ function CommitHistorySubPanelView({
   setDesktopFileActions,
 }: CommitHistorySubPanelProps) {
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+  // One Tab stop; Up/Down walk the commits. "Open in tab" is out of Tab
+  // order: Shift+F10 opens the commit's menu, which has it.
+  const listRef = useRef<HTMLUListElement>(null)
+  useFocusZone(listRef, { orientation: 'vertical', entry: 'active' })
   const hasNextPageRef = useRef(gitHistory.hasNextPage)
   const isFetchingNextPageRef = useRef(gitHistory.isFetchingNextPage)
   const fetchNextPageRef = useRef(gitHistory.fetchNextPage)
@@ -155,7 +161,7 @@ function CommitHistorySubPanelView({
 
     return (
       <div>
-        <ul className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
+        <ul ref={listRef} aria-label="Commits" className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
           {commits.map((commit) => {
             const isExpanded = expandedCommitSha === commit.sha
             const subject = safeDecodeURIComponent(commit.subject)
@@ -174,6 +180,12 @@ function CommitHistorySubPanelView({
                       if (mobile) return
                       e.preventDefault()
                       setDesktopCommitActions({ ...target, x: e.clientX, y: e.clientY })
+                    }}
+                    onKeyDown={(e) => {
+                      if (mobile || !isMenuKey(e)) return
+                      e.preventDefault()
+                      const at = menuPointFor(e.currentTarget)
+                      setDesktopCommitActions({ ...target, x: at.clientX, y: at.clientY })
                     }}
                     className="flex min-w-0 flex-1 cursor-pointer flex-col gap-0.5 px-3 py-1.5 text-left outline-none focus-visible:bg-(--bg-key)/60"
                   >
@@ -201,7 +213,7 @@ function CommitHistorySubPanelView({
                     </span>
                   </LongPressButton>
                   {!mobile && (
-                    <div className="hidden shrink-0 pr-2 md:group-hover/row:flex md:group-focus-within/row:flex">
+                    <div data-zone-skip className="hidden shrink-0 pr-2 md:group-hover/row:flex md:group-focus-within/row:flex">
                       <button
                         type="button"
                         onClick={() => openCommitTab(commit)}

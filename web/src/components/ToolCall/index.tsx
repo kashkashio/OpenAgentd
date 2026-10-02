@@ -319,6 +319,7 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
         render={
           <button
             onClick={handleCopyResult}
+            data-zone-skip
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-(--color-text-muted) opacity-100 transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) focus-visible:outline-2 focus-visible:outline-(--focus-ring)/40 md:h-6 md:w-6 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
             aria-label="Copy result"
           >
@@ -468,6 +469,7 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
                             render={
                               <button
                                 onClick={handleCopyArgs}
+                                data-zone-skip
                                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-(--color-text-muted) opacity-100 transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) focus-visible:outline-2 focus-visible:outline-(--focus-ring)/40 md:h-6 md:w-6 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
                                 aria-label="Copy arguments"
                               >

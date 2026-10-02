@@ -40,6 +40,12 @@ export interface FocusZoneOptions {
   label?: string
   /** Off: the zone leaves every ``tabIndex`` alone. */
   enabled?: boolean
+  /**
+   * Re-run the roving pass at most this often (ms) after DOM changes,
+   * instead of once a frame: for a zone whose content streams in (the
+   * transcript), where a new control may briefly be its own Tab stop.
+   */
+  throttleMs?: number
 }
 
 const ZONE = 'data-focus-zone'
@@ -98,25 +104,29 @@ interface ZoneState {
 const states = new WeakMap<Element, ZoneState>()
 
 function pick(zone: Element, items: HTMLElement[], entry: ZoneEntry): HTMLElement | null {
-  const rendered = items.filter(isRendered)
   const state = states.get(zone)
   // Focus that reached an item before it qualified (a tab selected after it
   // was focused) still counts as the keyboard position.
   const focused = document.activeElement
-  if (state && focused instanceof HTMLElement && rendered.includes(focused)) state.current = focused
+  if (state && focused instanceof HTMLElement && items.includes(focused) && isRendered(focused)) state.current = focused
   const current = state?.current
-  if (current && rendered.includes(current)) return current
+  if (current && items.includes(current) && isRendered(current)) return current
+  // Visibility is checked only on candidates, not every item: a long
+  // transcript has hundreds.
   if (entry === 'active') {
     // The active control itself, else the first item inside an active row.
-    const active = rendered.find((el) => el.matches(ACTIVE))
-      ?? rendered.find((el) => {
+    const active = items.find((el) => el.matches(ACTIVE) && isRendered(el))
+      ?? items.find((el) => {
         const host = el.closest(ACTIVE)
-        return host !== null && zone.contains(host)
+        return host !== null && zone.contains(host) && isRendered(el)
       })
     if (active) return active
   }
-  if (entry === 'last') return rendered.at(-1) ?? null
-  return rendered[0] ?? null
+  if (entry === 'last') {
+    for (let i = items.length - 1; i >= 0; i--) if (isRendered(items[i])) return items[i]
+    return null
+  }
+  return items.find(isRendered) ?? null
 }
 
 /** Give the zone's current item ``tabIndex`` 0 and every other item -1. */
@@ -170,12 +180,17 @@ function attachZone(zone: HTMLElement, latest: { readonly current: FocusZoneOpti
 
   const entry = () => latest.current.entry ?? 'first'
   let frame: number | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const run = () => {
+    frame = null
+    timer = null
+    rove(zone, entry())
+  }
   const schedule = () => {
-    if (frame !== null) return
-    frame = requestAnimationFrame(() => {
-      frame = null
-      rove(zone, entry())
-    })
+    if (frame !== null || timer !== null) return
+    const throttle = latest.current.throttleMs
+    if (throttle) timer = setTimeout(run, throttle)
+    else frame = requestAnimationFrame(run)
   }
   rove(zone, entry())
 
@@ -232,6 +247,7 @@ function attachZone(zone: HTMLElement, latest: { readonly current: FocusZoneOpti
   return () => {
     observer.disconnect()
     if (frame !== null) cancelAnimationFrame(frame)
+    if (timer !== null) clearTimeout(timer)
     zone.removeEventListener('focusin', onFocusIn)
     zone.removeEventListener('pointerdown', onPointerDown)
     zone.removeEventListener('keydown', onKeyDown)
