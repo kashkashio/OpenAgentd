@@ -1775,6 +1775,9 @@ Desktop is primary. CLI / server is the developer path.
   native standalone executable into `~/.local/bin` (or `%LOCALAPPDATA%\OpenAgentd\bin`)
   and cleans up any existing Python v2 uv/pipx install. The Python package managers
   (`uv tool`, `pipx`, `pip`) were used through v2 and are sunset in v2.27.0.
+  Prebuilt CLI archives cover Apple Silicon macOS, x86_64 Linux and x86_64 Windows;
+  releases after v3.6.0 no longer ship Intel macOS or ARM Linux archives, and
+  `install.sh` says so on those machines.
 - **v2 end-of-life notice** `[v2.27.0]` — the last Python release. Interactive
   CLI commands and `openagentd upgrade` say that v2 gets no further updates and
   print the v3 install command plus the step that removes the uv/pipx/pip copy.

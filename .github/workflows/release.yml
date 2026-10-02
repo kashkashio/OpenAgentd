@@ -77,12 +77,8 @@ jobs:
       matrix:
         include:
           - { target: aarch64-apple-darwin, runner: macos-26 }
-          # Cross-compiled on Apple Silicon; the arm64 runner runs the x86_64
-          # binary under Rosetta for the smoke test.
-          - { target: x86_64-apple-darwin, runner: macos-26 }
           # ubuntu-22.04 keeps the glibc floor at 2.35, same as the desktop .deb.
           - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
           - { target: x86_64-pc-windows-msvc, runner: windows-2025 }
     defaults:
       run:
@@ -182,7 +178,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -la _artifacts
-          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+          for t in aarch64-apple-darwin x86_64-unknown-linux-gnu; do
             test -f "_artifacts/openagentd-${VERSION}-${t}.tar.gz.sha256"
           done
           test -f "_artifacts/openagentd-${VERSION}-x86_64-pc-windows-msvc.zip.sha256"
