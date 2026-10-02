@@ -51,7 +51,10 @@ if (import.meta.main) {
   // raised it to 2.62 MB / 783 kB, with a 1.98 MB index chunk.
   // Loading KaTeX and its stylesheet on first use lowered it to
   // 2.37 MB / 705 kB, with a 1.72 MB index chunk.
-  const limits = { eagerBytes: 2_380_000, eagerGzipBytes: 712_000, largestChunkBytes: 1_730_000 }
+  // Desktop keyboard focus (zones, row keys, dock tab keys, drag and the
+  // launcher, chat menus, tooltip timing) raised it to 2.39 MB / 716 kB,
+  // with a 1.75 MB index chunk.
+  const limits = { eagerBytes: 2_400_000, eagerGzipBytes: 720_000, largestChunkBytes: 1_755_000 }
   console.log('Production JavaScript budget:', sizes)
   const failures = budgetFailures(sizes, limits)
   if (failures.length) {
