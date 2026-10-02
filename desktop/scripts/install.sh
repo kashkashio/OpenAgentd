@@ -318,8 +318,18 @@ EOF
   info "Signing identity: ${signing_identity}"
   info "Signing the bundle (this can take a few seconds)…"
   if ! sign_bundle "$BUNDLE" 2>&1 | sed 's/^/  /'; then
-    fail "codesign failed."
-    exit 2
+    # An identity codesign cannot use ("no identity found") must not block the
+    # install: sign ad hoc, with the same identifier-only requirement.
+    if [ "$signing_identity" = "-" ]; then
+      fail "codesign failed."
+      exit 2
+    fi
+    warn "Signing with ${signing_identity} failed; signing ad hoc."
+    signing_identity="-"
+    if ! sign_bundle "$BUNDLE" 2>&1 | sed 's/^/  /'; then
+      fail "codesign failed."
+      exit 2
+    fi
   fi
   ok "Signature applied"
 

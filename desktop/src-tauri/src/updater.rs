@@ -335,25 +335,38 @@ fn prepare_macos_update_archive(
     // Development, the local identity, ad hoc). Without ``-r=`` codesign derives a
     // default requirement that pins the signing certificate, and self-signed
     // local certs are not stable across machines or regenerations.
-    let mut codesign = std::process::Command::new("codesign");
-    codesign.args(["--force", "--deep", "--options", "runtime"]);
-    match signer() {
-        MacSigner::Login(identity) => codesign.args(["--sign", &identity]),
-        MacSigner::Local(keychain) => codesign.arg("--keychain").arg(keychain).args(["--sign", LOCAL_SIGNER]),
-        MacSigner::AdHoc => codesign.args(["--sign", "-"]),
+    let codesign = |signer: &MacSigner| -> Result<(), String> {
+        let mut command = std::process::Command::new("codesign");
+        command.args(["--force", "--deep", "--options", "runtime"]);
+        match signer {
+            MacSigner::Login(identity) => command.args(["--sign", identity]),
+            MacSigner::Local(keychain) => command.arg("--keychain").arg(keychain).args(["--sign", LOCAL_SIGNER]),
+            MacSigner::AdHoc => command.args(["--sign", "-"]),
+        };
+        let output = command
+            .arg(format!("-r={stable_requirement}"))
+            .arg("--entitlements")
+            .arg(&entitlements)
+            .arg(app_bundle)
+            .output()
+            .map_err(|e| format!("Run codesign for macOS update: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!("Sign macOS update: {}", String::from_utf8_lossy(&output.stderr).trim()))
+        }
     };
-    let output = codesign
-        .arg(format!("-r={stable_requirement}"))
-        .arg("--entitlements")
-        .arg(&entitlements)
-        .arg(app_bundle)
-        .output()
-        .map_err(|e| format!("Run codesign for macOS update: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Sign macOS update: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    // A stable identity codesign cannot use ("OpenAgentd Local Signer: no
+    // identity found" in v3.5.0) must not strand the user on the old version:
+    // sign ad hoc instead. The identifier-only requirement keeps TCC and
+    // keychain grants matching either way; only an ad-hoc failure is fatal.
+    let signer = signer();
+    if let Err(error) = codesign(&signer) {
+        if matches!(signer, MacSigner::AdHoc) {
+            return Err(error);
+        }
+        log::warn!("updater signing with the stable identity failed, signing ad hoc: {error}");
+        codesign(&MacSigner::AdHoc)?;
     }
 
     let encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -830,20 +843,12 @@ pub fn format_download_progress(downloaded_mb: usize, total_bytes: Option<u64>) 
 
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests {
-    use super::{apple_development_identity, local_signer, prepare_macos_update_archive};
+    use super::{apple_development_identity, local_signer, prepare_macos_update_archive, MacSigner};
     use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 
-    #[test]
-    fn picks_the_first_apple_development_identity() {
-        let listing = "  1) 1A2B \"OpenAgentd Local Signer\"\n  2) 3C4D \"Apple Development: dev@example.com (T32MD9LA8Y)\"\n  3) 5E6F \"Apple Development: other\"\n     3 valid identities found\n";
-        assert_eq!(apple_development_identity(listing), Some("Apple Development: dev@example.com (T32MD9LA8Y)"));
-        assert_eq!(apple_development_identity("     0 valid identities found\n"), None);
-    }
-
-    #[test]
-    fn prepared_update_uses_a_stable_designated_requirement() {
-        let source = tempfile::tempdir().expect("create source dir");
-        let app = source.path().join("OpenAgentd.app");
+    /// A minimal unsigned-for-us update: ``OpenAgentd.app`` with entitlements.
+    fn test_update_archive(dir: &std::path::Path) -> Vec<u8> {
+        let app = dir.join("OpenAgentd.app");
         let macos = app.join("Contents/MacOS");
         let resources = app.join("Contents/Resources");
         std::fs::create_dir_all(&macos).expect("create MacOS dir");
@@ -871,11 +876,58 @@ mod macos_tests {
         archive
             .append_dir_all("OpenAgentd.app", &app)
             .expect("archive test app");
-        let input = archive
+        archive
             .into_inner()
             .expect("finalize input tar")
             .finish()
-            .expect("compress input tar");
+            .expect("compress input tar")
+    }
+
+    /// The designated requirement of the one app in a prepared archive.
+    fn designated_requirement(archive: &[u8]) -> String {
+        let extracted = tempfile::tempdir().expect("create extraction dir");
+        tar::Archive::new(GzDecoder::new(archive))
+            .unpack(extracted.path())
+            .expect("extract prepared update");
+        let output = std::process::Command::new("codesign")
+            .args(["-d", "-r", "-"])
+            .arg(extracted.path().join("OpenAgentd.app"))
+            .output()
+            .expect("inspect prepared signature");
+        let info = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        info.lines()
+            .find(|line| line.trim_start().starts_with("designated =>"))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn an_unusable_signing_identity_falls_back_to_ad_hoc() {
+        // v3.5.0 failed every macOS update with "Sign macOS update: OpenAgentd
+        // Local Signer: no identity found" when codesign could not use the
+        // local identity it was handed. A keychain codesign cannot read gives
+        // that exact error; the update must still install, signed ad hoc with
+        // the same stable requirement.
+        let source = tempfile::tempdir().expect("create source dir");
+        let input = test_update_archive(source.path());
+        let unusable = source.path().join("missing.keychain-db");
+        let prepared = prepare_macos_update_archive(input, "com.openagentd.desktop", || MacSigner::Local(unusable))
+            .expect("an unusable identity must not fail the update");
+        assert_eq!(designated_requirement(&prepared), "designated => identifier \"com.openagentd.desktop\"");
+    }
+
+    #[test]
+    fn picks_the_first_apple_development_identity() {
+        let listing = "  1) 1A2B \"OpenAgentd Local Signer\"\n  2) 3C4D \"Apple Development: dev@example.com (T32MD9LA8Y)\"\n  3) 5E6F \"Apple Development: other\"\n     3 valid identities found\n";
+        assert_eq!(apple_development_identity(listing), Some("Apple Development: dev@example.com (T32MD9LA8Y)"));
+        assert_eq!(apple_development_identity("     0 valid identities found\n"), None);
+    }
+
+    #[test]
+    fn prepared_update_uses_a_stable_designated_requirement() {
+        let source = tempfile::tempdir().expect("create source dir");
+        let input = test_update_archive(source.path());
 
         // A throwaway signing keychain and no login-keychain lookup: the test
         // must not touch the keychains (or Apple identities) of whoever runs it.
@@ -889,38 +941,23 @@ mod macos_tests {
             prepared_again, prepared,
             "an update with a stable requirement must not be re-signed"
         );
-        let extracted = tempfile::tempdir().expect("create extraction dir");
-        tar::Archive::new(GzDecoder::new(prepared_again.as_slice()))
-            .unpack(extracted.path())
-            .expect("extract prepared update");
-        let output = std::process::Command::new("codesign")
-            .args(["-d", "-r", "-"])
-            .arg(extracted.path().join("OpenAgentd.app"))
-            .output()
-            .expect("inspect prepared signature");
-        assert!(output.status.success(), "codesign inspection failed");
-        let requirement = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let designated = requirement
-            .lines()
-            .find(|line| line.trim_start().starts_with("designated =>"))
-            .unwrap_or("")
-            .trim();
         // The requirement must be *exactly* identifier-only. Any extra
         // clause (``cdhash H"…"``, ``certificate root = H"…"``) pins the
         // binary or the local signing certificate — both change across
         // updates, invalidating the keychain "Always Allow" ACL and
         // re-prompting the user after every update.
         assert_eq!(
-            designated, "designated => identifier \"com.openagentd.desktop\"",
-            "designated requirement must be identifier-only and stable: {requirement}"
+            designated_requirement(&prepared_again),
+            "designated => identifier \"com.openagentd.desktop\"",
+            "designated requirement must be identifier-only and stable"
         );
         // Signed by the local identity from its own keychain. Signing with a
         // key in the login keychain prompted "codesign wants to access key"
         // for every signature.
+        let extracted = tempfile::tempdir().expect("create extraction dir");
+        tar::Archive::new(GzDecoder::new(prepared_again.as_slice()))
+            .unpack(extracted.path())
+            .expect("extract prepared update");
         let details = std::process::Command::new("codesign")
             .args(["-d", "-vv"])
             .arg(extracted.path().join("OpenAgentd.app"))

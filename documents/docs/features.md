@@ -1741,6 +1741,10 @@ Desktop is primary. CLI / server is the developer path.
   (`openagentd-signing.keychain-db`), so signing never asks for a password
   `[v3.4.0]`. Earlier builds kept that identity in the login keychain, where
   codesign asked to use its key on every install or update.
+  If codesign cannot use the identity ("no identity found"), the install or
+  update signs ad hoc instead of failing `[v3.5.1]`; v3.4.0–v3.5.0 in-app
+  updates stopped there, so those installs update with `install.sh` or
+  `brew upgrade --cask`.
 - **Linux desktop** `[since v1.0]` — AppImage (`chmod +x`) or `.deb` for
   Debian/Ubuntu.
 - **Windows desktop** `[v1.106.0]` — native x64 `.msi` installer with the
