@@ -181,7 +181,8 @@ describe('AgentChatHeader', () => {
 
     await user.hover(screen.getByText('Workspace A'))
 
-    expect(screen.getByRole('tooltip')).toHaveTextContent('/Users/name/Workspace A')
+    // Tooltips open after the hover delay.
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('/Users/name/Workspace A')
   })
 
   it('never leaks the home path into the chat workspace tooltip', async () => {
@@ -195,7 +196,7 @@ describe('AgentChatHeader', () => {
 
     await user.hover(screen.getByText('Chat'))
 
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Chat')
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Chat')
     expect(screen.queryByText('/Users/name')).not.toBeInTheDocument()
   })
 

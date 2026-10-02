@@ -113,6 +113,10 @@ function SearchBar({
           defaultValue={defaultValue}
           onChange={handleChange}
           placeholder={placeholder}
+          // Queries are names and paths: no autocorrect or smart quotes.
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           className={cn(
             'min-w-0 flex-1 bg-transparent py-2 text-xs text-(--color-text) md:py-1.5',
             'placeholder:text-(--color-text-muted)/60',

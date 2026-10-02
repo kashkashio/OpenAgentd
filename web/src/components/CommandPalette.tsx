@@ -323,6 +323,9 @@ function PaletteOverlay({ commands, onClose, workspaceFiles = [], filesTruncated
               value={query}
               onChange={(e) => handleQueryChange(e.target.value)}
               placeholder={page ? page.page.placeholder : hasFiles ? 'Search files…' : 'Search commands…'}
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               className="min-w-0 flex-1 border-none bg-transparent text-xs text-(--color-text) placeholder-(--color-text-muted)/60 outline-none ring-0 focus:border-none focus:outline-none focus:ring-0 focus-visible:border-none focus-visible:outline-none focus-visible:ring-0 md:text-sm"
               aria-label={searchLabel}
             />

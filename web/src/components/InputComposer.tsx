@@ -960,6 +960,10 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
         // text-layout paths drift by 1–2px, leaving the squiggle a word
         // off. Same call Discord/Slack/ChatGPT make for the same reason.
         spellCheck={false}
+        // Prompts carry code and paths: on desktop, no smart quotes, dashes
+        // or autocapitalised identifiers. Phone keyboards keep theirs.
+        autoCorrect={isMobile ? undefined : 'off'}
+        autoCapitalize={isMobile ? undefined : 'off'}
         aria-label="Message input"
         aria-expanded={menu !== null}
         aria-controls={activePopupId}

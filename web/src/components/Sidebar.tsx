@@ -1386,6 +1386,9 @@ export function Sidebar({
                     value={worktreeName}
                     onChange={(e) => setWorktreeName(e.target.value)}
                     placeholder="feature-login"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                     className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 font-mono text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-subtle) focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                     maxLength={80}
                     autoFocus
@@ -1398,6 +1401,9 @@ export function Sidebar({
                     value={worktreeBranch}
                     onChange={(e) => setWorktreeBranch(e.target.value)}
                     placeholder="openagentd/feature-login"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                     className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 font-mono text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-subtle) focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                     maxLength={255}
                   />
@@ -1707,6 +1713,9 @@ export function Sidebar({
                 ref={worktreeEditInputRef}
                 value={worktreeEditTitle}
                 onChange={(e) => setWorktreeEditTitle(e.target.value)}
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 text-sm text-(--color-text) outline-none focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                 aria-label="Worktree title"
                 maxLength={255}
