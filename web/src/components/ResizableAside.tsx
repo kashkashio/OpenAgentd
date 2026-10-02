@@ -10,9 +10,12 @@
  * Width stays a framer-motion ``animate`` target so open/close tweens and the
  * drag share one value; ``getMotion`` maps the live width to motion props.
  *
- * ``pinContentWidth`` holds the body at that target width while the aside
- * tweens, so opening and closing clip the body instead of reflowing it every
- * frame (a long plan in the review dock cost ~125 ms per close).
+ * ``pinContentWidth`` holds the body at the ``pinWidth`` the motion returns,
+ * so opening and closing clip the body instead of reflowing it every frame
+ * (a long plan in the review dock cost ~125 ms per close). Without a
+ * ``pinWidth`` the body fills the aside: a resize (a drag, or the sidebar
+ * beside it changing the room) must move the body with the edge, or its far
+ * side is clipped, or left blank, until the tween ends.
  *
  * The aside publishes its target width in ``data-panel-target-width`` so a
  * neighbour can size itself for where the tween ends (``settledWidthBesidePanels``).
@@ -58,9 +61,9 @@ export interface LiveWidth {
 interface ResizableAsideProps
   extends Omit<ComponentProps<typeof motion.aside>, 'animate' | 'transition' | 'children'> {
   resize: PanelResizeOptions
-  /** ``pinWidth`` overrides the pinned body width (a closing panel keeps its open width). */
+  /** ``pinWidth`` pins the body width (a panel tweening open or closed keeps its open width). */
   getMotion: (live: LiveWidth) => { animate: TargetAndTransition; transition: Transition; pinWidth?: number }
-  /** Lay the children out at the target width rather than the tweening one. */
+  /** Lay the children out at ``pinWidth`` rather than the tweening width. */
   pinContentWidth?: boolean
   children: ReactNode
 }
@@ -70,7 +73,7 @@ export function ResizableAside({ resize, getMotion, pinContentWidth = false, chi
   const { animate, transition, pinWidth } = getMotion({ width: state.width, isResizing: state.isResizing })
   // Always the same wrapper, so a change of target (mobile has none) never
   // remounts the panel body.
-  const pinnedWidth = pinWidth ?? (typeof animate.width === 'number' ? animate.width : '100%')
+  const pinnedWidth = pinWidth ?? '100%'
   return (
     <ResizeContext.Provider value={state}>
       <motion.aside

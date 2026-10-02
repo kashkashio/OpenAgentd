@@ -32,11 +32,19 @@ mock.module('@/hooks/use-platform', () => ({
   usePlatform: () => ({ isTauri: false, os: 'linux', isMacOverlay: false }),
   getPlatform: () => ({ isTauri: false, os: 'linux', isMacOverlay: false }),
 }))
+// The mocked aside does not animate: tests finish its tween by hand.
+let finishTween: (() => void) | undefined
 mock.module('framer-motion', () => ({
   motion: {
-    aside: ({ children, className, 'aria-label': ariaLabel }: { children: React.ReactNode; className?: string; 'aria-label'?: string }) => (
-      <aside className={className} aria-label={ariaLabel}>{children}</aside>
-    ),
+    aside: ({ children, className, 'aria-label': ariaLabel, onAnimationComplete }: {
+      children: React.ReactNode
+      className?: string
+      'aria-label'?: string
+      onAnimationComplete?: () => void
+    }) => {
+      finishTween = onAnimationComplete
+      return <aside className={className} aria-label={ariaLabel}>{children}</aside>
+    },
   },
 }))
 
@@ -75,9 +83,13 @@ describe('Review dock layout', () => {
     // 45% of a 1000px center, capped so the chat keeps 400px.
     expect(separator.getAttribute('aria-valuenow')).toBe('450')
     expect(separator.getAttribute('aria-valuemax')).toBe('600')
-    // The body keeps that width while the aside tweens open or closed.
+    // The body keeps that width while the aside tweens open...
     const body = dock.querySelector<HTMLElement>('[data-review-dock]')!
     expect(body.parentElement!.style.width).toBe('450px')
+    // ...then fills it, so a later resize moves it with the edge instead of
+    // clipping its far side or leaving it blank until the tween ends.
+    act(() => finishTween?.())
+    expect(body.parentElement!.style.width).toBe('100%')
 
     fireEvent.keyDown(separator, { key: 'ArrowLeft' })
     expect(useLayoutStore.getState().dockRatio).toBeCloseTo(0.466, 3)

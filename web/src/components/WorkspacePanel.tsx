@@ -274,6 +274,12 @@ export function WorkspacePanel({
     const timer = window.setTimeout(() => setParked(true), PARK_AFTER_MS)
     return () => window.clearTimeout(timer)
   }, [open])
+  // Whether the open or close tween (mounting counts as opening) is still
+  // running. Only then, and while closed, is the body pinned to the open
+  // width; any other width change moves the body with the dock's edge.
+  const [toggle, setToggle] = useState({ open, running: true })
+  if (toggle.open !== open) setToggle({ open, running: true })
+  const settleToggle = () => setToggle((current) => (current.running ? { ...current, running: false } : current))
 
   // ── Geometry ───────────────────────────────────────────────────────────────
   const dockRatio = useLayoutStore((s) => s.dockRatio)
@@ -306,7 +312,7 @@ export function WorkspacePanel({
     transition: mobile && mobileDragOffset !== null
       ? { duration: 0 }
       : { duration: isResizing || prefersReducedMotion ? 0.01 : 0.22, ease: EASINGS.inOut },
-    pinWidth: !open && !mobile ? (overlay ? layout.width : width) : undefined,
+    pinWidth: !mobile && (!open || toggle.running) ? (overlay ? layout.width : width) : undefined,
   })
   // The toggle is meaningless while a narrow window already forces overlay.
   const maximizeState = mobile || (overlay && !dockMaximized) ? null : dockMaximized
@@ -595,6 +601,7 @@ export function WorkspacePanel({
       exit={mobile ? { opacity: 0 } : { width: 0 }}
       resize={dockResize}
       getMotion={dockMotion}
+      onAnimationComplete={settleToggle}
       pinContentWidth
       className={cn(
         'fixed bottom-0 right-0 z-40 min-h-0 w-full overflow-hidden border-l border-(--color-border) bg-(--bg-page) shadow-xl md:w-auto md:shadow-none',
