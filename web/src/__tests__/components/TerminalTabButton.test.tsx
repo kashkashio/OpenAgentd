@@ -7,10 +7,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { useTerminalStore, _resetTerminalStoreForTests } from '@/stores/useTerminalStore'
+import { getTerminalRuntime, useTerminalStore, _resetTerminalStoreForTests } from '@/stores/useTerminalStore'
 
 const Icon = () => null
-mock.module('lucide-react', () => ({ TerminalSquare: Icon, X: Icon, Pencil: Icon }))
+mock.module('lucide-react', () => ({ TerminalSquare: Icon, X: Icon, Pencil: Icon, Eraser: Icon }))
 mock.module('@/api/terminal', () => ({ connectTerminal: mock(() => new Promise(() => {})) }))
 
 beforeEach(() => {
@@ -51,6 +51,18 @@ describe('TerminalTabButton', () => {
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Terminal 1' }))
     expect(await screen.findByRole('menuitem', { name: /Rename/ })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /Close/ })).toBeTruthy()
+  })
+
+  it('Clear in the desktop menu clears the scrollback (⌘K now opens the palette)', async () => {
+    const { id } = await setup()
+    const clear = mock(() => {})
+    // The xterm handle arrives asynchronously (setup.ts mocks it).
+    await waitFor(() => expect(useTerminalStore.getState().sessions[id]?.handleReady).toBe(true))
+    Object.assign(getTerminalRuntime(id)?.handle?.term ?? {}, { clear })
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Terminal 1' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Clear/ }))
+    expect(clear).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('menu')).toBeNull()
   })
 
   it('renaming via the desktop menu updates the store title', async () => {

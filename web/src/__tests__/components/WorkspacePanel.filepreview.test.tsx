@@ -49,7 +49,7 @@ mock.module('lucide-react', () => ({
   RefreshCw: Icon,
   RotateCcw: Icon,
   Search: Icon,
-  Pencil: Icon, TerminalSquare: Icon, Undo2: Icon,
+  Pencil: Icon, TerminalSquare: Icon, Eraser: Icon, Undo2: Icon,
   X: Icon,
 }))
 mock.module('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => false }))

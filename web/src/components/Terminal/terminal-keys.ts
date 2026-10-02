@@ -1,36 +1,29 @@
 /**
- * Keys a focused terminal keeps for itself.
+ * Keys a focused terminal gives back to the app.
  *
- * App shortcuts listen on ``document`` and fire regardless of focus, so a key
- * the terminal owns has to stop propagating at the terminal. xterm already
- * does that for every key it sends to the shell (so Ctrl+D, Ctrl+W, Ctrl+R…
- * never reach app shortcuts on Windows/Linux), but it ignores ⌘ combinations
- * on macOS. There ⌘K clears the scrollback (Terminal.app, iTerm, VS Code)
- * instead of opening the palette, and ⌘F stays put instead of pulling the
- * user out to the transcript find bar. Both also ``preventDefault`` so the
- * native menu accelerator for the same key does not fire.
+ * App shortcuts listen on ``window`` and skip keys a focused widget handled.
+ * xterm handles (and stops) every key it sends to the shell, but it ignores
+ * ⌘ chords, so on macOS every app shortcut already works from a terminal:
+ * ⌘K opens the palette and ⌘F the find bar. Clearing the scrollback is in
+ * the terminal tab's menu instead.
+ *
+ * Elsewhere the app's primary modifier is Ctrl, which is also the shell's.
+ * Ctrl chords stay with the shell (Ctrl+C, Ctrl+D, Ctrl+W, Ctrl+R…), except
+ * Ctrl+K and Ctrl+P: like VS Code, they open the command palette and quick
+ * open rather than kill-line and previous-command.
  */
 import type { OS } from '@/hooks/use-platform'
 import { isPrimaryModifierOS } from '@/lib/keyboard-shortcut'
 
+/** Ctrl chords that skip the shell on Windows/Linux. */
+const APP_KEYS_OVER_SHELL = new Set(['k', 'p'])
+
 /**
- * xterm custom key handler body: returns ``false`` when the key was handled
- * here and xterm must not process it.
+ * xterm custom key handler body: returns ``false`` when xterm must not
+ * process the key. The event is left unclaimed so the app shortcut runs.
  */
-export function routeTerminalKey(event: KeyboardEvent, os: OS, clear: () => void): boolean {
-  if (event.type !== 'keydown' || !isPrimaryModifierOS(os)) return true
-  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return true
-  const key = event.key.toLowerCase()
-  if (key === 'k') {
-    event.preventDefault()
-    event.stopPropagation()
-    clear()
-    return false
-  }
-  if (key === 'f') {
-    event.preventDefault()
-    event.stopPropagation()
-    return false
-  }
-  return true
+export function routeTerminalKey(event: KeyboardEvent, os: OS): boolean {
+  if (event.type !== 'keydown' || isPrimaryModifierOS(os)) return true
+  if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return true
+  return !APP_KEYS_OVER_SHELL.has(event.key.toLowerCase())
 }

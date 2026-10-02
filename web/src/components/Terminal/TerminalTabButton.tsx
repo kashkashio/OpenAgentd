@@ -2,15 +2,15 @@
  * TerminalTabButton — tab chip for a terminal session in
  * WorkspacePanel (terminal needs an attached workspace).
  *
- * Desktop: right-click opens a small menu (Rename / Close).
+ * Desktop: right-click opens a small menu (Rename / Clear / Close).
  * Mobile: long-press opens the same choice as a bottom sheet — no native
  * context menu on touch, matching the LongPressButton pattern used
  * elsewhere (Sidebar sessions, changed-files, commits).
- * Both funnel into useTerminalStore.rename() / .close().
+ * Both funnel into useTerminalStore.rename() / .clear() / .close().
  */
 
 import { useRef, useState } from 'react'
-import { Pencil, TerminalSquare, X } from 'lucide-react'
+import { Eraser, Pencil, TerminalSquare, X } from 'lucide-react'
 
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -134,6 +134,18 @@ export function TerminalTabButton({
           <button
             type="button"
             role="menuitem"
+            className={CONTEXT_MENU_ITEM_CLASS}
+            onClick={() => {
+              setDesktopMenuAt(null)
+              useTerminalStore.getState().clear(meta.id)
+            }}
+          >
+            <Eraser size={12} aria-hidden="true" />
+            Clear
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             className={CONTEXT_MENU_ITEM_DANGER_CLASS}
             onClick={() => {
               setDesktopMenuAt(null)
@@ -162,6 +174,18 @@ export function TerminalTabButton({
             >
               <Pencil size={14} aria-hidden="true" />
               Rename
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className="justify-start"
+              onClick={() => {
+                setMobileSheetOpen(false)
+                useTerminalStore.getState().clear(meta.id)
+              }}
+            >
+              <Eraser size={14} aria-hidden="true" />
+              Clear terminal
             </Button>
             <Button
               type="button"

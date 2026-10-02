@@ -58,9 +58,9 @@ export function createXterm(options: {
   // and the prompt visually smears / misaligns on redraw.
   term.loadAddon(new Unicode11Addon())
   term.unicode.activeVersion = '11'
-  // ⌘K clears and ⌘F stays in the terminal instead of firing app shortcuts.
+  // Ctrl+K / Ctrl+P skip the shell on Windows/Linux so the palette still opens.
   const { os } = getPlatform()
-  term.attachCustomKeyEventHandler((event) => routeTerminalKey(event, os, () => term.clear()))
+  term.attachCustomKeyEventHandler((event) => routeTerminalKey(event, os))
 
   let webglAddon: WebglAddon | null = null
 

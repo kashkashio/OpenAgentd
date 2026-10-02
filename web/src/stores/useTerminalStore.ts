@@ -99,6 +99,8 @@ interface TerminalStore {
   setInputTransform: (id: string, transform: (data: string) => string) => void
   /** User-driven rename (desktop right-click / mobile long-press). Blank is a no-op. */
   rename: (id: string, title: string) => void
+  /** Clear the scrollback, keeping the prompt line (the tab menu's Clear). */
+  clear: (id: string) => void
   /** Swap every live terminal's palette when the app theme resolves anew. */
   syncTheme: (theme: TerminalResolvedTheme) => void
   /** Swap every live terminal's font stack when the stored preference changes. */
@@ -324,6 +326,10 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       if (!meta) return {}
       return { sessions: { ...state.sessions, [id]: { ...meta, title: trimmed } } }
     })
+  },
+
+  clear: (id) => {
+    runtimes.get(id)?.handle?.term.clear()
   },
 
   syncTheme: (theme) => {
