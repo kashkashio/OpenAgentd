@@ -6,14 +6,12 @@
  * Leaving a session scrolled up and coming back restores where you were;
  * a session left at the bottom keeps following.
  */
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { act, cleanup, render } from '@testing-library/react'
 import { AgentView } from '@/components/AgentView'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { _resetScrollMemoryForTests } from '@/hooks/useAutoFollowScroll'
 import type { ContentBlock } from '@/api/types'
-
-mock.module('lucide-react', () => new Proxy({}, { get: () => () => null }))
 
 beforeEach(() => {
   _resetScrollMemoryForTests()

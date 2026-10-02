@@ -10,6 +10,7 @@ import { DesignFeedbackCard } from '../DesignFeedbackViews'
 import { splitDesignFeedback } from '@/lib/design-feedback'
 import { resolveApiUrl } from '@/api/client'
 import { openExternalUrl } from '@/lib/open-external'
+import { copyText, useChatMenu } from '../ChatContextMenu'
 import { formatTime, formatFullDateTime, shortModelName } from '@/utils/format'
 import type { MessageAttachment } from '@/api/types'
 import { cn } from '@/lib/utils'
@@ -209,6 +210,10 @@ export const UserBubble = memo(function UserBubble({ content, timestamp, attachm
   const [expanded, setExpanded] = useState(false)
   const [reportExpanded, setReportExpanded] = useState(false)
   const modelName = shortModelName(modelId)
+  const chatMenu = useChatMenu(fromAgent ? `Actions for ${fromAgent} report` : 'Actions for message', () => [
+    { label: 'Copy', run: () => copyText(content) },
+    ...(onEdit && !fromAgent ? [{ label: 'Edit', run: onEdit }] : []),
+  ])
 
   const handleCopy = async () => {
     try {
@@ -239,7 +244,10 @@ export const UserBubble = memo(function UserBubble({ content, timestamp, attachm
         className="group mb-3 flex justify-start"
         onMouseEnter={() => setShowTime(true)}
         onMouseLeave={() => setShowTime(false)}
+        onContextMenu={chatMenu.onContextMenu}
+        onKeyDown={chatMenu.onKeyDown}
       >
+        {chatMenu.menu}
         <div className="flex max-w-full flex-col items-start gap-1.5 md:max-w-[85%]">
           <div className="flex items-center gap-1.5 px-0.5 text-xs text-(--color-text-muted)">
             <span className="rounded bg-(--bg-key)/70 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-(--color-text)">
@@ -300,7 +308,10 @@ export const UserBubble = memo(function UserBubble({ content, timestamp, attachm
       className="group mb-3 flex justify-end"
       onMouseEnter={() => setShowTime(true)}
       onMouseLeave={() => setShowTime(false)}
+      onContextMenu={chatMenu.onContextMenu}
+      onKeyDown={chatMenu.onKeyDown}
     >
+      {chatMenu.menu}
       <div className="flex max-w-full flex-col items-end gap-1.5 md:max-w-[78%]">
          {/* Attachments */}
          {visibleAttachments.length > 0 && (

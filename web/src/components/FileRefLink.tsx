@@ -9,6 +9,8 @@
 import { createContext, useContext, useMemo, type AnchorHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react'
 
 import { findFileRefs, parseFileHref, parseFileRef, type FileRef } from '@/utils/file-refs'
+import { openExternalUrl } from '@/lib/open-external'
+import { copyText, useChatMenu } from './ChatContextMenu'
 import type { ChangedFileStatus } from './WorkspacePanel/diff-helpers'
 
 export interface FileRefOpener {
@@ -64,10 +66,23 @@ export function FileRefCode({ children, ...props }: HTMLAttributes<HTMLElement> 
 export function MarkdownLink({ children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
   const opener = useContext(FileRefContext)
   const fileRef = opener && typeof props.href === 'string' ? parseFileHref(props.href) : null
+  const href = typeof props.href === 'string' ? props.href : ''
+  const opensFile = Boolean(opener && fileRef && opener.canOpen(fileRef))
+  const chatMenu = useChatMenu(`Actions for link ${href}`, () => href
+    ? [
+        { label: 'Open link', run: () => (opensFile && opener && fileRef ? opener.open(fileRef) : void openExternalUrl(href)) },
+        { label: 'Copy link', run: () => copyText(href) },
+      ]
+    : [])
   // The link is the control; a file-named code span inside it stays text.
   const content = <FileRefContext.Provider value={null}>{children}</FileRefContext.Provider>
-  if (!opener || !fileRef || !opener.canOpen(fileRef)) {
-    return <a {...props} target="_blank" rel="noopener noreferrer">{content}</a>
+  if (!opensFile || !opener || !fileRef) {
+    return (
+      <a {...props} target="_blank" rel="noopener noreferrer" onContextMenu={chatMenu.onContextMenu} onKeyDown={chatMenu.onKeyDown}>
+        {content}
+        {chatMenu.menu}
+      </a>
+    )
   }
   return (
     <a
@@ -77,8 +92,11 @@ export function MarkdownLink({ children, ...props }: AnchorHTMLAttributes<HTMLAn
         event.preventDefault()
         opener.open(fileRef)
       }}
+      onContextMenu={chatMenu.onContextMenu}
+      onKeyDown={chatMenu.onKeyDown}
     >
       {content}
+      {chatMenu.menu}
     </a>
   )
 }

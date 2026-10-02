@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { copyText, useChatMenu } from './ChatContextMenu'
 
 interface CodeBlockProps {
   children: React.ReactNode
@@ -11,6 +12,9 @@ interface CodeBlockProps {
 
 export function CodeBlock({ children, language, rawText, noHeader = false }: CodeBlockProps) {
   const [copied, setCopied] = useState(false)
+  const chatMenu = useChatMenu(language ? `Actions for ${language} code` : 'Actions for code', () => [
+    { label: 'Copy code', run: () => copyText(rawText) },
+  ])
 
   const handleCopy = async () => {
     try {
@@ -46,14 +50,19 @@ export function CodeBlock({ children, language, rawText, noHeader = false }: Cod
 
   if (noHeader) {
     return (
-      <pre className="overflow-auto px-3 py-2.5 font-mono text-[13px] leading-relaxed text-(--color-text)">
+      <pre onContextMenu={chatMenu.onContextMenu} onKeyDown={chatMenu.onKeyDown} className="overflow-auto px-3 py-2.5 font-mono text-[13px] leading-relaxed text-(--color-text)">
         <code>{children}</code>
+        {chatMenu.menu}
       </pre>
     )
   }
 
   return (
-    <div className="surface-raised group relative my-1.5 overflow-hidden border border-(--color-border) bg-(--bg-card)">
+    <div
+      onContextMenu={chatMenu.onContextMenu}
+      onKeyDown={chatMenu.onKeyDown}
+      className="surface-raised group relative my-1.5 overflow-hidden border border-(--color-border) bg-(--bg-card)"
+    >
       {language ? (
         <div className="flex items-center justify-between gap-3 border-b border-(--color-border) bg-(--bg-key) py-0.5 pr-1.5 pl-3">
           <span className="font-mono text-xs md:text-[10px] font-semibold uppercase tracking-wider text-(--color-text-muted)">
@@ -67,6 +76,7 @@ export function CodeBlock({ children, language, rawText, noHeader = false }: Cod
       <pre className="overflow-auto px-3 py-2.5 font-mono text-[13px] leading-relaxed text-(--color-text)">
         <code>{children}</code>
       </pre>
+      {chatMenu.menu}
     </div>
   )
 }

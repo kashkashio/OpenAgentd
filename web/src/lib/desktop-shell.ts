@@ -32,7 +32,8 @@ function isEditable(target: EventTarget | null): boolean {
   return target.closest('input, textarea, select, [contenteditable="true"]') !== null
 }
 
-function hasTextSelection(): boolean {
+/** The user has selected text: the native menu (Copy, Look Up) wins. */
+export function hasTextSelection(): boolean {
   const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
   return Boolean(selection && !selection.isCollapsed && selection.toString().trim())
 }

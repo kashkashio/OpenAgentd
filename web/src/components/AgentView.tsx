@@ -41,6 +41,7 @@ import { UserBubble } from './AgentView/UserBubble'
 import { ErrorCard } from './AgentView/ErrorCard'
 import { isDirectUserBlock, PROMPT_JUMP_MARGIN, previousPromptTurn, promptElements, promptJumpTarget, turnIndexOfBlock } from './AgentView/prompt-nav'
 import { FileRefContext, type FileRefOpener } from './FileRefLink'
+import { copyText, useChatMenu } from './ChatContextMenu'
 import { EmptyState } from '@/components/ui/empty-state'
 import { useAutoFollowScroll } from '@/hooks/useAutoFollowScroll'
 import { TranscriptFind } from './AgentView/TranscriptFind'
@@ -409,15 +410,29 @@ const BlockRenderer = memo(function BlockRenderer({ block, isStreaming, sessionI
         )
       }
       return (
-        <div>
-          <MarkdownBlock content={block.content} sessionId={sessionId} isStreaming={isStreaming} />
-        </div>
+        <AssistantText content={block.content} sessionId={sessionId} isStreaming={isStreaming} />
       )
     }
     default:
       return null
   }
 })
+
+/** An assistant message, with Copy response / Copy as Markdown on its menu. */
+function AssistantText({ content, sessionId, isStreaming }: { content: string; sessionId?: string; isStreaming: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chatMenu = useChatMenu('Actions for response', () => [
+    // As rendered: no Markdown syntax.
+    { label: 'Copy response', run: () => copyText((ref.current?.innerText || ref.current?.textContent || content).trim()) },
+    { label: 'Copy as Markdown', run: () => copyText(content) },
+  ])
+  return (
+    <div ref={ref} onContextMenu={chatMenu.onContextMenu} onKeyDown={chatMenu.onKeyDown}>
+      <MarkdownBlock content={content} sessionId={sessionId} isStreaming={isStreaming} />
+      {chatMenu.menu}
+    </div>
+  )
+}
 
 export function AgentView({
   blocks,
