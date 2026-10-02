@@ -65,18 +65,39 @@ describe('TerminalTabButton', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
-  it('renaming via the desktop menu updates the store title', async () => {
+  it('Rename in the desktop menu edits the title in place, without a dialog', async () => {
     const { id } = await setup()
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Terminal 1' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: /Rename/ }))
 
     const input = await screen.findByLabelText('Terminal name')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).toBe(input)
+    expect(screen.queryByRole('button', { name: 'Terminal 1' })).toBeNull()
     fireEvent.change(input, { target: { value: 'Build watcher' } })
-    fireEvent.submit(input.closest('form')!)
+    fireEvent.keyDown(input, { key: 'Enter' })
 
-    await waitFor(() =>
-      expect(useTerminalStore.getState().sessions[id]?.title).toBe('Build watcher'),
-    )
+    expect(useTerminalStore.getState().sessions[id]?.title).toBe('Build watcher')
+    expect(screen.queryByLabelText('Terminal name')).toBeNull()
+    // The harness passes ``meta`` once, so the tab button comes back with
+    // the old label; the dock re-renders it from the store.
+    expect(screen.getByRole('button', { name: 'Terminal 1' })).toBeTruthy()
+  })
+
+  it('F2 or a double-click on the tab starts renaming; Escape keeps the old title', async () => {
+    const { id } = await setup()
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Terminal 1' }), { key: 'F2' })
+    let input = await screen.findByLabelText('Terminal name')
+    fireEvent.change(input, { target: { value: 'Nope' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(useTerminalStore.getState().sessions[id]?.title).toBe('Terminal 1')
+    expect(screen.queryByLabelText('Terminal name')).toBeNull()
+
+    fireEvent.doubleClick(screen.getByRole('button', { name: 'Terminal 1' }))
+    input = await screen.findByLabelText('Terminal name')
+    fireEvent.change(input, { target: { value: 'Server' } })
+    fireEvent.blur(input)
+    expect(useTerminalStore.getState().sessions[id]?.title).toBe('Server')
   })
 
   it('closing via the desktop menu closes the session', async () => {
@@ -104,7 +125,7 @@ describe('TerminalTabButton', () => {
 
     const input = await screen.findByLabelText('Terminal name')
     fireEvent.change(input, { target: { value: 'Logs' } })
-    fireEvent.submit(input.closest('form')!)
+    fireEvent.keyDown(input, { key: 'Enter' })
 
     await waitFor(() => expect(useTerminalStore.getState().sessions[id]?.title).toBe('Logs'))
   })

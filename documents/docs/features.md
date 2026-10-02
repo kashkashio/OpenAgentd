@@ -1143,6 +1143,9 @@ agent against it.
   Windows/Linux `Ctrl+K` and `Ctrl+P` skip the shell to open the palette and
   quick open. **Clear** in the terminal tab's menu clears the scrollback
   `[v3.5.0]`.
+  **Rename** edits the tab's title in place instead of opening a dialog;
+  `F2` or a double-click on the tab starts it, Enter or clicking away saves
+  and Escape cancels `[v3.5.1]`.
   `⌘W` on a terminal whose shell is still running asks before closing it; the
   tab's close button still closes right away `[v3.3.0]`, unless a command is
   running in it, which asks first too `[v3.5.0]`.
