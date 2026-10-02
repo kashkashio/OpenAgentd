@@ -95,7 +95,7 @@ function RemoveButton({ onRemove, label = 'Remove file' }: { onRemove: () => voi
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onRemove() }}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-(--color-border) bg-(--bg-card) text-(--color-text-muted) shadow-sm opacity-100 transition-colors hover:border-(--color-border-strong) hover:text-(--color-text) md:h-4 md:w-4 md:opacity-0 md:group-hover:opacity-100"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-(--color-border) bg-(--bg-card) text-(--color-text-muted) shadow-sm opacity-100 transition-colors hover:border-(--color-border-strong) hover:text-(--color-text) md:h-4 md:w-4 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
             aria-label={label}
           >
             <X size={12} className="md:h-2.5 md:w-2.5" />

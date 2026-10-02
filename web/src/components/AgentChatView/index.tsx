@@ -34,7 +34,7 @@ import { useUIStore } from '@/stores/useUIStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useMarkSessionRead } from '@/stores/useUnreadStore'
 import { useElementWidthSelect } from '@/hooks/use-element-width'
-import { useReturnFocusFromDock } from '@/hooks/use-dock-focus'
+import { isFocusStranded, useReturnFocusFromDock, useStrandedFocusGuard } from '@/hooks/use-dock-focus'
 import { dockOverlaysChat } from '@/lib/workbench-layout'
 import { isLocalBackend, lastPreviewUrl } from '@/api/preview'
 import { OPEN_PREVIEW_EVENT, isPreviewTarget } from '../Preview/preview-events'
@@ -181,7 +181,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
   const inputRef = useRef<InputComposerHandle>(null)
   const mainColumnRef = useRef<HTMLDivElement>(null)
   // Handing focus back from the dock must not summon a collapsed composer.
-  const returnFocusToComposer = useCallback(() => inputRef.current?.focus({ expand: false }), [])
+  const returnFocusToComposer = useCallback(() => inputRef.current?.focus?.({ expand: false }), [])
 
   const [fileRefsEnabled, setFileRefsEnabled] = useState(false)
   const [isSwitchingInteractionMode, setIsSwitchingInteractionMode] = useState(false)
@@ -543,6 +543,13 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     isInDock: isInReviewDock,
     onReturn: returnFocusToComposer,
   })
+  // A desktop app always has a focused control: never leave focus on
+  // <body>, and start in the composer once a session is on screen.
+  useStrandedFocusGuard(!isMobile, returnFocusToComposer)
+  useEffect(() => {
+    if (isMobile || isSessionLoading || typeof document === 'undefined') return
+    if (document.hasFocus() && isFocusStranded()) returnFocusToComposer()
+  }, [isMobile, isSessionLoading, sessionIdState, returnFocusToComposer])
 
   const handleRetry = useCallback(() => {
     if (effectiveWorkspace) void retryLatestPrompt(effectiveWorkspace)

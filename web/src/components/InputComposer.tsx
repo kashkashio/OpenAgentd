@@ -513,7 +513,18 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
   useEffect(() => {
     const wasMinimized = prevMinimizedRef.current
     prevMinimizedRef.current = minimized
-    if (!wasMinimized || minimized) return
+    if (wasMinimized === minimized) return
+    if (minimized) {
+      // Minimizing disables the textarea, and the browser drops its focus
+      // onto <body> without an event (after a send, or Esc). Keep focus in
+      // the composer on the pill instead, so the next Tab, Enter or typed
+      // key starts here rather than at the top of the page.
+      const active = document.activeElement
+      if (active === textareaRef.current || active === document.body || active === null) {
+        expandButtonRef.current?.focus({ preventScroll: true })
+      }
+      return
+    }
     // ``resizeAfterLayout``'s double-rAF lets Framer's spring reach (or get
     // very close to) the bar's final width before scrollHeight is measured.
     return resizeAfterLayout(() => textareaRef.current?.focus())

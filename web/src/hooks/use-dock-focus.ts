@@ -9,6 +9,8 @@
  */
 import { useEffect, useRef } from 'react'
 
+import { layerStack } from '@/lib/keyboard/layers'
+
 /** Focus sits nowhere useful: on ``<body>``, or inside an inert subtree. */
 export function isFocusStranded(): boolean {
   if (typeof document === 'undefined') return false
@@ -66,4 +68,64 @@ export function useReturnFocusFromDock({ open, covered, enabled, isInDock, onRet
     const strandedByDock = previous.covered && isFocusStranded()
     if (leavingDock || strandedByDock) callbacksRef.current.onReturn()
   }, [open, covered, enabled])
+}
+
+/**
+ * Never leave keyboard focus on ``<body>``. A desktop app always has a
+ * focused control; a web page drops focus whenever the focused element
+ * goes away — the composer textarea disabling itself after a send or Esc,
+ * a deleted row, a closed popover — and the next Tab then restarts at the
+ * top of the page. When that happens, ``restore`` puts focus back (the
+ * composer, without expanding it).
+ *
+ * Browsers drop focus without an event when the focused element is
+ * disabled or removed, so the guard checks twice: after a ``focusout``
+ * that leads nowhere, and on a Tab press that starts from ``<body>`` — the
+ * moment a stranded focus would otherwise send Tab to the top of the page.
+ *
+ * Left alone: a dialog or overlay owns focus (it restores its own), the
+ * window lost focus to another app, and a ``focusout`` caused by a pointer
+ * press (a click on plain text or empty space; Tab from there still lands
+ * on the composer).
+ */
+export function useStrandedFocusGuard(enabled: boolean, restore: () => void) {
+  const restoreRef = useRef(restore)
+  useEffect(() => {
+    restoreRef.current = restore
+  })
+  useEffect(() => {
+    if (!enabled) return undefined
+    let frame: number | null = null
+    let pointerAt = Number.NEGATIVE_INFINITY
+    const stranded = () => document.hasFocus() && isFocusStranded()
+      && !layerStack().some((layer) => layer.kind !== 'transient')
+    const check = () => {
+      frame = null
+      if (stranded()) restoreRef.current()
+    }
+    const onPointerDown = () => {
+      pointerAt = performance.now()
+    }
+    const onFocusOut = (event: FocusEvent) => {
+      if (event.relatedTarget !== null || performance.now() - pointerAt < 400) return
+      if (frame === null) frame = requestAnimationFrame(check)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return
+      if (!stranded()) return
+      restoreRef.current()
+      // The composer can be inert too (under a covering dock): then let Tab
+      // run its native course rather than swallowing it.
+      if (!isFocusStranded()) event.preventDefault()
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('focusout', onFocusOut)
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('focusout', onFocusOut)
+      document.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [enabled])
 }

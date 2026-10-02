@@ -946,6 +946,14 @@ describe('Sidebar workspace trust flow', () => {
     expect(JSON.parse(sidebar?.getAttribute('data-transition') ?? '{}')).toMatchObject({ duration: 0.22 })
   })
 
+  it('keeps a collapsed sidebar out of Tab order', async () => {
+    const collapsed = await renderSidebarWithProps({ desktopCollapsed: true })
+    expect(collapsed.container.querySelector('aside')?.hasAttribute('inert')).toBe(true)
+    collapsed.unmount()
+    const open = await renderSidebarWithProps({ desktopCollapsed: false })
+    expect(open.container.querySelector('aside')?.hasAttribute('inert')).toBe(false)
+  })
+
   it('re-clamps the resize bounds when the window shrinks, not only on the next unrelated render', async () => {
     const originalWidth = window.innerWidth
     try {
