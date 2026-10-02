@@ -859,6 +859,10 @@ agent against it.
     hides the dock; the header's review-dock button shows and hides it. On
     phones with a workspace, scheduled tasks open as a tab in the review sheet
     too, while the task list stays a popover so the chat remains visible.
+    Hiding the dock keeps it as it was: reopening shows the same tabs with the
+    last active one focused (not the Git tab), and preview pages, their unsent
+    comments and scroll positions are still there, for as long as the app
+    stays open `[v3.5.0]`.
   - **Web preview and design comments in the dock** `[v3.3.0]` — **New
     preview** in the dock's actions, **Open Preview** in the palette, or the
     globe on an HTML file tab opens a **Preview** tab. It shows a local dev
@@ -1082,8 +1086,11 @@ agent against it.
   soft-keyboard focus preservation, quick symbol row).
   Terminal font defaults to a best-guess Nerd Font stack
   (MesloLGS NF and similar) for correct Powerlevel10k/Starship glyph rendering.
-  On macOS a focused terminal keeps `⌘K` (clears it, as in Terminal.app) and
-  `⌘F` instead of opening the palette or transcript find `[v3.0.0]`.
+  App shortcuts work from a focused terminal: on macOS every `⌘` shortcut,
+  including `⌘K` for the palette and `⌘F` for transcript find, and on
+  Windows/Linux `Ctrl+K` and `Ctrl+P` skip the shell to open the palette and
+  quick open. **Clear** in the terminal tab's menu clears the scrollback
+  `[v3.5.0]`.
   `⌘W` on a terminal whose shell is still running asks before closing it; the
   tab's close button still closes right away `[v3.3.0]`.
 - **Workspace status card** `[v1.18.0]` — empty coding sessions show the
