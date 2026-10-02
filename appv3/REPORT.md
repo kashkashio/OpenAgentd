@@ -292,6 +292,16 @@ explicitly.
     appends the same transition note. v2 copies the lead's mode only when
     the member is spawned, so a member spawned in Code mode keeps edit
     access after the lead enters Plan mode, where `delegate` is allowed.
+  - *Terminals running a command* (`terminal/src/lib.rs`,
+    `api/src/routes/terminal.rs`). `TerminalSession::busy` is true while
+    the PTY's foreground process group is not the shell's own, that is,
+    while a command runs. The idle reaper skips busy sessions, so a quiet
+    dev server or build is not killed after 30 minutes. The terminal
+    WebSocket sends a new `{"type": "busy", "busy": bool}` frame when this
+    changes (checked every 500 ms). The web client then skips its own idle
+    close and asks before the tab's close button closes the terminal.
+    Windows has no foreground process group, so it never sends the frame.
+    v2 has neither.
 - **Version:** the workspace `Cargo.toml` version is the release version
   (from 3.0.0 on; `scripts/bump_version.sh` sets it and
   `scripts/check_version_consistency.sh` holds every other release-facing

@@ -10,7 +10,8 @@ use tokio::sync::mpsc;
 
 /// Hard cap on simultaneously open PTY sessions (`MAX_SESSIONS`).
 pub const MAX_SESSIONS: usize = 8;
-/// Idle sessions are reaped after this long (`IDLE_TIMEOUT_SECONDS`).
+/// Idle sessions are reaped after this long (`IDLE_TIMEOUT_SECONDS`), unless
+/// a command is still running in them ([`TerminalSession::busy`]).
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const READ_CHUNK: usize = 65536;
 const READ_QUEUE: usize = 64;
@@ -108,6 +109,20 @@ impl TerminalSession {
 
     pub fn alive(&self) -> bool {
         !self.closed.load(std::sync::atomic::Ordering::SeqCst) && !self.eof.load(std::sync::atomic::Ordering::SeqCst) && self.process_alive()
+    }
+
+    /// True while a command runs in the shell: the PTY's foreground process
+    /// group is no longer the shell's own (job control hands the terminal to
+    /// each command it runs). Windows has no such signal and reads false.
+    pub fn busy(&self) -> bool {
+        #[cfg(unix)]
+        {
+            let Some(pid) = self.pid else { return false };
+            let foreground = self.master.lock().unwrap().as_ref().and_then(|m| m.process_group_leader());
+            matches!(foreground, Some(pg) if i64::from(pg) != i64::from(pid))
+        }
+        #[cfg(not(unix))]
+        false
     }
 
     /// SIGHUP the process group, grace period, then SIGKILL; release the PTY.
@@ -232,7 +247,8 @@ fn ensure_reaper() {
             tokio::time::sleep(tick).await;
             let all: Vec<Arc<TerminalSession>> = sessions().lock().unwrap().values().cloned().collect();
             for s in all {
-                if s.idle_for() > IDLE_TIMEOUT || !s.alive() {
+                // A running command keeps its session, however quiet it is.
+                if !s.alive() || (s.idle_for() > IDLE_TIMEOUT && !s.busy()) {
                     tracing::info!("terminal_session_reaped session_id={} idle_s={:.0}", s.session_id, s.idle_for().as_secs_f64());
                     s.close().await;
                 }
@@ -290,7 +306,41 @@ mod tests {
         }
         assert!(out.contains("oad_term_42"), "{out:?}");
         assert!(!out.contains("oad-leak-canary"), "desktop token leaked into the terminal: {out:?}");
+        // The prompt is idle: no command in the foreground.
+        assert!(!s.busy(), "idle shell read as busy");
         s.close().await;
         assert!(get_session(&s.session_id).is_none());
+
+        // A running command makes the session busy; it reads idle again once
+        // the command finishes. Windows has no foreground process group.
+        #[cfg(unix)]
+        {
+            let s = create_session(&d.display().to_string(), 24, 80).unwrap();
+            let output = drain(&s);
+            s.write(b"sleep 1\n".to_vec()).await.unwrap();
+            assert!(wait_for(|| s.busy()).await, "running command not reported busy");
+            assert!(wait_for(|| !s.busy()).await, "finished command still reported busy");
+            s.close().await;
+            output.abort();
+        }
+    }
+
+    /// Keep reading output so the shell never blocks on a full PTY.
+    #[cfg(unix)]
+    fn drain(s: &Arc<TerminalSession>) -> tokio::task::JoinHandle<()> {
+        let s = s.clone();
+        tokio::spawn(async move { while s.read().await.is_some() {} })
+    }
+
+    #[cfg(unix)]
+    async fn wait_for(cond: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
     }
 }
