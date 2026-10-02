@@ -11,6 +11,11 @@
  *
  * Tab state lives in ``useDockTabs`` and Git write actions in
  * ``useGitActions``; this component owns the queries and the layout.
+ *
+ * Once opened, the shell keeps the dock mounted: closing it (``open``
+ * false) tweens it shut and then parks it hidden and inert, so its tabs,
+ * the last active tab, preview pages and their unsent comments, and scroll
+ * positions are all there when it reopens. Queries pause while it is closed.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
@@ -96,6 +101,8 @@ const EMPTY_TODOS: TodoItem[] = []
 const DEFAULT_PREVIEW_URL = 'http://localhost:5173'
 /** Stable empty ref: with no center element the width falls back to the viewport. */
 const NO_CENTER: React.RefObject<HTMLElement | null> = { current: null }
+/** A closed dock parks (hidden, inert) once its close tween (0.22 s) is done. */
+const PARK_AFTER_MS = 260
 
 function parseGraph(graph: string): ParsedGraphLine[] {
   if (!graph) return []
@@ -219,6 +226,7 @@ export function WorkspacePanel({
     cancelCloseTab,
   } = useDockTabs({
     workspace,
+    open,
     chatWorkspace,
     onFileSelect,
     terminalOpenKey,
@@ -240,6 +248,17 @@ export function WorkspacePanel({
   const commitsScrollRef = useRef<HTMLDivElement>(null)
   const pendingScrollShaRef = useRef<string | null>(null)
   const handledFileOpenKeyRef = useRef(-1)
+  // Closed and done animating: hidden and inert until it opens again. Not
+  // inert at once, so the shell can still see focus inside it and return it.
+  const [parked, setParked] = useState(false)
+  useEffect(() => {
+    if (open) {
+      setParked(false)
+      return
+    }
+    const timer = window.setTimeout(() => setParked(true), PARK_AFTER_MS)
+    return () => window.clearTimeout(timer)
+  }, [open])
 
   // ── Geometry ───────────────────────────────────────────────────────────────
   const dockRatio = useLayoutStore((s) => s.dockRatio)
@@ -255,25 +274,29 @@ export function WorkspacePanel({
     edge: 'left' as const,
     onCommit: (width: number) => useLayoutStore.getState().setDockRatio(ratioFromWidth(width, center)),
     onReset: () => useLayoutStore.getState().resetDockRatio(),
-    disabled: mobile || overlay,
+    disabled: mobile || overlay || !open,
     label: 'Resize review dock',
   }
   // Desktop always animates width (instantly while dragging or under reduced
-  // motion) so the aside is sized even when motion is off.
+  // motion) so the aside is sized even when motion is off. Closed, it tweens
+  // to nothing while the body keeps its open width (clipped, not reflowed).
   const dockMotion = ({ width, isResizing }: LiveWidth) => ({
-    animate: !mobile
-      ? { width: overlay ? layout.width : width }
-      : prefersReducedMotion
-        ? { opacity: 1 }
-        : mobileDragOffset !== null ? { opacity: 1, x: mobileDragOffset } : { opacity: 1, x: 0 },
+    animate: !open
+      ? (mobile ? { opacity: 0 } : { width: 0 })
+      : !mobile
+        ? { width: overlay ? layout.width : width }
+        : prefersReducedMotion
+          ? { opacity: 1 }
+          : mobileDragOffset !== null ? { opacity: 1, x: mobileDragOffset } : { opacity: 1, x: 0 },
     transition: mobile && mobileDragOffset !== null
       ? { duration: 0 }
       : { duration: isResizing || prefersReducedMotion ? 0.01 : 0.22, ease: EASINGS.inOut },
+    pinWidth: !open && !mobile ? (overlay ? layout.width : width) : undefined,
   })
   // The toggle is meaningless while a narrow window already forces overlay.
   const maximizeState = mobile || (overlay && !dockMaximized) ? null : dockMaximized
   // Covering the chat makes it inert, which drops its focus onto <body>.
-  useClaimStrandedFocus(overlay, activeTabId, () => tabButtonRefs.current.get(activeTabId) ?? null)
+  useClaimStrandedFocus(open && overlay, activeTabId, () => tabButtonRefs.current.get(activeTabId) ?? null)
 
   // ── Server state ──────────────────────────────────────────────────────────
   const files = useQuery({
@@ -478,8 +501,6 @@ export function WorkspacePanel({
     },
   })
 
-  if (!open) return null
-
   const reviewView = (
     <div className="flex h-full min-h-0 flex-col">
       {diff.data?.is_git_repo && (
@@ -566,10 +587,12 @@ export function WorkspacePanel({
           ? 'md:absolute md:inset-y-0 md:right-0 md:z-20'
           : 'md:relative md:inset-y-auto md:right-auto md:z-auto md:shrink-0',
         mobile ? 'mobile-safe-top max-w-none' : 'h-full',
+        !open && 'pointer-events-none',
+        parked && 'invisible',
       )}
     >
-      <div data-review-dock className="relative flex h-full min-h-0 w-full flex-col">
-        {!mobile && !overlay && <PanelResizeHandle edge="left" />}
+      <div data-review-dock data-dock-parked={parked || undefined} inert={parked} className="relative flex h-full min-h-0 w-full flex-col">
+        {!mobile && !overlay && open && <PanelResizeHandle edge="left" />}
         <DockTabBar
           tabs={visibleTabs}
           activeTabId={activeTabId}
@@ -601,7 +624,7 @@ export function WorkspacePanel({
                 onPreviewId={handlePreviewId}
                 onSendComments={onSendPreviewComments}
                 onOpenTarget={openPreviewTarget}
-                active={activeTab?.id === tab.id}
+                active={open && activeTab?.id === tab.id}
                 onRequestClose={closeTab}
               />
             </div>
@@ -620,7 +643,9 @@ export function WorkspacePanel({
           ) : activeTab?.type === 'commit' ? (
             <CommitTabView key={activeTab.id} workspace={workspace} commit={activeTab.commit} />
           ) : activeTab?.type === 'terminal' ? (
-            <TerminalSubPanel key={activeTab.termId} termId={activeTab.termId} workspace={workspace} />
+            // Unmounted while closed: the session lives in the terminal store,
+            // and a hidden terminal detaches so the idle reaper can close it.
+            open ? <TerminalSubPanel key={activeTab.termId} termId={activeTab.termId} workspace={workspace} /> : null
           ) : activeTab?.type === 'tasks' ? (
             <TasksTabView todos={todos} sessionId={sessionId} plan={plan} onClearPlan={onClearPlan} onOpenPlan={() => openTab(PLAN_TAB)} />
           ) : activeTab?.type === 'plan' ? (

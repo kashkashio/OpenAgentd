@@ -47,6 +47,8 @@ function withTab(current: DockTab[], tab: DockTab): DockTab[] {
 
 interface DockTabsOptions {
   workspace: string
+  /** False while the dock is closed (kept mounted, hidden): its keys are off. */
+  open?: boolean
   chatWorkspace: boolean
   onFileSelect?: (file: WorkspaceFileInfo | null) => void
   terminalOpenKey: number
@@ -64,6 +66,7 @@ interface DockTabsOptions {
 
 export function useDockTabs({
   workspace,
+  open = true,
   chatWorkspace,
   onFileSelect,
   terminalOpenKey,
@@ -274,7 +277,7 @@ export function useDockTabs({
     }
     closeTab(activeTabId)
   }, {
-    enabled: activeTab !== undefined && activeTab.id === activeTabId && activeTab.type !== 'review',
+    enabled: open && activeTab !== undefined && activeTab.id === activeTabId && activeTab.type !== 'review',
   })
   const confirmCloseTab = () => {
     if (confirmCloseTabId) closeTab(confirmCloseTabId)

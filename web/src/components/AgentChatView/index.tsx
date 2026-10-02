@@ -528,6 +528,11 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
   const centerRef = useRef<HTMLDivElement>(null)
   const centerTooNarrow = useElementWidthSelect(centerRef, isCenterTooNarrow)
   const dockMaximized = useLayoutStore((s) => s.dockMaximized)
+  // After its first open the dock stays mounted, closed or not, so its tabs
+  // and their live content (preview pages, unsent comments) survive a close.
+  const dockOpen = workspacePanel !== null
+  const [dockKept, setDockKept] = useState(dockOpen)
+  if (dockOpen && !dockKept) setDockKept(true)
   const chatCoveredByDock = !isMobile && Boolean(workspace) && workspacePanel !== null && (dockMaximized || centerTooNarrow)
   // The dock claims focus while it covers the chat; give it back when it
   // closes or uncovers the chat so it is never left on <body>.
@@ -793,11 +798,11 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
             or an overlay across it when maximized / the window is narrow.
             Mobile: fixed full-screen overlay from the right. */}
         <AnimatePresence initial={false}>
-          {workspace && workspacePanel !== null && (
+          {workspace && (dockOpen || dockKept) && (
             <WorkspacePanel
               key="review-dock"
               workspace={workspace}
-              open
+              open={dockOpen}
               chatWorkspace={isChatWorkspace}
               mobile={isMobile}
               mobileDragOffset={workspacePanelDragOffset}

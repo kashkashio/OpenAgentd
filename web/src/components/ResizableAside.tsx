@@ -31,7 +31,8 @@ export interface LiveWidth {
 interface ResizableAsideProps
   extends Omit<ComponentProps<typeof motion.aside>, 'animate' | 'transition' | 'children'> {
   resize: PanelResizeOptions
-  getMotion: (live: LiveWidth) => { animate: TargetAndTransition; transition: Transition }
+  /** ``pinWidth`` overrides the pinned body width (a closing panel keeps its open width). */
+  getMotion: (live: LiveWidth) => { animate: TargetAndTransition; transition: Transition; pinWidth?: number }
   /** Lay the children out at the target width rather than the tweening one. */
   pinContentWidth?: boolean
   children: ReactNode
@@ -39,10 +40,10 @@ interface ResizableAsideProps
 
 export function ResizableAside({ resize, getMotion, pinContentWidth = false, children, ...asideProps }: ResizableAsideProps) {
   const state = usePanelResize(resize)
-  const { animate, transition } = getMotion({ width: state.width, isResizing: state.isResizing })
+  const { animate, transition, pinWidth } = getMotion({ width: state.width, isResizing: state.isResizing })
   // Always the same wrapper, so a change of target (mobile has none) never
   // remounts the panel body.
-  const pinnedWidth = typeof animate.width === 'number' ? animate.width : '100%'
+  const pinnedWidth = pinWidth ?? (typeof animate.width === 'number' ? animate.width : '100%')
   return (
     <ResizeContext.Provider value={state}>
       <motion.aside {...asideProps} animate={animate} transition={transition}>
