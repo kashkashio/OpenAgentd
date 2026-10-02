@@ -9,7 +9,7 @@
  * Both funnel into useTerminalStore.rename() / .clear() / .close().
  */
 
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { Eraser, Pencil, TerminalSquare, X } from 'lucide-react'
 
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
@@ -18,6 +18,7 @@ import {
   CONTEXT_MENU_ITEM_CLASS,
   CONTEXT_MENU_ITEM_DANGER_CLASS,
   ContextMenu,
+  ContextMenuSeparator,
 } from '@/components/ui/context-menu'
 import { Input } from '@/components/ui/input'
 import { LongPressButton } from '@/components/ui/long-press-button'
@@ -28,6 +29,7 @@ import {
   dockTabCloseClass,
 } from '@/components/WorkspacePanel/dock-tab-styles'
 import { softHapticFeedback } from '@/lib/haptics'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import { useTerminalStore, type TerminalSessionMeta } from '@/stores/useTerminalStore'
 
@@ -38,6 +40,8 @@ interface TerminalTabButtonProps {
   onActivate: () => void
   className?: string
   buttonRef?: (node: HTMLButtonElement | null) => void
+  /** Tab-strip items (Close Others, …) appended to the desktop menu. */
+  extraMenuItems?: (dismiss: () => void) => ReactNode
 }
 
 export function TerminalTabButton({
@@ -47,6 +51,7 @@ export function TerminalTabButton({
   onActivate,
   className,
   buttonRef,
+  extraMenuItems,
 }: TerminalTabButtonProps) {
   const [desktopMenuAt, setDesktopMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
@@ -89,6 +94,12 @@ export function TerminalTabButton({
                   e.preventDefault()
                   setDesktopMenuAt({ x: e.clientX, y: e.clientY })
                 }}
+                onKeyDown={(e) => {
+                  if (mobile || !isMenuKey(e)) return
+                  e.preventDefault()
+                  const at = menuPointFor(e.currentTarget)
+                  setDesktopMenuAt({ x: at.clientX, y: at.clientY })
+                }}
                 onClick={onActivate}
                 onAuxClick={(e) => {
                   if (mobile || e.button !== 1) return
@@ -107,6 +118,7 @@ export function TerminalTabButton({
         {!mobile && (
           <button
             type="button"
+            data-zone-skip
             onClick={(e) => {
               e.stopPropagation()
               useTerminalStore.getState().close(meta.id)
@@ -155,6 +167,12 @@ export function TerminalTabButton({
             <X size={12} aria-hidden="true" />
             Close
           </button>
+          {extraMenuItems && (
+            <>
+              <ContextMenuSeparator />
+              {extraMenuItems(() => setDesktopMenuAt(null))}
+            </>
+          )}
         </ContextMenu>
       )}
 

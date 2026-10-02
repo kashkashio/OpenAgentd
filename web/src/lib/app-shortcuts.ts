@@ -44,9 +44,29 @@ export const APP_SHORTCUTS = {
   // `` ` `` or `Dead`, which a character match cannot express.
   terminal: { key: '`', code: 'Backquote', shift: true },
   shortcutsHelp: { key: '/', switcher: true },
+  // Dock tabs by position; matched on the digit key so layouts that print
+  // another character there (AZERTY) work too. 9 is the last tab.
+  dockTab1: { key: '1', code: 'Digit1' },
+  dockTab2: { key: '2', code: 'Digit2' },
+  dockTab3: { key: '3', code: 'Digit3' },
+  dockTab4: { key: '4', code: 'Digit4' },
+  dockTab5: { key: '5', code: 'Digit5' },
+  dockTab6: { key: '6', code: 'Digit6' },
+  dockTab7: { key: '7', code: 'Digit7' },
+  dockTab8: { key: '8', code: 'Digit8' },
+  dockTab9: { key: '9', code: 'Digit9' },
 } as const satisfies Record<string, AppShortcut>
 
 export type AppShortcutName = keyof typeof APP_SHORTCUTS
+
+/** ⌘1–⌘9 in order: the dock tab at that position, the last for 9. */
+export const DOCK_TAB_SHORTCUTS = [
+  'dockTab1', 'dockTab2', 'dockTab3', 'dockTab4', 'dockTab5', 'dockTab6', 'dockTab7', 'dockTab8', 'dockTab9',
+] as const satisfies readonly AppShortcutName[]
+
+/** Next / previous dock tab: Control+Tab on every OS (not ⌘Tab, the app switcher). */
+export const NEXT_DOCK_TAB_CHORD: KeyChord = { key: 'Tab', ctrl: true }
+export const PREV_DOCK_TAB_CHORD: KeyChord = { key: 'Tab', ctrl: true, shift: true }
 
 /** The chord the keyboard dispatcher matches for a shortcut. */
 export function chordOf(shortcut: AppShortcut): KeyChord {

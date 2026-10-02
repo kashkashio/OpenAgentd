@@ -13,7 +13,8 @@ import { useShallow } from 'zustand/react/shallow'
 
 import type { GitCommit, WorkspaceFileInfo } from '@/api/types'
 import type { PreviewTarget } from '@/api/preview'
-import { useAppShortcut } from '@/lib/keyboard/hooks'
+import { appShortcut, useAppShortcut, useShortcuts } from '@/lib/keyboard/hooks'
+import { DOCK_TAB_SHORTCUTS, NEXT_DOCK_TAB_CHORD, PREV_DOCK_TAB_CHORD } from '@/lib/app-shortcuts'
 import { useTerminalStore } from '@/stores/useTerminalStore'
 
 import type { ChangedFileInfo } from './diff-helpers'
@@ -62,6 +63,19 @@ interface DockTabsOptions {
   handledPreviewRequestKeyRef?: React.RefObject<number>
   /** Called after a tab leaves the strip (close button, middle-click, Mod+W). */
   onTabClosed?: (tab: DockTab) => void
+  /** Move keyboard focus to a tab's button (after ⌘1–9 / ⌃Tab from the dock). */
+  focusTab?: (id: string) => void
+}
+
+/** A terminal whose shell still runs: closing it asks first. */
+function isRunningTerminal(tab: DockTab | undefined): boolean {
+  if (tab?.type !== 'terminal') return false
+  const status = useTerminalStore.getState().sessions[tab.termId]?.status
+  return status === 'connected' || status === 'connecting'
+}
+
+function focusIsInDock(): boolean {
+  return typeof document !== 'undefined' && document.activeElement?.closest('[data-review-dock]') != null
 }
 
 export function useDockTabs({
@@ -79,6 +93,7 @@ export function useDockTabs({
   previewRequest,
   handledPreviewRequestKeyRef: parentHandledPreviewRequestKeyRef,
   onTabClosed,
+  focusTab,
 }: DockTabsOptions) {
   // Chat workspaces have no Git review tab — the root is not a repository.
   const defaultTabId = chatWorkspace ? '' : REVIEW_TAB_ID
@@ -244,46 +259,95 @@ export function useDockTabs({
     if (!known && !liveTerminal) setActiveTabId(defaultTabId)
   }, [tabs, activeTabId, terminalMetas, defaultTabId, chatWorkspace])
 
-  const closeTab = (id: string) => {
-    if (id === REVIEW_TAB_ID) return
-    const target = tabs.find((item) => item.id === id)
-    if (target?.type === 'terminal') {
-      useTerminalStore.getState().close(target.termId)
+  /** Close several tabs at once (no confirmation; see ``requestCloseTabs``). */
+  const closeTabs = (ids: readonly string[]) => {
+    const closing = new Set(ids.filter((id) => id !== REVIEW_TAB_ID))
+    if (closing.size === 0) return
+    const targets = tabs.filter((item) => closing.has(item.id))
+    for (const target of targets) {
+      if (target.type === 'terminal') useTerminalStore.getState().close(target.termId)
     }
-    setTabs((current) => current.filter((item) => item.id !== id))
-    if (target) onTabClosed?.(target)
-    if (activeTabId === id) {
+    setTabs((current) => current.filter((item) => !closing.has(item.id)))
+    for (const target of targets) onTabClosed?.(target)
+    if (closing.has(activeTabId)) {
       // Editor convention: focus the neighbour on the left, else the right.
-      const index = visibleTabs.findIndex((item) => item.id === id)
-      const neighbour = visibleTabs.filter((item) => item.id !== id)[Math.max(0, index - 1)]
+      const index = visibleTabs.findIndex((item) => item.id === activeTabId)
+      const left = visibleTabs.slice(0, index).reverse().find((item) => !closing.has(item.id))
+      const neighbour = left ?? visibleTabs.slice(index + 1).find((item) => !closing.has(item.id))
       setActiveTabId(neighbour?.id ?? defaultTabId)
       onFileSelect?.(neighbour?.type === 'file' ? neighbour.file : null)
     }
   }
+  const closeTab = (id: string) => closeTabs([id])
 
   // ⌘W on a terminal whose shell is still running asks first: the key is
   // easy to hit while typing in it, and closing stops the shell. The tab's ×
   // button is a deliberate click and closes right away.
-  const [confirmCloseTabId, setConfirmCloseTabId] = useState<string | null>(null)
+  const [confirmCloseIds, setConfirmCloseIds] = useState<string[] | null>(null)
+  /** Close tabs, asking first when that would stop a running shell. */
+  const requestCloseTabs = (ids: readonly string[]) => {
+    if (ids.some((id) => isRunningTerminal(visibleTabs.find((tab) => tab.id === id)))) setConfirmCloseIds([...ids])
+    else closeTabs(ids)
+  }
+  const closableIds = (list: readonly DockTab[]) => list.filter((tab) => tab.type !== 'review').map((tab) => tab.id)
+  /** Tab menu: every other tab. The kept tab becomes the active one. */
+  const closeOtherTabs = (id: string) => {
+    setActiveTabId(id)
+    requestCloseTabs(closableIds(visibleTabs.filter((tab) => tab.id !== id)))
+  }
+  /** Tab menu: the tabs after this one. */
+  const closeTabsToRight = (id: string) => {
+    const index = visibleTabs.findIndex((tab) => tab.id === id)
+    if (index < 0) return
+    if (visibleTabs.slice(index + 1).some((tab) => tab.id === activeTabId)) setActiveTabId(id)
+    requestCloseTabs(closableIds(visibleTabs.slice(index + 1)))
+  }
   // With no closable tab the key is left alone, so the desktop's native
   // Close Window still works; behind a dialog the dispatcher swallows it.
   useAppShortcut('closeTab', () => {
-    if (activeTab?.type === 'terminal') {
-      const status = useTerminalStore.getState().sessions[activeTab.termId]?.status
-      if (status === 'connected' || status === 'connecting') {
-        setConfirmCloseTabId(activeTab.id)
-        return
-      }
+    if (isRunningTerminal(activeTab) && activeTab) {
+      setConfirmCloseIds([activeTab.id])
+      return
     }
     closeTab(activeTabId)
   }, {
     enabled: open && activeTab !== undefined && activeTab.id === activeTabId && activeTab.type !== 'review',
   })
   const confirmCloseTab = () => {
-    if (confirmCloseTabId) closeTab(confirmCloseTabId)
-    setConfirmCloseTabId(null)
+    if (confirmCloseIds) closeTabs(confirmCloseIds)
+    setConfirmCloseIds(null)
   }
-  const cancelCloseTab = () => setConfirmCloseTabId(null)
+  const cancelCloseTab = () => setConfirmCloseIds(null)
+  // What the confirmation names: the running terminals among the batch.
+  const confirmCloseTitles = (confirmCloseIds ?? [])
+    .map((id) => visibleTabs.find((tab) => tab.id === id))
+    .filter((tab) => isRunningTerminal(tab))
+    .map((tab) => tab!.title)
+
+  // ⌘1–⌘8 pick a tab by position, ⌘9 the last one (browsers, editors);
+  // ⌃Tab / ⌃⇧Tab step through them. Only while the dock is open. Focus
+  // follows only when it was already in the dock, so switching the file
+  // beside the composer does not pull the caret out of it.
+  const activateTab = (id: string | undefined) => {
+    if (!id) return
+    const follow = focusIsInDock()
+    setActiveTabId(id)
+    const tab = visibleTabs.find((item) => item.id === id)
+    if (tab?.type === 'file') onFileSelect?.(tab.file)
+    if (follow) focusTab?.(id)
+  }
+  const stepTab = (delta: number) => {
+    if (visibleTabs.length === 0) return
+    const index = Math.max(0, visibleTabs.findIndex((tab) => tab.id === activeTabId))
+    activateTab(visibleTabs[(index + delta + visibleTabs.length) % visibleTabs.length]?.id)
+  }
+  useShortcuts([
+    ...DOCK_TAB_SHORTCUTS.map((name, i) => appShortcut(name, () => {
+      activateTab(i === DOCK_TAB_SHORTCUTS.length - 1 ? visibleTabs.at(-1)?.id : visibleTabs[i]?.id)
+    })),
+    { chord: NEXT_DOCK_TAB_CHORD, handler: () => stepTab(1), options: { allowInEditable: true } },
+    { chord: PREV_DOCK_TAB_CHORD, handler: () => stepTab(-1), options: { allowInEditable: true } },
+  ], { enabled: open && visibleTabs.length > 0 })
 
   return {
     tabs,
@@ -299,7 +363,10 @@ export function useDockTabs({
     openPreviewTab,
     openTerminal,
     closeTab,
-    confirmCloseTabId,
+    closeOtherTabs,
+    closeTabsToRight,
+    confirmCloseOpen: confirmCloseIds !== null,
+    confirmCloseTitles,
     confirmCloseTab,
     cancelCloseTab,
   }

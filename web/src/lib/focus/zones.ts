@@ -47,6 +47,9 @@ const ITEM = 'data-zone-item'
 const FOCUSABLE = 'a[href], button, select, summary, input, textarea, [contenteditable="true"], [tabindex]'
 const TEXT_INPUT_TYPES = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
 const ACTIVE = '[aria-current]:not([aria-current="false"]), [aria-selected="true"], [data-zone-active]'
+// Popups rendered inside a zone (context menus, listboxes, dialogs) manage
+// their own focus and keys.
+const OWN_FOCUS = '[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]'
 const OBSERVED = ['disabled', 'hidden', 'inert', 'aria-current', 'aria-selected', 'aria-disabled', 'data-zone-active', 'data-zone-skip']
 
 /** Text fields keep their own Tab stop: arrows there edit text. */
@@ -67,6 +70,8 @@ function isItem(zone: Element, el: Element): boolean {
   if (el.closest(`[${ZONE}]`) !== zone) return false
   if (isTextField(el)) return false
   if (el.closest('[data-zone-skip], [inert], [hidden]')) return false
+  const popup = el.closest(OWN_FOCUS)
+  if (popup && popup !== zone && zone.contains(popup)) return false
   if ((el as HTMLButtonElement).disabled) return false
   if (el.getAttribute('role') === 'tab') return el.getAttribute('aria-selected') === 'true'
   // Natively out of Tab order (a scroll container, a menu's items): leave it.

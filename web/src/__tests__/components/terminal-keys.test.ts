@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 
 import { routeTerminalKey } from '@/components/Terminal/terminal-keys'
 
-function keydown(key: string, mods: Partial<Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey'>> = {}) {
+function keydown(key: string, mods: Partial<Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'code'>> = {}) {
   return new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...mods })
 }
 
@@ -12,6 +12,13 @@ describe('routeTerminalKey — macOS', () => {
       expect(routeTerminalKey(event, 'macos')).toBe(true)
       expect(event.defaultPrevented).toBe(false)
     }
+  })
+
+  it('sends Ctrl+Tab and Ctrl+Shift+Tab to the app for the dock tabs', () => {
+    expect(routeTerminalKey(keydown('Tab', { ctrlKey: true }), 'macos')).toBe(false)
+    expect(routeTerminalKey(keydown('Tab', { ctrlKey: true, shiftKey: true }), 'macos')).toBe(false)
+    // Plain Tab is shell completion.
+    expect(routeTerminalKey(keydown('Tab'), 'macos')).toBe(true)
   })
 })
 
@@ -24,6 +31,16 @@ describe('routeTerminalKey — Windows/Linux', () => {
       expect(event.defaultPrevented).toBe(false)
     }
     expect(routeTerminalKey(keydown('k', { ctrlKey: true }), 'windows')).toBe(false)
+  })
+
+  it('keeps Ctrl+1–9 and Ctrl+Tab from the shell so the dock tab keys work', () => {
+    expect(routeTerminalKey(keydown('1', { ctrlKey: true, code: 'Digit1' }), 'linux')).toBe(false)
+    expect(routeTerminalKey(keydown('9', { ctrlKey: true, code: 'Digit9' }), 'windows')).toBe(false)
+    // AZERTY prints "&" on Digit1: the physical key decides.
+    expect(routeTerminalKey(keydown('&', { ctrlKey: true, code: 'Digit1' }), 'linux')).toBe(false)
+    expect(routeTerminalKey(keydown('0', { ctrlKey: true, code: 'Digit0' }), 'linux')).toBe(true)
+    expect(routeTerminalKey(keydown('Tab', { ctrlKey: true }), 'linux')).toBe(false)
+    expect(routeTerminalKey(keydown('Tab', { ctrlKey: true, shiftKey: true }), 'linux')).toBe(false)
   })
 
   it('sends every other Ctrl chord to the shell', () => {

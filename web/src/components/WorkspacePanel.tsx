@@ -221,7 +221,10 @@ export function WorkspacePanel({
     openPreviewTab,
     openTerminal,
     closeTab,
-    confirmCloseTabId,
+    closeOtherTabs,
+    closeTabsToRight,
+    confirmCloseOpen,
+    confirmCloseTitles,
     confirmCloseTab,
     cancelCloseTab,
   } = useDockTabs({
@@ -239,6 +242,7 @@ export function WorkspacePanel({
     previewRequest,
     handledPreviewRequestKeyRef,
     onTabClosed: handleTabClosed,
+    focusTab: (id) => requestAnimationFrame(() => tabButtonRefs.current.get(id)?.focus()),
   })
   const [mobileFileActions, setMobileFileActions] = useState<ChangedFileInfo | null>(null)
   const [mobileCommitActions, setMobileCommitActions] = useState<CommitActionTarget | null>(null)
@@ -606,6 +610,8 @@ export function WorkspacePanel({
           }}
           onActivate={setActiveTabId}
           onClose={closeTab}
+          onCloseOthers={closeOtherTabs}
+          onCloseToRight={closeTabsToRight}
           onNewTerminal={openTerminal}
           onNewPreview={previewsAvailable ? openNewPreview : undefined}
           onRefresh={handleRefresh}
@@ -665,8 +671,9 @@ export function WorkspacePanel({
           ) : null}
         </div>
         <CloseTerminalDialog
-          open={confirmCloseTabId !== null}
-          title={visibleTabs.find((tab) => tab.id === confirmCloseTabId)?.title ?? 'This terminal'}
+          open={confirmCloseOpen}
+          title={confirmCloseTitles.length > 0 ? confirmCloseTitles.join(', ') : 'This terminal'}
+          count={confirmCloseTitles.length}
           onConfirm={confirmCloseTab}
           onCancel={cancelCloseTab}
         />

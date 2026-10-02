@@ -7,6 +7,8 @@
  * ignored for a printed symbol whose character already carries it ("+" is
  * Shift+= on US layouts). ``code`` matches the physical key instead, for
  * chords whose character changes with the layout or with Alt (⌥C is "ç").
+ * ``ctrl`` is the Control key itself on every OS (⌃Tab), for the few
+ * chords that are Control even on macOS; it cannot combine with ``mod``.
  */
 import type { OS } from '@/hooks/use-platform'
 import { isPrimaryModifierOS } from '@/lib/keyboard-shortcut'
@@ -15,6 +17,7 @@ export interface KeyChord {
   key: string
   code?: string
   mod?: boolean
+  ctrl?: boolean
   shift?: boolean
   alt?: boolean
 }
@@ -29,10 +32,14 @@ function isPrintedSymbol(chord: KeyChord): boolean {
 }
 
 export function matchChord(event: KeyboardEvent, chord: KeyChord, os: OS): boolean {
-  const mac = isPrimaryModifierOS(os)
-  const primary = mac ? event.metaKey : event.ctrlKey
-  const other = mac ? event.ctrlKey : event.metaKey
-  if (other || primary !== Boolean(chord.mod)) return false
+  if (chord.ctrl) {
+    if (!event.ctrlKey || event.metaKey) return false
+  } else {
+    const mac = isPrimaryModifierOS(os)
+    const primary = mac ? event.metaKey : event.ctrlKey
+    const other = mac ? event.ctrlKey : event.metaKey
+    if (other || primary !== Boolean(chord.mod)) return false
+  }
   if (event.altKey !== Boolean(chord.alt)) return false
   const shiftFree = chord.shift === undefined && isPrintedSymbol(chord)
   if (!shiftFree && event.shiftKey !== Boolean(chord.shift)) return false
@@ -47,7 +54,7 @@ export function isImeComposing(event: KeyboardEvent): boolean {
 
 /** Stable identity for a chord, e.g. to re-register when it changes. */
 export function chordId(chord: KeyChord): string {
-  return [chord.mod && 'mod', chord.alt && 'alt', chord.shift && 'shift', chord.code ?? normalizeKey(chord.key)]
+  return [chord.mod && 'mod', chord.ctrl && 'ctrl', chord.alt && 'alt', chord.shift && 'shift', chord.code ?? normalizeKey(chord.key)]
     .filter(Boolean)
     .join('+')
 }
@@ -65,6 +72,6 @@ function keyLabel(key: string, mac: boolean): string {
 export function formatChord(chord: KeyChord, os: OS): string {
   const mac = isPrimaryModifierOS(os)
   const key = keyLabel(chord.key, mac)
-  if (mac) return `${chord.alt ? '⌥' : ''}${chord.mod ? '⌘' : ''}${chord.shift ? '⇧' : ''}${key}`
-  return [chord.mod && 'Ctrl', chord.alt && 'Alt', chord.shift && 'Shift', key].filter(Boolean).join('+')
+  if (mac) return `${chord.ctrl ? '⌃' : ''}${chord.alt ? '⌥' : ''}${chord.mod ? '⌘' : ''}${chord.shift ? '⇧' : ''}${key}`
+  return [(chord.mod || chord.ctrl) && 'Ctrl', chord.alt && 'Alt', chord.shift && 'Shift', key].filter(Boolean).join('+')
 }
