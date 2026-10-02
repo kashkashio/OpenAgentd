@@ -15,6 +15,8 @@ interface Internals {
   flush: () => void
   getMode: () => string
   runCommand: (envelope: { id: string; command: Record<string, unknown> }) => Promise<void>
+  cursorState: () => { visible: boolean; x: number | null; y: number | null; label: string }
+  setCursorTiming: (timing: { move?: number; idle?: number }) => void
 }
 
 type FrameWindow = Window & typeof globalThis & { eval: (code: string) => void; __openagentdPreviewInternals: Internals }
@@ -249,6 +251,8 @@ describe('preview inspector — agent commands', () => {
       '<button type="submit" class="cta">Start free</button></form>',
       '<a href="/about">About us</a>',
     ].join('')
+    // The cursor jumps instead of gliding, so commands run at once.
+    internals().setCursorTiming({ move: 0 })
   })
 
   it('outlines the page with refs on controls, skipping hidden parts', async () => {
@@ -302,6 +306,21 @@ describe('preview inspector — agent commands', () => {
     expect(await run({ action: 'navigate', to: 'https://example.com/' })).toMatchObject({ ok: false, error: expect.stringContaining('within the preview') })
     expect(await run({ action: 'fill', selector: 'h1', value: 'x' })).toMatchObject({ ok: false, error: expect.stringContaining('not a form field') })
     expect(await run({ action: 'dance' })).toMatchObject({ ok: false, error: 'Unknown action dance.' })
+  })
+
+  it('shows a labeled cursor on the acted-on element and fades it when idle', async () => {
+    await run({ action: 'snapshot' })
+    // Reading the page alone does not bring the cursor up.
+    expect(internals().cursorState().visible).toBe(false)
+
+    await run({ action: 'click', ref: 'e3' })
+    const r = (frame.document.querySelector('input[type=checkbox]') as HTMLElement).getBoundingClientRect()
+    expect(internals().cursorState()).toEqual({ visible: true, x: r.left + r.width / 2, y: r.top + r.height / 2, label: 'Clicking' })
+
+    // The reply waits 250 ms for the page to settle, longer than this idle time.
+    internals().setCursorTiming({ idle: 30 })
+    await run({ action: 'fill', ref: 'e1', value: 'x' })
+    expect(internals().cursorState()).toMatchObject({ visible: false, label: 'Typing' })
   })
 
   it('waits for text and inspects elements', async () => {
