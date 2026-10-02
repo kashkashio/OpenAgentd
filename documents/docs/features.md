@@ -14,7 +14,7 @@ release that introduced it (where known). When you ship something new, **add it 
 > double-clickable app that runs an agent on your machine, with a
 > real UI to watch every step. Open source (Apache 2.0). 16 providers. Your keys.
 
-**Latest release:** v3.5.0 · October 2, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.5.0)
+**Latest release:** v3.6.0 · October 2, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.6.0)
 
 ---
 
@@ -315,11 +315,11 @@ run from the terminal (the native Rust binary since v3.0.0).
   window. **Keyboard Shortcuts** (`⌘/`/`Ctrl+/`, or the palette) lists every
   shortcut by area.
 - **Keyboard areas, like a desktop app** `[v3.5.0]` *(deprecated — removed in
-  v3.5.1: Tab and Shift+Tab move through every control in page order again,
+  v3.6.0: Tab and Shift+Tab move through every control in page order again,
   and arrow keys no longer walk between buttons)* — Tab and Shift+Tab moved
   between areas (header, sidebar, chat, composer, dock, status bar) instead of
   through every button; arrow keys, Home and End moved inside an area.
-- **Keyboard paths and focus continuity** `[v3.5.0, v3.5.1]`:
+- **Keyboard paths and focus continuity** `[v3.5.0, v3.6.0]`:
   - Row actions that only show on hover also appear on keyboard focus and keep keys:
     F2 renames, Delete (or `⌘⌫` / `Ctrl+Backspace`) deletes, Shift+F10 or
     the Menu key opens the row's menu. In the sidebar, Left and Right
@@ -328,8 +328,8 @@ run from the terminal (the native Rust binary since v3.0.0).
     returns to the composer, and a collapsed sidebar or closed drawer cannot
     take it. In the composer, Tab still switches Plan and Code; Shift+Tab or
     Escape leaves it. Focus handed back on page load draws no focus ring
-    until you press a key `[v3.5.1]`.
-  - The desktop app shows **Skip to main content** on the first Tab `[v3.5.1]`.
+    until you press a key `[v3.6.0]`.
+  - The desktop app shows **Skip to main content** on the first Tab `[v3.6.0]`.
   - The Keyboard Shortcuts sheet lists the new keys under **Moving around**.
 - **Desktop app polish** `[v3.5.0]` — in the desktop app, dragging across UI
   chrome no longer highlights it (chat, code, diffs and the terminal still
@@ -557,7 +557,7 @@ run from the terminal (the native Rust binary since v3.0.0).
     session read or patched; when several files match, Quick Open opens
     searching for the reference.
   - Clicking an `@path#L42-L58` mention or a design feedback source opens the
-    file with that range selected too, not just the file `[v3.5.1]`.
+    file with that range selected too, not just the file `[v3.6.0]`.
   - On desktop a timeline scrubber replaces the transcript's scrollbar and
     marks prompts, find matches, and a question waiting for you.
   - Reply footers add the turn's output tokens, or its cost when the model
@@ -896,7 +896,7 @@ agent against it.
       use `⌥⇧←/→` (`Alt+Shift+←/→`) or **Move Left / Move Right** in its menu.
       A dragged tab lifts and follows the pointer while the others slide
       aside to show where it lands; it drops on release, and Escape puts it
-      back `[v3.5.1]`.
+      back `[v3.6.0]`.
       Closing the active tab activates its right neighbour.
     - `⌘1`–`⌘8` pick a tab and `⌘9` the last; `⌃Tab` / `⌃⇧Tab` step through
       them, also from the terminal. In a browser, which keeps these keys for
@@ -937,7 +937,7 @@ agent against it.
     from where the JSX ran, mapped through the dev server's source maps.
     In the chat the feedback shows as a card of numbered comments, and
     restoring the message (undo, edit, history) brings the chip back. The card
-    also shows after a reload, with or without text before it `[v3.5.1]`.
+    also shows after a reload, with or without text before it `[v3.6.0]`.
     While the agent uses the page, the toolbar shows **Agent**.
     Tabs keep their page and comments while another tab is open. Previews
     need the backend on the same computer; remote servers and the mobile app
@@ -1148,7 +1148,7 @@ agent against it.
   `[v3.5.0]`.
   **Rename** edits the tab's title in place instead of opening a dialog;
   `F2` or a double-click on the tab starts it, Enter or clicking away saves
-  and Escape cancels `[v3.5.1]`.
+  and Escape cancels `[v3.6.0]`.
   `⌘W` on a terminal whose shell is still running asks before closing it; the
   tab's close button still closes right away `[v3.3.0]`, unless a command is
   running in it, which asks first too `[v3.5.0]`.
@@ -1754,7 +1754,7 @@ Desktop is primary. CLI / server is the developer path.
   `[v3.4.0]`. Earlier builds kept that identity in the login keychain, where
   codesign asked to use its key on every install or update.
   If codesign cannot use the identity ("no identity found"), the install or
-  update signs ad hoc instead of failing `[v3.5.1]`; v3.4.0–v3.5.0 in-app
+  update signs ad hoc instead of failing `[v3.6.0]`; v3.4.0–v3.5.0 in-app
   updates stopped there, so those installs update with `install.sh` or
   `brew upgrade --cask`.
 - **Linux desktop** `[since v1.0]` — AppImage (`chmod +x`) or `.deb` for
