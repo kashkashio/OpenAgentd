@@ -377,6 +377,13 @@ pub fn serialize_agent(agent: &appv3_agent::Agent, workspace: Option<&str>, cust
             tools.push((n, d));
         }
     }
+    // The session injects `preview` for coding workspaces (see `session.rs`).
+    if let Some(ws) = workspace.filter(|w| !w.is_empty()) {
+        if settings().workspace_mode(Some(Path::new(ws))) == "coding" && !tools.iter().any(|(x, _)| x == appv3_agent::tools::preview::PREVIEW_TOOL) {
+            use appv3_tools::Tool;
+            tools.push(tool_desc(&appv3_agent::tools::preview::PreviewTool.definition()));
+        }
+    }
     json!({
         "name": agent.name,
         "description": agent.description.clone().unwrap_or_default(),
@@ -934,6 +941,15 @@ mod tests {
         assert_eq!(info["model"], "mock:mock");
         assert_eq!(info["thinking_level"], "high");
         assert_eq!(serialize_agent(&agent(None), None, None)["thinking_level"], Value::Null);
+    }
+
+    #[test]
+    fn serialized_agent_lists_preview_only_for_coding_workspaces() {
+        let names = |info: &Value| info["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let dir = tempfile::tempdir().unwrap();
+        let coding = serialize_agent(&agent(None), Some(&dir.path().to_string_lossy()), None);
+        assert!(names(&coding).contains(&"preview".to_string()), "{coding}");
+        assert!(!names(&serialize_agent(&agent(None), None, None)).contains(&"preview".to_string()));
     }
 
     #[test]
