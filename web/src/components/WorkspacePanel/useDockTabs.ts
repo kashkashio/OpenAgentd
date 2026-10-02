@@ -79,6 +79,11 @@ function isRunningTerminal(tab: DockTab | undefined): boolean {
   return status === 'connected' || status === 'connecting'
 }
 
+/** A terminal with a command running in it: even its × asks first. */
+function isBusyTerminal(tab: DockTab | undefined): boolean {
+  return isRunningTerminal(tab) && tab?.type === 'terminal' && useTerminalStore.getState().sessions[tab.termId]?.busy === true
+}
+
 function focusIsInDock(): boolean {
   return typeof document !== 'undefined' && document.activeElement?.closest('[data-review-dock]') != null
 }
@@ -329,12 +334,18 @@ export function useDockTabs({
 
   // ⌘W on a terminal whose shell is still running asks first: the key is
   // easy to hit while typing in it, and closing stops the shell. The tab's ×
-  // button is a deliberate click and closes right away.
+  // button is a deliberate click and closes right away, unless a command is
+  // running in that terminal: closing would kill it.
   const [confirmCloseIds, setConfirmCloseIds] = useState<string[] | null>(null)
   /** Close tabs, asking first when that would stop a running shell. */
   const requestCloseTabs = (ids: readonly string[]) => {
     if (ids.some((id) => isRunningTerminal(visibleTabs.find((tab) => tab.id === id)))) setConfirmCloseIds([...ids])
     else closeTabs(ids)
+  }
+  /** The tab's × and middle-click: asks only while a command is running. */
+  const requestCloseTab = (id: string) => {
+    if (isBusyTerminal(visibleTabs.find((tab) => tab.id === id))) setConfirmCloseIds([id])
+    else closeTab(id)
   }
   const idsOf = (list: readonly DockTab[]) => list.map((tab) => tab.id)
   /** Tab menu: every other tab. The kept tab becomes the active one. */
@@ -416,7 +427,7 @@ export function useDockTabs({
     openGitTab,
     openTerminal,
     moveTab,
-    closeTab,
+    closeTab: requestCloseTab,
     closeOtherTabs,
     closeTabsToRight,
     confirmCloseOpen: confirmCloseIds !== null,

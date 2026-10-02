@@ -146,6 +146,25 @@ describe('WorkspacePanel terminal tabs', () => {
     expect(screen.queryByRole('button', { name: 'Close Terminal 1' })).toBeNull()
   })
 
+  it('asks before the close button stops a running command', async () => {
+    await renderPanel(1)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close Terminal 1' })).toBeTruthy())
+    const [session] = useTerminalStore.getState().sessionsForContext(WORKSPACE)
+    act(() => {
+      useTerminalStore.setState((state) => ({
+        sessions: { ...state.sessions, [session.id]: { ...state.sessions[session.id], status: 'connected', busy: true } },
+      }))
+    })
+
+    await act(async () => { screen.getByRole('button', { name: 'Close Terminal 1' }).click() })
+    expect(await screen.findByRole('dialog', { name: 'Close terminal?' })).toBeTruthy()
+    expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(1)
+
+    await act(async () => { screen.getByRole('button', { name: 'Close terminal' }).click() })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Close Terminal 1' })).toBeNull())
+    expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(0)
+  })
+
   it('remount re-adopts live sessions from the store as tabs', async () => {
     // Session opened before the panel mounts (e.g. panel was closed and
     // reopened) — the tab must reappear and the session must survive.

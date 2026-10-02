@@ -1125,7 +1125,9 @@ agent against it.
   Changes/Commits/file tabs. Coding-mode only — there is no separate general-chat mode
   terminal. The session survives tab switches (detached PTYs idle-close
   after 15 minutes of no input; the backend reaper is the 30-minute
-  backstop). Includes PTY output backpressure, GPU-accelerated WebGL rendering `[v1.118.0]`,
+  backstop). A terminal with a command still running (a dev server, a
+  build) is never idle-closed, by either reaper, on macOS and Linux `[v3.5.0]`.
+  Includes PTY output backpressure, GPU-accelerated WebGL rendering `[v1.118.0]`,
   debounced SIGWINCH resizing, and mobile key bar ergonomics (touch-and-hold arrow repeat,
   soft-keyboard focus preservation, quick symbol row).
   Terminal font defaults to a best-guess Nerd Font stack
@@ -1136,7 +1138,8 @@ agent against it.
   quick open. **Clear** in the terminal tab's menu clears the scrollback
   `[v3.5.0]`.
   `⌘W` on a terminal whose shell is still running asks before closing it; the
-  tab's close button still closes right away `[v3.3.0]`.
+  tab's close button still closes right away `[v3.3.0]`, unless a command is
+  running in it, which asks first too `[v3.5.0]`.
 - **Workspace status card** `[v1.18.0]` — empty coding sessions show the
   workspace path, branch, dirty state, last commit instead of the old
   agent-selection fallback. Since `[v3.0.0]` the card shows the workspace
