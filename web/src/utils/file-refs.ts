@@ -111,6 +111,23 @@ export function findFileRefs(text: string): Array<{ start: number; end: number; 
   return found
 }
 
+const MENTION_RANGE = /^#L(\d+)(?:-L?(\d+))?$/
+
+/**
+ * A composer ``@`` mention or a design feedback source, without the ``@``:
+ * ``src/App.tsx#L42-L71``. The ``#L`` form is the wire format the backend
+ * reads to attach those lines; a click reveals the same range.
+ */
+export function parseMentionRef(token: string): FileRef {
+  const hash = token.indexOf('#')
+  const path = hash < 0 ? token : token.slice(0, hash)
+  const range = hash < 0 ? null : MENTION_RANGE.exec(token.slice(hash))
+  const start = range ? Number(range[1]) : 0
+  if (start < 1) return { path }
+  const end = range?.[2] !== undefined ? Number(range[2]) : start
+  return end > start ? { path, line: start, endLine: end } : { path, line: start }
+}
+
 /** ``path`` relative to ``workspace``, or ``null`` when it points outside it. */
 export function workspaceRelativePath(path: string, workspace: string | null): string | null {
   if (path.startsWith('~')) return null

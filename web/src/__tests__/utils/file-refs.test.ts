@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'bun:test'
 
-import { findFileRefs, parseFileHref, parseFileRef, resolveWorkspaceRef, workspaceRelativePath } from '@/utils/file-refs'
+import { findFileRefs, parseFileHref, parseFileRef, parseMentionRef, resolveWorkspaceRef, workspaceRelativePath } from '@/utils/file-refs'
+
+describe('parseMentionRef — an @-mention or design feedback source', () => {
+  it('keeps the #L line range of the mention', () => {
+    expect(parseMentionRef('src/App.tsx#L42-L71')).toEqual({ path: 'src/App.tsx', line: 42, endLine: 71 })
+    expect(parseMentionRef('src/App.tsx#L42-71')).toEqual({ path: 'src/App.tsx', line: 42, endLine: 71 })
+    expect(parseMentionRef('src/App.tsx#L42')).toEqual({ path: 'src/App.tsx', line: 42 })
+    expect(parseMentionRef('src/App.tsx#L42-L42')).toEqual({ path: 'src/App.tsx', line: 42 })
+  })
+
+  it('takes a mention without a range, or with a bad one, as the whole file', () => {
+    expect(parseMentionRef('src/App.tsx')).toEqual({ path: 'src/App.tsx' })
+    expect(parseMentionRef('src/App.tsx#L0')).toEqual({ path: 'src/App.tsx' })
+    expect(parseMentionRef('src/App.tsx#readme')).toEqual({ path: 'src/App.tsx' })
+  })
+})
 
 describe('parseFileRef — a whole code span', () => {
   it('reads a path with a line, a column, or a GitHub-style anchor', () => {
