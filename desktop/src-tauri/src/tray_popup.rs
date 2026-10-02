@@ -415,7 +415,9 @@ pub async fn get_tray_usage_summary(
     } else {
         let base_url = selected.clone();
         let name = crate::usage::resolve_server_display_name(&base_url, &saved_config.servers);
-        let access_key = crate::menu::external_usage_access_key(&base_url, crate::commands::secure_get_access_key);
+        let access_key = crate::menu::external_usage_access_key(
+            crate::commands::secure_get_access_key(base_url.clone()).await,
+        );
         match crate::usage::fetch_usage_summary(&base_url, access_key.as_deref(), force.unwrap_or(false)).await {
             Ok(summary) => Ok(crate::usage::TrayUsageResult {
                 summary: Some(summary),
