@@ -38,10 +38,44 @@ export interface Command {
   action: () => void
 }
 
-/** Every word of ``query`` appears in the command's label, description, group, or keywords. */
-function commandMatches(cmd: Command, query: string): boolean {
-  const haystack = [cmd.label, cmd.description, cmd.group, cmd.keywords].filter(Boolean).join('\n').toLowerCase()
-  return query.split(/\s+/).every((word) => haystack.includes(word))
+const tokens = (text: string | undefined) => (text ? text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean) : [])
+const startsAWord = (words: string[], word: string) => words.some((token) => token.startsWith(word))
+
+/**
+ * How well ``cmd`` matches the query words, lower first; ``null`` when a word
+ * matches nothing. The label is what the user scans and types, so it ranks
+ * above everything else; keywords, group, and description only count at the
+ * start of a word. Without that, "terminal" ranked Maximize Review Dock
+ * (described as "…files, and terminals") above Open Terminal, simply
+ * because it came first in the list.
+ */
+export function commandScore(cmd: Command, words: string[]): number | null {
+  const label = cmd.label.toLowerCase()
+  const labelWords = tokens(cmd.label)
+  const keywords = tokens(cmd.keywords)
+  const group = tokens(cmd.group)
+  const description = tokens(cmd.description)
+  let score = 0
+  for (const word of words) {
+    if (labelWords[0]?.startsWith(word)) score += 0
+    else if (startsAWord(labelWords, word)) score += 1
+    else if (label.includes(word)) score += 2
+    else if (startsAWord(keywords, word)) score += 3
+    else if (startsAWord(group, word)) score += 4
+    else if (startsAWord(description, word)) score += 5
+    else return null
+  }
+  return score
+}
+
+/** Matching commands, best first; ties keep their list order. */
+function rankCommands(commands: Command[], query: string): Command[] {
+  const words = query.split(/\s+/).filter(Boolean)
+  return commands
+    .map((cmd, index) => ({ cmd, index, score: commandScore(cmd, words) }))
+    .filter((entry): entry is { cmd: Command; index: number; score: number } => entry.score !== null)
+    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .map((entry) => entry.cmd)
 }
 
 // Max file rows shown in the palette — matches the old inline file-search
@@ -147,11 +181,11 @@ function PaletteOverlay({ commands, onClose, workspaceFiles = [], filesTruncated
   // `limit` caps the work inside fuzzysort rather than filtering the whole
   // workspace into an intermediate array and slicing afterwards.
   //
-  // Commands: every query word substring-matched across label, description,
-  // group, and keywords, so "compact mode" finds Toggle Reader Mode. Kept to
-  // substrings deliberately — command labels are a small, curated set the
-  // user is scanning visually, and fuzzy matching a 20-item list mostly just
-  // surfaces surprising rows.
+  // Commands: every query word must match the label, keywords, group, or
+  // description (``commandScore``), so "compact mode" finds Toggle Reader
+  // Mode; matches are ranked label-first and listed flat, best on top. Not
+  // fuzzy — command labels are a small, curated set the user is scanning
+  // visually, and fuzzy matching a 20-item list mostly surfaces surprising rows.
   // Quick Open remains a file-search surface even before an empty workspace
   // returns its first file; presence of the file callback identifies it.
   const hasFiles = Boolean(onFileOpen)
@@ -168,7 +202,7 @@ function PaletteOverlay({ commands, onClose, workspaceFiles = [], filesTruncated
 
     // ── Commands ──────────────────────────────────────────────────────────────
     const listCommands = page ? page.page.commands : commandMode ? commands : []
-    const filteredCmds = q ? listCommands.filter((cmd) => commandMatches(cmd, q)) : listCommands
+    const filteredCmds = q ? rankCommands(listCommands, q) : listCommands
 
     // ── Files (ranked + capped) ───────────────────────────────────────────────
     let filteredFiles: WorkspaceFileInfo[] = []
@@ -189,10 +223,10 @@ function PaletteOverlay({ commands, onClose, workspaceFiles = [], filesTruncated
     const out: Row[] = []
     let absIdx = 0
 
-    // Commands group (with headers)
+    // Commands under their group headers; a ranked search result is one list.
     const groups = new Map<string, Command[]>()
     for (const cmd of filteredCmds) {
-      const g = cmd.group ?? ''
+      const g = q ? '' : cmd.group ?? ''
       if (!groups.has(g)) groups.set(g, [])
       groups.get(g)!.push(cmd)
     }
