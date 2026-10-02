@@ -752,6 +752,10 @@ tab bar, dock list, status bar.
   transcript) or `active` one (`aria-current`, `aria-selected`).
 - **Pointer sync**: a press on an item makes it current without a focus ring,
   so arrow keys continue from the row that was clicked.
+- **Ring follows input** (desktop): focus rings show only after a key press
+  and hide again on the next pointer press. Focus a script gives — the
+  composer at launch, a fold after its Collapse click — draws none until the
+  keyboard is used. Text fields keep their focus styles.
 - Focus never rests on `<body>` or in an `inert` panel; it returns to the
   composer.
 
