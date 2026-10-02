@@ -15,7 +15,8 @@
  * Page -> dock also carries `agent` while the agent drives the page: the
  * script long-polls AGENT_PATH on its own origin for the agent's commands
  * (snapshot, click, fill, press, scroll, navigate, wait, inspect) and
- * posts each result back there.
+ * posts each result back there. A virtual cursor in the overlay glides to
+ * each element the agent acts on, so the user can follow along.
  */
 (function () {
   'use strict';
@@ -477,30 +478,52 @@
   // ── Overlay (shadow DOM keeps page styles out) ───────────────────────
 
   var overlayHost = null;
+  var overlayRoot = null;
   var box = null;
   var label = null;
   var pinLayer = null;
+  var cursor = null;
+  var cursorLabel = null;
 
   function ensureOverlay() {
     if (overlayHost && overlayHost.isConnected) return;
     overlayHost = doc.createElement('openagentd-overlay');
     overlayHost.setAttribute('style', 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;');
     var root = overlayHost.attachShadow ? overlayHost.attachShadow({ mode: 'open' }) : overlayHost;
+    overlayRoot = root;
     var style = doc.createElement('style');
     style.textContent =
       // OpenAgentd Paper tokens: Signal Blue for interaction, Bark for pins.
       '.box{position:fixed;display:none;border:1.5px solid #5AA8E2;background:rgba(90,168,226,.12);border-radius:2px;box-sizing:border-box}' +
       '.label{position:fixed;display:none;font:11px/1.4 ui-monospace,monospace;color:#FFFDF7;background:#174A73;padding:1px 5px;border-radius:3px;white-space:nowrap}' +
-      '.pin{position:fixed;min-width:18px;height:18px;padding:0 4px;box-sizing:border-box;border-radius:9px;background:#3F3429;color:#FFFDF7;font:600 11px/18px system-ui,sans-serif;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.3);transform:translate(-40%,-40%)}';
+      '.pin{position:fixed;min-width:18px;height:18px;padding:0 4px;box-sizing:border-box;border-radius:9px;background:#3F3429;color:#FFFDF7;font:600 11px/18px system-ui,sans-serif;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.3);transform:translate(-40%,-40%)}' +
+      // The agent's cursor: its tip is the element's center.
+      '.cursor{position:fixed;left:0;top:0;opacity:0;transition:opacity .2s ease;will-change:transform}' +
+      '.cursor.on{opacity:1}' +
+      '.cursor svg{display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}' +
+      '.cursor-label{position:absolute;left:15px;top:19px;font:600 11px/1.4 system-ui,sans-serif;color:#FFFDF7;background:#174A73;padding:1px 7px;border-radius:9px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25)}' +
+      '.ripple{position:fixed;width:28px;height:28px;margin:-14px 0 0 -14px;box-sizing:border-box;border:2px solid #5AA8E2;border-radius:50%;animation:oad-ripple .4s ease-out forwards}' +
+      '@keyframes oad-ripple{from{transform:scale(.3);opacity:.9}to{transform:scale(1.5);opacity:0}}' +
+      '@media (prefers-reduced-motion: reduce){.cursor{transition:none!important}.ripple{display:none}}';
     box = doc.createElement('div');
     box.className = 'box';
     label = doc.createElement('div');
     label.className = 'label';
     pinLayer = doc.createElement('div');
+    cursor = doc.createElement('div');
+    cursor.className = 'cursor';
+    cursor.innerHTML =
+      '<svg width="18" height="22" viewBox="0 0 18 22" aria-hidden="true"><path d="M1.5 1.5v15.2l4-3.6 2.9 6.6 2.9-1.3-2.9-6.5h5.4z" fill="#5AA8E2" stroke="#FFFDF7" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+    cursorLabel = doc.createElement('div');
+    cursorLabel.className = 'cursor-label';
+    cursor.appendChild(cursorLabel);
+    // A new overlay starts without a cursor on screen.
+    cursorShown = false;
     root.appendChild(style);
     root.appendChild(box);
     root.appendChild(label);
     root.appendChild(pinLayer);
+    root.appendChild(cursor);
     (doc.documentElement || doc.body).appendChild(overlayHost);
   }
 
@@ -526,6 +549,73 @@
   function hideBox() {
     if (box) box.style.display = 'none';
     if (label) label.style.display = 'none';
+  }
+
+  // ── Agent cursor ──────────────────────────────────────────────────────
+
+  var cursorMoveMs = 320;
+  var cursorIdleMs = 4000;
+  var cursorShown = false;
+  var cursorPos = null;
+  var cursorHideTimer = null;
+
+  function reducedMotion() {
+    try {
+      return !!(w.matchMedia && w.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function placeCursor(x, y) {
+    // The arrow's tip sits 1.5px into the SVG.
+    cursor.style.transform = 'translate(' + (x - 1.5) + 'px,' + (y - 1.5) + 'px)';
+  }
+
+  function hideCursor() {
+    cursorHideTimer = null;
+    cursorShown = false;
+    if (cursor) cursor.classList.remove('on');
+  }
+
+  function scheduleCursorHide() {
+    if (cursorHideTimer !== null) clearTimeout(cursorHideTimer);
+    cursorHideTimer = setTimeout(hideCursor, cursorIdleMs);
+  }
+
+  /** Glide the cursor to (x, y) with `text` beside it; resolves on arrival. */
+  function moveCursor(x, y, text) {
+    ensureOverlay();
+    var ms = reducedMotion() ? 0 : cursorMoveMs;
+    if (!cursorShown) {
+      // Appear where it was last, or mid-screen the first time, then glide.
+      var start = cursorPos || { x: w.innerWidth / 2, y: w.innerHeight / 2 };
+      cursor.style.transition = 'none';
+      placeCursor(start.x, start.y);
+      void cursor.offsetWidth;
+      cursorShown = true;
+    }
+    cursor.style.transition = 'transform ' + ms + 'ms cubic-bezier(.2,.7,.3,1), opacity .2s ease';
+    cursor.classList.add('on');
+    cursorLabel.textContent = text;
+    placeCursor(x, y);
+    cursorPos = { x: x, y: y };
+    scheduleCursorHide();
+    return new Promise(function (resolve) {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  function rippleAt(x, y) {
+    if (reducedMotion() || !overlayRoot) return;
+    var ring = doc.createElement('div');
+    ring.className = 'ripple';
+    ring.style.left = x + 'px';
+    ring.style.top = y + 'px';
+    overlayRoot.appendChild(ring);
+    setTimeout(function () {
+      if (ring.parentNode) ring.parentNode.removeChild(ring);
+    }, 450);
   }
 
   // ── Inspect mode ──────────────────────────────────────────────────────
@@ -961,16 +1051,48 @@
     flash(el);
   }
 
-  function mouse(el, type) {
+  function center(el) {
     var r = el.getBoundingClientRect();
-    var init = { bubbles: true, cancelable: true, composed: true, view: w, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+
+  function mouse(el, type) {
+    var c = center(el);
+    var init = { bubbles: true, cancelable: true, composed: true, view: w, clientX: c.x, clientY: c.y, button: 0 };
     var Ctor = type.indexOf('pointer') === 0 && w.PointerEvent ? w.PointerEvent : w.MouseEvent;
     el.dispatchEvent(new Ctor(type, init));
   }
 
-  function actClick(el) {
+  /** Bring `el` into view and glide the cursor to it; resolves on arrival. */
+  function approach(el, text) {
     reveal(el);
+    var c = center(el);
+    return moveCursor(c.x, c.y, text);
+  }
+
+  // Synthetic events after the glide must still get past inspect mode.
+  function withActing(fn) {
+    acting = true;
+    try {
+      return fn();
+    } finally {
+      acting = false;
+    }
+  }
+
+  /** Run `act(el)` once the cursor reaches `el`; resolves to { text }. */
+  function onElement(el, text, act) {
+    return approach(el, text).then(function () {
+      return { text: withActing(function () {
+        return act(el);
+      }) };
+    });
+  }
+
+  function actClick(el) {
     if (el.disabled) throw new Error(named(el) + ' is disabled.');
+    var c = center(el);
+    rippleAt(c.x, c.y);
     ['pointerdown', 'mousedown', 'pointerup', 'mouseup'].forEach(function (t) {
       mouse(el, t);
     });
@@ -988,7 +1110,6 @@
   }
 
   function actFill(el, value) {
-    reveal(el);
     if (el.disabled || el.readOnly) throw new Error(named(el) + ' is not editable.');
     var tag = el.tagName;
     var type = (el.getAttribute('type') || '').toLowerCase();
@@ -1040,11 +1161,6 @@
   }
 
   function actScroll(cmd) {
-    if (cmd.ref || cmd.selector) {
-      var el = targetOf(cmd);
-      reveal(el);
-      return 'Scrolled ' + named(el) + ' into view.';
-    }
     var dy = typeof cmd.dy === 'number' ? cmd.dy : w.innerHeight * 0.8;
     if (cmd.to === 'top') w.scrollTo(0, 0);
     else if (cmd.to === 'bottom') w.scrollTo(0, doc.documentElement ? doc.documentElement.scrollHeight : 0);
@@ -1115,7 +1231,6 @@
   }
 
   function actInspect(el) {
-    reveal(el);
     return describeWithSource(el).then(function (d) {
       d.outerHTML = truncate(el.outerHTML || '', 4000);
       return d;
@@ -1131,14 +1246,26 @@
         return { text: snapshot(root) };
       }
       case 'click':
-        return { text: actClick(targetOf(cmd)) };
+        return onElement(targetOf(cmd), 'Clicking', actClick);
       case 'fill':
         if (typeof cmd.value !== 'string') throw new Error('fill needs a value.');
-        return { text: actFill(targetOf(cmd), cmd.value) };
+        return onElement(targetOf(cmd), 'Typing', function (el) {
+          return actFill(el, cmd.value);
+        });
       case 'press':
         if (typeof cmd.key !== 'string' || !cmd.key) throw new Error('press needs a key, such as Enter or Escape.');
-        return { text: actPress(cmd.ref || cmd.selector ? targetOf(cmd) : doc.activeElement || doc.body, cmd.key) };
+        if (cmd.ref || cmd.selector) {
+          return onElement(targetOf(cmd), 'Pressing ' + truncate(cmd.key, 20), function (el) {
+            return actPress(el, cmd.key);
+          });
+        }
+        return { text: actPress(doc.activeElement || doc.body, cmd.key) };
       case 'scroll':
+        if (cmd.ref || cmd.selector) {
+          return onElement(targetOf(cmd), 'Scrolling', function (el) {
+            return 'Scrolled ' + named(el) + ' into view.';
+          });
+        }
         return { text: actScroll(cmd) };
       case 'navigate':
         if (typeof cmd.to !== 'string' || !cmd.to) throw new Error('navigate needs a path, or back, forward, or reload.');
@@ -1147,10 +1274,14 @@
         return actWait(cmd).then(function (text) {
           return { text: text };
         });
-      case 'inspect':
-        return actInspect(targetOf(cmd)).then(function (element) {
+      case 'inspect': {
+        var inspected = targetOf(cmd);
+        return approach(inspected, 'Inspecting').then(function () {
+          return actInspect(inspected);
+        }).then(function (element) {
           return { element: element };
         });
+      }
       default:
         throw new Error('Unknown action ' + action + '.');
     }
@@ -1270,5 +1401,20 @@
   });
 
   // Test hook: Happy DOM tests drive the runtime through these.
-  w.__openagentdPreviewInternals = { selectorFor: selectorFor, describe: describe, flush: flush, setMode: setMode, setPins: setPins, getMode: function () { return mode; }, runCommand: runCommand };
+  w.__openagentdPreviewInternals = {
+    selectorFor: selectorFor,
+    describe: describe,
+    flush: flush,
+    setMode: setMode,
+    setPins: setPins,
+    getMode: function () { return mode; },
+    runCommand: runCommand,
+    cursorState: function () {
+      return { visible: cursorShown, x: cursorPos ? cursorPos.x : null, y: cursorPos ? cursorPos.y : null, label: cursorLabel ? cursorLabel.textContent : '' };
+    },
+    setCursorTiming: function (timing) {
+      if (timing && typeof timing.move === 'number') cursorMoveMs = timing.move;
+      if (timing && typeof timing.idle === 'number') cursorIdleMs = timing.idle;
+    },
+  };
 })();

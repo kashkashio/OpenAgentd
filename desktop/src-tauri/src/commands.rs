@@ -169,20 +169,33 @@ pub fn show_desktop_notification(
 
 // Access keys live in the OS credential store, keyed by canonical origin;
 // the logic is shared with the mobile shell in `openagentd-shell-core`.
+//
+// A sync command runs on the main thread, and a keychain call blocks for as
+// long as the store takes: ~1.5 ms to read, ~12 ms to write, and until the
+// user answers if macOS asks for the keychain password. So the commands run
+// the call on the blocking pool and the UI keeps drawing.
 
-#[tauri::command]
-pub fn secure_get_access_key(origin: String) -> Result<Option<String>, String> {
-    openagentd_shell_core::get_access_key(&origin)
+async fn off_main_thread<T: Send + 'static>(
+    call: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(call)
+        .await
+        .map_err(|_| "credential store unavailable".to_string())?
 }
 
 #[tauri::command]
-pub fn secure_set_access_key(origin: String, key: String) -> Result<(), String> {
-    openagentd_shell_core::set_access_key(&origin, &key)
+pub async fn secure_get_access_key(origin: String) -> Result<Option<String>, String> {
+    off_main_thread(move || openagentd_shell_core::get_access_key(&origin)).await
 }
 
 #[tauri::command]
-pub fn secure_delete_access_key(origin: String) -> Result<(), String> {
-    openagentd_shell_core::delete_access_key(&origin)
+pub async fn secure_set_access_key(origin: String, key: String) -> Result<(), String> {
+    off_main_thread(move || openagentd_shell_core::set_access_key(&origin, &key)).await
+}
+
+#[tauri::command]
+pub async fn secure_delete_access_key(origin: String) -> Result<(), String> {
+    off_main_thread(move || openagentd_shell_core::delete_access_key(&origin)).await
 }
 
 #[derive(Deserialize)]
@@ -627,6 +640,19 @@ mod health_tests {
 
         assert!(probe_saved_backend(&base).await.is_err());
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    // Inputs here fail before the credential store is reached, so the test
+    // never touches the real keychain.
+    #[tokio::test]
+    async fn access_key_commands_are_awaited_and_keep_shell_core_errors() {
+        let invalid = Err("invalid backend origin".to_string());
+        assert_eq!(super::secure_get_access_key("not a url".into()).await, invalid);
+        assert_eq!(super::secure_delete_access_key("ftp://example.com".into()).await, Err("invalid backend origin".to_string()));
+        assert_eq!(
+            super::secure_set_access_key("https://example.com".into(), "  \n".into()).await,
+            Err("access key is required".to_string())
+        );
     }
 }
 

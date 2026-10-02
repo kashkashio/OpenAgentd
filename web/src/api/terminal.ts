@@ -10,7 +10,11 @@
  *
  * Wire protocol (JSON text frames):
  *   send: {type:'input', data} | {type:'resize', rows, cols}
- *   recv: {type:'output', data} | {type:'exit'}
+ *   recv: {type:'output', data} | {type:'exit'} | {type:'busy', busy}
+ *
+ * `busy` arrives whenever a command starts or stops running in the shell
+ * (v3 backends on Unix; it never arrives on Windows), so a terminal with a
+ * running command is neither idle-closed nor closed without asking.
  */
 
 import { apiUrl } from './base-url'
@@ -19,6 +23,8 @@ import { withTokenParam } from './auth'
 export interface TerminalSocketCallbacks {
   onOutput: (data: string) => void
   onExit?: () => void
+  /** A command started (true) or finished (false) running in the shell. */
+  onBusy?: (busy: boolean) => void
   onError?: (err: Error) => void
   onClose?: () => void
 }
@@ -71,6 +77,24 @@ export function terminalWsUrl(ticket: string): string {
   return httpUrl.toString()
 }
 
+/** Route one server frame to its callback; unknown frame types are ignored. */
+export function handleTerminalFrame(raw: string, callbacks: TerminalSocketCallbacks): void {
+  let msg: { type?: unknown; data?: unknown; busy?: unknown }
+  try {
+    msg = JSON.parse(raw) as typeof msg
+  } catch {
+    callbacks.onError?.(new Error('Malformed terminal frame'))
+    return
+  }
+  if (msg.type === 'output' && typeof msg.data === 'string') {
+    callbacks.onOutput(msg.data)
+  } else if (msg.type === 'exit') {
+    callbacks.onExit?.()
+  } else if (msg.type === 'busy' && typeof msg.busy === 'boolean') {
+    callbacks.onBusy?.(msg.busy)
+  }
+}
+
 export async function connectTerminal(
   target: TerminalTarget,
   callbacks: TerminalSocketCallbacks,
@@ -83,18 +107,7 @@ export async function connectTerminal(
   )
   const ws = new WebSocket(terminalWsUrl(ticket))
 
-  ws.onmessage = (event: MessageEvent<string>) => {
-    try {
-      const msg = JSON.parse(event.data) as { type: string; data?: string }
-      if (msg.type === 'output' && typeof msg.data === 'string') {
-        callbacks.onOutput(msg.data)
-      } else if (msg.type === 'exit') {
-        callbacks.onExit?.()
-      }
-    } catch {
-      callbacks.onError?.(new Error('Malformed terminal frame'))
-    }
-  }
+  ws.onmessage = (event: MessageEvent<string>) => handleTerminalFrame(event.data, callbacks)
   ws.onerror = () => callbacks.onError?.(new Error('Terminal connection error'))
   ws.onclose = () => callbacks.onClose?.()
 

@@ -726,6 +726,39 @@ value is ignored for builder-created windows), which centres them against the
 36px header and is why `mac-traffic-inset` is 70px (12px origin + ~58px button
 group). Reference window is 1280×820, floor 820×640.
 
+Inside Tauri, `lib/desktop-shell.ts` sets `<html data-shell="desktop">`. Under
+it, chrome is `user-select: none` with the arrow cursor on buttons (links keep
+the pointer), and only content selects: inputs, `.selectable-text`,
+`.oa-prose`, `pre`, `code` and `.xterm`. Images and links do not drag out. The
+webview's own right-click menu is suppressed except in text fields, over
+selected text, and in dev builds; transcript surfaces offer app menus instead.
+While another app has focus, `data-window-inactive` hides focus rings, turns
+text selection to `--bg-key` and mutes `aria-current` items, the way Finder
+greys its selection. The browser build keeps the browser's behaviour.
+
+### Keyboard focus model
+
+Tab moves between **areas**, arrows move inside one, as in a native app. An
+area is a focus zone (`lib/focus/zones.ts`): one roving item has `tabIndex=0`,
+the rest `-1`, so the desktop has about a dozen Tab stops in visual order —
+header, sidebar actions, sidebar list, chat, composer toolbar, composer, dock
+tab bar, dock list, status bar.
+
+- **Items** are a zone's focusable descendants except text fields, nested
+  zones and tablists, and anything under `data-zone-skip`.
+- **Skipped controls** are hover-revealed row actions. Each needs a keyboard
+  path: F2, Delete, Shift+F10 / the Menu key, or a shortcut.
+- **Entry** is the item last used, else the zone's `first`, `last` (the
+  transcript) or `active` one (`aria-current`, `aria-selected`).
+- **Pointer sync**: a press on an item makes it current without a focus ring,
+  so arrow keys continue from the row that was clicked.
+- Focus never rests on `<body>` or in an `inert` panel; it returns to the
+  composer.
+
+Tooltips follow native timing: 500 ms on hover, then instant for 300 ms after
+one closes; a press, key or scroll closes them, and focus opens them only when
+it came from the keyboard.
+
 ### Mobile shell
 
 The Tauri webview sets `data-mobile-shell` on `<html>`, which switches the

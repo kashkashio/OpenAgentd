@@ -2,7 +2,7 @@
 title: Features
 description: Canonical, version-cited catalogue of shipped user-visible OpenAgentd features.
 status: stable
-updated: 2026-10-01
+updated: 2026-10-02
 ---
 
 # Features
@@ -14,7 +14,7 @@ release that introduced it (where known). When you ship something new, **add it 
 > double-clickable app that runs an agent on your machine, with a
 > real UI to watch every step. Open source (Apache 2.0). 16 providers. Your keys.
 
-**Latest release:** v3.4.0 · October 1, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.4.0)
+**Latest release:** v3.5.0 · October 2, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.5.0)
 
 ---
 
@@ -314,6 +314,33 @@ run from the terminal (the native Rust binary since v3.0.0).
   page uses itself stay with it), so `⌘W` there closes the tab instead of the
   window. **Keyboard Shortcuts** (`⌘/`/`Ctrl+/`, or the palette) lists every
   shortcut by area.
+- **Keyboard areas, like a desktop app** `[v3.5.0]` — Tab and Shift+Tab move
+  between areas (header, sidebar, chat, composer, dock, status bar) instead of
+  through every button; arrow keys, Home and End move inside an area. About a
+  dozen Tab stops replace 100 or more.
+  - Clicking an item sets the keyboard position, so arrow keys continue from it.
+  - Row actions that only show on hover are out of Tab order and have keys:
+    F2 renames, Delete (or `⌘⌫` / `Ctrl+Backspace`) deletes, Shift+F10 or
+    the Menu key opens the row's menu. In the sidebar, Left and Right
+    collapse and expand a workspace.
+  - Focus never drops to the page: after sending, Escape or a deleted row it
+    returns to the composer, and a collapsed sidebar or closed drawer cannot
+    take it. In the composer, Tab still switches Plan and Code; Shift+Tab or
+    Escape leaves it.
+  - The Keyboard Shortcuts sheet lists the new keys under **Moving around**.
+- **Desktop app polish** `[v3.5.0]` — in the desktop app, dragging across UI
+  chrome no longer highlights it (chat, code, diffs and the terminal still
+  select), buttons use the arrow cursor, links and images cannot be dragged
+  out, and a window in the background dims its highlights. The webview's
+  Reload / Back / Inspect menu is gone: right-click in the chat offers **Open
+  link** / **Copy link**, **Copy code**, **Copy response** / **Copy as
+  Markdown** and, on your messages, **Copy** / **Edit**; text fields and
+  selected text keep the native menu. Shift+F10 opens the same menus in the
+  browser too.
+  - Tooltips wait half a second before appearing, then show at once while you
+    move along a toolbar, and only open on keyboard focus, not after a click.
+  - Search, palette, find, title and worktree fields, and the desktop
+    composer, no longer autocorrect or curl quotes.
 - **Type-to-focus composer** `[v1.40.0]` — in coding chat, start
   typing on the chat surface to expand/focus the composer and capture the first
   character without pressing `⌘I`/`Ctrl+I` first.
@@ -457,13 +484,12 @@ run from the terminal (the native Rust binary since v3.0.0).
 - **Clickable URLs in user message bubbles** `[v1.77.0]` — plain-text URLs typed
   or pasted into a user message are rendered as tappable links; style matches
   agent response links.
-- **Mermaid diagrams in agent responses** `[v1.121.0, v1.123.0]` — completed
-  `mermaid` code fences render as responsive diagrams with Diagram and Code
-  views. A fence now renders as soon as it closes while later response content
-  is still streaming; unfinished and invalid diagrams retain readable source.
-  Full-screen diagrams keep the chrome minimal while supporting keyboard,
-  wheel/trackpad and pinch zoom, double-click/double-tap, and drag-to-pan;
-  diagram text selection is disabled so gestures stay responsive.
+- **Mermaid diagrams in agent responses** *(deprecated)* `[v1.121.0, v1.123.0, v3.5.0]` —
+  completed `mermaid` code fences rendered as diagrams with Diagram and Code
+  views and a full-screen pan/zoom view. Since v3.5.0 the chat no longer
+  renders diagrams: a `mermaid` fence shows as an ordinary code block with copy,
+  and the Mermaid library is no longer shipped. For drawn diagrams, an agent
+  writes a self-contained HTML/SVG file and opens it in the Preview tab.
 - **LaTeX math rendering** `[v1.133.0]` — inline math (`$math$` and `\(math\)`),
   display math (`$$math$$` and `\[math\]`), and fenced code blocks (`math`, `katex`)
   render formatted LaTeX mathematics via KaTeX. Distinguishes mathematical
@@ -484,15 +510,18 @@ run from the terminal (the native Rust binary since v3.0.0).
 - **Pin chat transcript via CSS `overflow-anchor`** `[v2.0.0]` — pins chat transcript
   scrolling using native browser `overflow-anchor` instead of per-frame JS `scrollTop`
   calculations, eliminating stream stutter and CPU churn during fast agent output.
-- **On-demand bundle splitting for heavy components** `[v2.0.0]` — xterm.js, Mermaid
-  diagrams, and PDF.js load lazily on demand when first needed, accelerating cold-start
+- **On-demand bundle splitting for heavy components** `[v2.0.0, v3.5.0]` — xterm.js,
+  KaTeX, and PDF.js load lazily on demand when first needed, accelerating cold-start
   boot time and reducing initial bundle memory.
 - **App surfaces open without a loading step** `[v3.0.0]` — Settings pages,
   Telemetry, the review dock with its Tasks and Schedule tabs, the scheduler and
   session settings dialogs, session search, message Markdown, and MCP app
   results ship with the app instead of loading on first open, so none of them
-  shows a placeholder first. Only xterm.js, Mermaid, and PDF.js still load on
+  shows a placeholder first. Only xterm.js, KaTeX, and PDF.js still load on
   demand.
+- **Scroll position per session** `[v3.5.0]` — leave a session scrolled up and
+  come back to it, and the transcript opens where you were reading; a session
+  you left at the bottom keeps following new output. Kept while the app runs.
 - **Stream auto-stick restored after scroll-to-bottom on mobile** `[v1.77.0]` —
   tapping the scroll-to-bottom button no longer detaches the stream
   auto-follow; direction-based detach logic removed from `onScroll` (was
@@ -851,6 +880,21 @@ agent against it.
     the palette gives the dock the full width over the chat; the conversation
     stays loaded underneath. Tabs close with ×, middle-click or `Ctrl/⌘+W`, and
     focus moves to the neighbouring tab.
+  - **Movable dock tabs and Git on demand** `[v3.5.0]` — the dock works like
+    an editor's tab bar.
+    - A new dock opens empty, on a launcher with Git, Terminal, Preview and
+      Open File. Git is an ordinary tab you can close and move; it opens from
+      the status-bar branch, `⌘⇧G` / `Ctrl+Shift+G`, **Open Git** in the
+      palette, or the launcher. `⌘D` is **Toggle Review Dock**, and `⌘W` on
+      the empty launcher closes the dock.
+    - New tabs open right after the active one. Drag a tab to move it, or
+      use `⌥⇧←/→` (`Alt+Shift+←/→`) or **Move Left / Move Right** in its menu.
+      Closing the active tab activates its right neighbour.
+    - `⌘1`–`⌘8` pick a tab and `⌘9` the last; `⌃Tab` / `⌃⇧Tab` step through
+      them, also from the terminal. In a browser, which keeps these keys for
+      its own tabs, they work in the desktop app only.
+    - Right-click or Shift+F10 on a tab: **Close**, **Close Others**, **Close
+      to the Right**, **Copy Path**; closing running terminals asks first.
   - **Tasks and Scheduled tasks in the dock** `[v3.0.0]` — on desktop with a
     workspace open, the header's task-list button (`Ctrl/⌘+T`) and **Scheduled
     Tasks** in the palette or the sidebar's Scheduled section open the agent's task list and the
@@ -859,6 +903,10 @@ agent against it.
     hides the dock; the header's review-dock button shows and hides it. On
     phones with a workspace, scheduled tasks open as a tab in the review sheet
     too, while the task list stays a popover so the chat remains visible.
+    Hiding the dock keeps it as it was: reopening shows the same tabs with the
+    last active one focused (not the Git tab), and preview pages, their unsent
+    comments and scroll positions are still there, for as long as the app
+    stays open `[v3.5.0]`.
   - **Web preview and design comments in the dock** `[v3.3.0]` — **New
     preview** in the dock's actions, **Open Preview** in the palette, or the
     globe on an HTML file tab opens a **Preview** tab. It shows a local dev
@@ -1077,15 +1125,21 @@ agent against it.
   Changes/Commits/file tabs. Coding-mode only — there is no separate general-chat mode
   terminal. The session survives tab switches (detached PTYs idle-close
   after 15 minutes of no input; the backend reaper is the 30-minute
-  backstop). Includes PTY output backpressure, GPU-accelerated WebGL rendering `[v1.118.0]`,
+  backstop). A terminal with a command still running (a dev server, a
+  build) is never idle-closed, by either reaper, on macOS and Linux `[v3.5.0]`.
+  Includes PTY output backpressure, GPU-accelerated WebGL rendering `[v1.118.0]`,
   debounced SIGWINCH resizing, and mobile key bar ergonomics (touch-and-hold arrow repeat,
   soft-keyboard focus preservation, quick symbol row).
   Terminal font defaults to a best-guess Nerd Font stack
   (MesloLGS NF and similar) for correct Powerlevel10k/Starship glyph rendering.
-  On macOS a focused terminal keeps `⌘K` (clears it, as in Terminal.app) and
-  `⌘F` instead of opening the palette or transcript find `[v3.0.0]`.
+  App shortcuts work from a focused terminal: on macOS every `⌘` shortcut,
+  including `⌘K` for the palette and `⌘F` for transcript find, and on
+  Windows/Linux `Ctrl+K` and `Ctrl+P` skip the shell to open the palette and
+  quick open. **Clear** in the terminal tab's menu clears the scrollback
+  `[v3.5.0]`.
   `⌘W` on a terminal whose shell is still running asks before closing it; the
-  tab's close button still closes right away `[v3.3.0]`.
+  tab's close button still closes right away `[v3.3.0]`, unless a command is
+  running in it, which asks first too `[v3.5.0]`.
 - **Workspace status card** `[v1.18.0]` — empty coding sessions show the
   workspace path, branch, dirty state, last commit instead of the old
   agent-selection fallback. Since `[v3.0.0]` the card shows the workspace
@@ -1302,6 +1356,12 @@ MCP.
   refs (`e1`, `e2`, …), and it can **click**, **fill** fields, **press**
   keys, **scroll**, **navigate**, **wait** for text, and **inspect** an
   element's source, styles and HTML. Acted-on elements flash in the page.
+  A cursor in the page glides to each element it acts on, labeled with what
+  it is doing (*Clicking*, *Typing*), so you can follow along `[v3.5.0]`.
+  It can **chain** up to 20 of these actions in one call, such as filling a
+  form, submitting it and taking a snapshot, stopping at the first step that
+  fails `[v3.5.0]`. Session settings list `preview` among the agent's tools
+  in coding workspaces `[v3.5.0]`.
   Only loopback URLs are accepted, never the OpenAgentd API port. Everything
   works only while the page is open in the Preview tab; there is no headless
   browser and no screenshots.
@@ -1367,6 +1427,8 @@ MCP.
   (`lsp:`) → built-in defaults**. Python is special-cased to run *multiple*
   complementary servers and merge results — a type checker (`ty`/`pyright`) **and**
   a linter (`ruff`) — because neither alone catches both type errors and lint;
+  only one type checker runs, `ty` when it starts, else `pyright`, else `pylsp`
+  `[v3.5.0]`;
   `ruff`/`ty` are **not bundled** with the runtime: when a project pins them (or
   declares them bare), the backend silently downloads the checksum-verified
   wheel for the project's exact `==` pin (PyPI latest for ranges) into the user
@@ -1504,6 +1566,10 @@ Four orthogonal ways to add capability.
     MIME types (`ImageContent` and image embedded resources), which are
     translated to structured `ImageDataBlock` parts for vision models while
     preserving concise textual summaries in transcripts and history.
+    Images are capped at 2000 px on the long edge for every provider `[v3.5.0]`: tool
+    results (including `read`) are shrunk when they arrive, and requests also
+    shrink oversized images replayed from older history, so Anthropic's
+    many-image limit and other providers' pixel limits always hold.
 - **Sandboxed UI artifacts** `[v1.36.0]` *(beta)* — tool-produced HTML UI
 - **Sandboxed UI artifacts** `[v1.36.0, updated v2.17.0]` *(beta)* — tool-produced HTML UI
   resources render as sandboxed sibling chat artifacts. The first producer is

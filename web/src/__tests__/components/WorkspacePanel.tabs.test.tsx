@@ -56,7 +56,7 @@ mock.module('lucide-react', () => ({
   Copy: Icon, Download: Icon, ExternalLink: Icon, File: Icon, FileDiff: Icon, FileText: Icon,
   Folder: Icon, FolderOpen: Icon, GitCommitHorizontal: Icon, GitCompare: Icon, Loader2: Icon,
   Maximize2: Icon, Minimize2: Icon, Plus: Icon,
-  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Undo2: Icon, X: Icon,
+  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Eraser: Icon, Undo2: Icon, X: Icon,
 }))
 mock.module('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => false }))
 mock.module('@/hooks/use-platform', () => ({
@@ -98,7 +98,7 @@ async function renderPanel(onFileSelect = mock(() => {}), ready: RegExp | string
   await act(async () => {
     render(
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open onFileSelect={onFileSelect} />
+        <WorkspacePanel workspace={WORKSPACE} open onFileSelect={onFileSelect} viewRequest={{ view: 'review', key: 1 }} />
       </QueryClientProvider>,
     )
   })
@@ -168,12 +168,13 @@ describe('Review dock diff tabs', () => {
     expect(screen.getByRole('button', { name: 'app.ts' }).getAttribute('aria-current')).toBe('true')
   })
 
-  it('closing the active tab focuses its left neighbour', async () => {
+  it('opens a tab after the active one, and closing it focuses its right neighbour', async () => {
     const user = userEvent.setup()
     await renderPanel()
 
     await user.click(screen.getByRole('button', { name: 'Open src/app.ts' }))
     await user.click(screen.getByRole('button', { name: 'Git' }))
+    // [Git, app.ts] → the diff opens right after Git: [Git, app.ts diff, app.ts].
     await user.click(screen.getByRole('button', { name: 'Open diff tab for src/app.ts' }))
     await user.click(screen.getByRole('button', { name: 'Close app.ts diff' }))
 
@@ -189,6 +190,18 @@ describe('Review dock diff tabs', () => {
     fireEvent(screen.getByRole('button', { name: 'app.ts diff' }), new MouseEvent('auxclick', { bubbles: true, button: 1 }))
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'app.ts diff' })).toBeNull())
+  })
+
+  it('keeps row actions out of Tab order and offers them on Shift+F10', async () => {
+    await renderPanel()
+    const row = screen.getByRole('button', { name: /diff for src\/app\.ts/ })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open diff tab for src/app.ts' }).tabIndex).toBe(-1))
+
+    await act(async () => {
+      row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }))
+    })
+    const menu = screen.getByRole('menu', { name: 'Actions for src/app.ts' })
+    expect(within(menu).getByRole('menuitem', { name: /Open diff in tab/ })).toBeTruthy()
   })
 })
 

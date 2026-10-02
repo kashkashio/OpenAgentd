@@ -35,11 +35,13 @@ import { useAgentStore } from '@/stores/useAgentStore'
 import { useDisplayPrefsStore } from '@/stores/useDisplayPrefsStore'
 import { useTranscriptFollowStore } from '@/stores/useTranscriptFollowStore'
 import { appShortcut, useShortcuts } from '@/lib/keyboard/hooks'
+import { useFocusZone } from '@/lib/focus/zones'
 import type { ContentBlock } from '@/api/types'
 import { UserBubble } from './AgentView/UserBubble'
 import { ErrorCard } from './AgentView/ErrorCard'
 import { isDirectUserBlock, PROMPT_JUMP_MARGIN, previousPromptTurn, promptElements, promptJumpTarget, turnIndexOfBlock } from './AgentView/prompt-nav'
 import { FileRefContext, type FileRefOpener } from './FileRefLink'
+import { copyText, useChatMenu } from './ChatContextMenu'
 import { EmptyState } from '@/components/ui/empty-state'
 import { useAutoFollowScroll } from '@/hooks/useAutoFollowScroll'
 import { TranscriptFind } from './AgentView/TranscriptFind'
@@ -408,15 +410,29 @@ const BlockRenderer = memo(function BlockRenderer({ block, isStreaming, sessionI
         )
       }
       return (
-        <div>
-          <MarkdownBlock content={block.content} sessionId={sessionId} isStreaming={isStreaming} />
-        </div>
+        <AssistantText content={block.content} sessionId={sessionId} isStreaming={isStreaming} />
       )
     }
     default:
       return null
   }
 })
+
+/** An assistant message, with Copy response / Copy as Markdown on its menu. */
+function AssistantText({ content, sessionId, isStreaming }: { content: string; sessionId?: string; isStreaming: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chatMenu = useChatMenu('Actions for response', () => [
+    // As rendered: no Markdown syntax.
+    { label: 'Copy response', run: () => copyText((ref.current?.innerText || ref.current?.textContent || content).trim()) },
+    { label: 'Copy as Markdown', run: () => copyText(content) },
+  ])
+  return (
+    <div ref={ref} onContextMenu={chatMenu.onContextMenu} onKeyDown={chatMenu.onKeyDown}>
+      <MarkdownBlock content={content} sessionId={sessionId} isStreaming={isStreaming} />
+      {chatMenu.menu}
+    </div>
+  )
+}
 
 export function AgentView({
   blocks,
@@ -608,6 +624,10 @@ export function AgentView({
     isEmpty,
     onLoadOlderTop: handleLoadOlderTopTrigger,
   })
+  // The transcript is one Tab stop, entered on its newest control; Up/Down
+  // walk tool calls, message actions, copy buttons and links. PageUp,
+  // PageDown and Space still scroll. Throttled: content streams in.
+  useFocusZone(scrollRef, { orientation: 'vertical', entry: 'last', throttleMs: 200 })
 
   // ── Follow state for the composer's jump chip ─────────────────────────────
   // Counted from the newest block when the reader scrolled away, so earlier

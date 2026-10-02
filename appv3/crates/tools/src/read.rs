@@ -202,11 +202,13 @@ pub fn handle_image(resolved: &Path, rel: &str) -> Result<ToolOutput, ToolError>
         return Err(ToolError::Execution(format!("Image '{rel}' is {} KB — exceeds the {} KB limit for vision input.", size / 1024, MAX_IMAGE_BYTES / 1024)));
     }
     let raw = std::fs::read(resolved)?;
+    // Shrink before encoding: one decode, one base64 pass (images::MAX_IMAGE_EDGE).
+    let (label, raw, media_type) = match appv3_providers::images::fit_image_bytes(&raw, appv3_providers::images::MAX_IMAGE_EDGE) {
+        Some(f) => (format!("[Image: {rel} (resized {}×{} → {}×{})]", f.from.0, f.from.1, f.to.0, f.to.1), f.bytes, f.media_type.to_string()),
+        None => (format!("[Image: {rel}]"), raw, image_mime(resolved)),
+    };
     Ok(ToolOutput::Parts {
-        parts: vec![
-            ContentBlock::text(format!("[Image: {rel}]")),
-            ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(raw), media_type: image_mime(resolved) },
-        ],
+        parts: vec![ContentBlock::text(label), ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(raw), media_type }],
         mcp_app: None,
     })
 }
@@ -378,6 +380,25 @@ mod tests {
         let (t, raw) = doc("payroll.pdf", &minimal_pdf("secret", true));
         assert!(t.contains("The document is encrypted or password-protected"), "{t}");
         assert!(!raw);
+    }
+
+    #[test]
+    fn large_images_are_resized_before_encoding_and_small_ones_sent_as_is() {
+        use appv3_providers::images::{dimensions_b64, fixtures};
+        let d = tempfile::tempdir().unwrap();
+        let big = d.path().join("big.png");
+        std::fs::write(&big, fixtures::png(2400, 1600)).unwrap();
+        let ToolOutput::Parts { parts, .. } = handle_image(&big, "big.png").unwrap() else { panic!("parts") };
+        assert_eq!(parts[0], ContentBlock::text("[Image: big.png (resized 2400×1600 → 2000×1333)]"));
+        let ContentBlock::ImageData { data, media_type } = &parts[1] else { panic!("image") };
+        assert_eq!((dimensions_b64(data), media_type.as_str()), (Some((2000, 1333)), "image/png"));
+
+        let small_bytes = fixtures::jpeg(320, 200);
+        let small = d.path().join("small.jpg");
+        std::fs::write(&small, &small_bytes).unwrap();
+        let ToolOutput::Parts { parts, .. } = handle_image(&small, "small.jpg").unwrap() else { panic!("parts") };
+        assert_eq!(parts[0], ContentBlock::text("[Image: small.jpg]"));
+        assert_eq!(parts[1], ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&small_bytes), media_type: "image/jpeg".into() });
     }
 
     #[test]

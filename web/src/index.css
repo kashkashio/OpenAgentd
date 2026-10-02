@@ -367,21 +367,56 @@ html[data-mobile-shell] [contenteditable="true"]:focus {
   animation: blink_input_opacity_to_prevent_scrolling_when_focus 0.01s;
 }
 
-html[data-mobile-shell] body {
+/* App shells (mobile, and the desktop app via lib/desktop-shell.ts): UI
+ * chrome is not text, so dragging across it never highlights it. Content
+ * people copy stays selectable. */
+html[data-mobile-shell] body,
+html[data-shell="desktop"] body {
   -webkit-user-select: none;
   user-select: none;
 }
 
-html[data-mobile-shell] input,
-html[data-mobile-shell] textarea,
-html[data-mobile-shell] [contenteditable="true"],
-html[data-mobile-shell] .selectable-text,
-html[data-mobile-shell] .oa-prose,
-html[data-mobile-shell] .oa-prose *,
-html[data-mobile-shell] pre,
-html[data-mobile-shell] code {
+html:is([data-mobile-shell], [data-shell="desktop"]) :is(
+  input,
+  textarea,
+  [contenteditable="true"],
+  .selectable-text,
+  .oa-prose,
+  .oa-prose *,
+  pre,
+  code,
+  .xterm,
+  [data-select-container]
+) {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* Desktop app: the arrow cursor on controls (links keep the hand), no
+ * dragging links or images out of the window, and a muted look while
+ * another app has focus — native windows hide the focus ring and grey out
+ * selections then. */
+html[data-shell="desktop"] body {
+  cursor: default;
+}
+html[data-shell="desktop"] :is(button, [role="button"], [role="tab"], summary, label) {
+  cursor: default;
+}
+html[data-shell="desktop"] :is(img, a) {
+  -webkit-user-drag: none;
+}
+html[data-shell="desktop"][data-window-inactive] :focus-visible {
+  outline-color: transparent;
+}
+html[data-shell="desktop"][data-window-inactive] ::selection {
+  background-color: var(--bg-key);
+}
+html[data-shell="desktop"][data-window-inactive] [aria-current]:not([aria-current="false"]) {
+  color: var(--color-text-muted);
+}
+
+::selection {
+  background-color: var(--accent-blue-soft);
 }
 
 /* Legibility floor — 11px minimum for tiny utility text on EVERY shell.
@@ -945,49 +980,6 @@ html[data-app-hidden="true"] *::after {
   color: var(--color-text);
 }
 
-.oa-prose .oa-mermaid-diagram {
-  max-width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 1rem 0.75rem;
-  display: flex;
-  justify-content: center;
-}
-
-.oa-prose .oa-mermaid-diagram svg {
-  display: block;
-  height: auto;
-  max-width: 100%;
-  margin-inline: auto;
-  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif !important;
-}
-
-.oa-mermaid-diagram .node rect,
-.oa-mermaid-diagram .node circle,
-.oa-mermaid-diagram .node polygon {
-  rx: var(--radius-xs);
-  ry: var(--radius-xs);
-}
-
-.oa-mermaid-diagram text,
-.oa-mermaid-diagram .label {
-  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif !important;
-}
-
-.oa-mermaid-lightbox-content {
-  touch-action: pan-x pan-y;
-  -webkit-overflow-scrolling: touch;
-}
-
-.oa-mermaid-lightbox-content svg {
-  max-width: 100% !important;
-  max-height: 100% !important;
-  width: auto !important;
-  height: auto !important;
-  display: block;
-  margin-inline: auto;
-}
-
 .oa-prose a {
   color: var(--color-text);
   font-weight: 500;
@@ -1107,6 +1099,11 @@ html[data-app-hidden="true"] *::after {
 :where(button, select, a[href], [tabindex]):focus-visible {
   outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
+}
+/* Focus given by a click or a tab switch, not steered by keyboard; see
+ * focusQuietly in lib/focus/zones.ts. Clears on blur. */
+[data-quiet-focus]:focus-visible {
+  outline: none;
 }
 :where(input, textarea):focus,
 :where(input, textarea):focus-visible {

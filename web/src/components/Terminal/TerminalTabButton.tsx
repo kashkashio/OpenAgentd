@@ -2,15 +2,15 @@
  * TerminalTabButton — tab chip for a terminal session in
  * WorkspacePanel (terminal needs an attached workspace).
  *
- * Desktop: right-click opens a small menu (Rename / Close).
+ * Desktop: right-click opens a small menu (Rename / Clear / Close).
  * Mobile: long-press opens the same choice as a bottom sheet — no native
  * context menu on touch, matching the LongPressButton pattern used
  * elsewhere (Sidebar sessions, changed-files, commits).
- * Both funnel into useTerminalStore.rename() / .close().
+ * Both funnel into useTerminalStore.rename() / .clear() / .close().
  */
 
-import { useRef, useState } from 'react'
-import { Pencil, TerminalSquare, X } from 'lucide-react'
+import { useRef, useState, type ReactNode } from 'react'
+import { Eraser, Pencil, TerminalSquare, X } from 'lucide-react'
 
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ import {
   CONTEXT_MENU_ITEM_CLASS,
   CONTEXT_MENU_ITEM_DANGER_CLASS,
   ContextMenu,
+  ContextMenuSeparator,
 } from '@/components/ui/context-menu'
 import { Input } from '@/components/ui/input'
 import { LongPressButton } from '@/components/ui/long-press-button'
@@ -28,6 +29,7 @@ import {
   dockTabCloseClass,
 } from '@/components/WorkspacePanel/dock-tab-styles'
 import { softHapticFeedback } from '@/lib/haptics'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import { useTerminalStore, type TerminalSessionMeta } from '@/stores/useTerminalStore'
 
@@ -38,6 +40,12 @@ interface TerminalTabButtonProps {
   onActivate: () => void
   className?: string
   buttonRef?: (node: HTMLButtonElement | null) => void
+  /** Tab-strip items (Close Others, …) appended to the desktop menu. */
+  extraMenuItems?: (dismiss: () => void) => ReactNode
+  /** Closes the tab through the dock, which picks the next active tab. */
+  onClose?: () => void
+  /** The dock strip's tab id, marking the wrapper as a drag handle. */
+  dockTabId?: string
 }
 
 export function TerminalTabButton({
@@ -47,12 +55,16 @@ export function TerminalTabButton({
   onActivate,
   className,
   buttonRef,
+  extraMenuItems,
+  onClose,
+  dockTabId,
 }: TerminalTabButtonProps) {
   const [desktopMenuAt, setDesktopMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draftTitle, setDraftTitle] = useState(meta.title)
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const close = onClose ?? (() => useTerminalStore.getState().close(meta.id))
 
   const openRename = () => {
     setDraftTitle(meta.title)
@@ -70,7 +82,7 @@ export function TerminalTabButton({
       {/* Same editor-tab chrome as the dock's file/diff/commit tabs: the
           wrapper carries the tab surface, the activate button and the close
           button are siblings (never a control nested inside a button). */}
-      <div className={cn(dockTabClass(active), className)}>
+      <div data-dock-tab={dockTabId} className={cn(dockTabClass(active), className)}>
         <Tooltip className="h-full min-w-0 flex-1">
           <TooltipTrigger
             className="h-full min-w-0 flex-1"
@@ -89,11 +101,17 @@ export function TerminalTabButton({
                   e.preventDefault()
                   setDesktopMenuAt({ x: e.clientX, y: e.clientY })
                 }}
+                onKeyDown={(e) => {
+                  if (mobile || !isMenuKey(e)) return
+                  e.preventDefault()
+                  const at = menuPointFor(e.currentTarget)
+                  setDesktopMenuAt({ x: at.clientX, y: at.clientY })
+                }}
                 onClick={onActivate}
                 onAuxClick={(e) => {
                   if (mobile || e.button !== 1) return
                   e.preventDefault()
-                  useTerminalStore.getState().close(meta.id)
+                  close()
                 }}
                 className={cn(dockTabButtonClass(!mobile), 'flex-1')}
               >
@@ -107,9 +125,10 @@ export function TerminalTabButton({
         {!mobile && (
           <button
             type="button"
+            data-zone-skip
             onClick={(e) => {
               e.stopPropagation()
-              useTerminalStore.getState().close(meta.id)
+              close()
             }}
             className={dockTabCloseClass(active)}
             aria-label={`Close ${meta.title}`}
@@ -134,15 +153,33 @@ export function TerminalTabButton({
           <button
             type="button"
             role="menuitem"
+            className={CONTEXT_MENU_ITEM_CLASS}
+            onClick={() => {
+              setDesktopMenuAt(null)
+              useTerminalStore.getState().clear(meta.id)
+            }}
+          >
+            <Eraser size={12} aria-hidden="true" />
+            Clear
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             className={CONTEXT_MENU_ITEM_DANGER_CLASS}
             onClick={() => {
               setDesktopMenuAt(null)
-              useTerminalStore.getState().close(meta.id)
+              close()
             }}
           >
             <X size={12} aria-hidden="true" />
             Close
           </button>
+          {extraMenuItems && (
+            <>
+              <ContextMenuSeparator />
+              {extraMenuItems(() => setDesktopMenuAt(null))}
+            </>
+          )}
         </ContextMenu>
       )}
 
@@ -165,11 +202,23 @@ export function TerminalTabButton({
             </Button>
             <Button
               type="button"
+              variant="ghost"
+              className="justify-start"
+              onClick={() => {
+                setMobileSheetOpen(false)
+                useTerminalStore.getState().clear(meta.id)
+              }}
+            >
+              <Eraser size={14} aria-hidden="true" />
+              Clear terminal
+            </Button>
+            <Button
+              type="button"
               variant="danger-subtle"
               className="justify-start"
               onClick={() => {
                 setMobileSheetOpen(false)
-                useTerminalStore.getState().close(meta.id)
+                close()
               }}
               aria-label="Close terminal"
             >

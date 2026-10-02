@@ -1,5 +1,9 @@
 //! `/api/terminal` — port of `app/api/routes/terminal.py` (single-use
 //! tickets + PTY over WebSocket).
+//!
+//! v3 adds a `{"type": "busy", "busy": bool}` frame, sent whenever a command
+//! starts or stops running in the shell, so the client can keep a terminal
+//! with a running command open.
 
 use crate::error::{ApiError, ApiResult};
 use crate::schema::Body;
@@ -19,6 +23,8 @@ use std::time::{Duration, Instant};
 
 pub const TICKET_TTL: Duration = Duration::from_secs(30);
 const MAX_PENDING_TICKETS: usize = 32;
+/// How often the socket checks whether a command is running in the shell.
+const BUSY_POLL: Duration = Duration::from_millis(500);
 
 struct Ticket {
     workspace: String,
@@ -177,21 +183,36 @@ async fn run_socket(socket: WebSocket, t: Ticket) {
     let s_out = session.clone();
     let to_ws = async move {
         let mut dec = Utf8Decoder { pending: vec![] };
+        let mut busy = false;
+        let mut poll = tokio::time::interval(BUSY_POLL);
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match s_out.read().await {
-                Some(chunk) => {
-                    let text = dec.decode(&chunk, false);
-                    if !send_json(&mut tx, json!({"type": "output", "data": text})).await {
+            // `read` is cancel-safe (a tokio mutex, then `mpsc::recv`).
+            tokio::select! {
+                chunk = s_out.read() => match chunk {
+                    Some(chunk) => {
+                        let text = dec.decode(&chunk, false);
+                        if !send_json(&mut tx, json!({"type": "output", "data": text})).await {
+                            return tx;
+                        }
+                    }
+                    None => {
+                        let tail = dec.decode(&[], true);
+                        if !tail.is_empty() {
+                            let _ = send_json(&mut tx, json!({"type": "output", "data": tail})).await;
+                        }
+                        let _ = send_json(&mut tx, json!({"type": "exit"})).await;
                         return tx;
                     }
-                }
-                None => {
-                    let tail = dec.decode(&[], true);
-                    if !tail.is_empty() {
-                        let _ = send_json(&mut tx, json!({"type": "output", "data": tail})).await;
+                },
+                _ = poll.tick() => {
+                    let now = s_out.busy();
+                    if now != busy {
+                        busy = now;
+                        if !send_json(&mut tx, json!({"type": "busy", "busy": now})).await {
+                            return tx;
+                        }
                     }
-                    let _ = send_json(&mut tx, json!({"type": "exit"})).await;
-                    return tx;
                 }
             }
         }

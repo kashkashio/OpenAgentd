@@ -126,6 +126,19 @@ describe('useOverlayState dock views', () => {
     expect(args.toggleScheduler).toHaveBeenCalledTimes(1)
     expect(result.current.workspacePanel).toBeNull()
   })
+
+  it('opens the dock on its Git tab, and never closes it on a second call', () => {
+    const { result } = renderOverlay()
+
+    act(() => result.current.handleOpenGit())
+    expect(result.current.workspacePanel).toBe('changed')
+    expect(result.current.dockViewRequest).toEqual({ view: 'review', key: 1 })
+
+    act(() => result.current.setDockActiveView('review'))
+    act(() => result.current.handleOpenGit())
+    expect(result.current.workspacePanel).toBe('changed')
+    expect(result.current.dockViewRequest).toEqual({ view: 'review', key: 2 })
+  })
 })
 
 describe('useOverlayState Plan view', () => {

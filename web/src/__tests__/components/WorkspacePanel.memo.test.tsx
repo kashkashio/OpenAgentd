@@ -38,7 +38,7 @@ mock.module('lucide-react', () => ({
   Copy: Icon, Download: Icon, ExternalLink: Icon, File: Icon, FileDiff: Icon, FileText: Icon,
   Folder: Icon, FolderOpen: Icon, GitCommitHorizontal: Icon, GitCompare: Icon, Loader2: Icon,
   Maximize2: Icon, Minimize2: Icon, Plus: Icon,
-  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Undo2: Icon, X: Icon,
+  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Eraser: Icon, Undo2: Icon, X: Icon,
 }))
 mock.module('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => false }))
 mock.module('@/hooks/use-platform', () => ({
@@ -72,7 +72,7 @@ describe('Review dock list memoization', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const panel = (centerWidth: number) => (
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} />
+        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} viewRequest={{ view: 'review', key: 1 }} />
       </QueryClientProvider>
     )
     let rerender: (ui: React.ReactElement) => void = () => {}

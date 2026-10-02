@@ -22,6 +22,8 @@
  * Output deliberately does NOT count as activity, otherwise a `tail -f`
  * would pin the PTY forever. The backend's own 30-minute reaper remains
  * the backstop for clients that vanish without closing.
+ * Sessions running a command (`busy`, reported by the backend) are exempt
+ * too, on both sides: a quiet dev server or build is never closed for idling.
  */
 
 import { create } from 'zustand'
@@ -49,6 +51,12 @@ export interface TerminalSessionMeta {
   status: TerminalSessionStatus
   closedReason?: TerminalClosedReason
   errorMsg?: string
+  /**
+   * A command is running in the shell (not just the prompt). The backend
+   * reports it on Unix; it stays unset on Windows. Busy sessions are never
+   * idle-closed, and closing one from the tab asks first.
+   */
+  busy?: boolean
   /**
    * True once the xterm handle exists. ``@xterm/*`` is ~352 kB minified and
    * loads on demand, so a session is briefly live with no terminal object at
@@ -99,6 +107,8 @@ interface TerminalStore {
   setInputTransform: (id: string, transform: (data: string) => string) => void
   /** User-driven rename (desktop right-click / mobile long-press). Blank is a no-op. */
   rename: (id: string, title: string) => void
+  /** Clear the scrollback, keeping the prompt line (the tab menu's Clear). */
+  clear: (id: string) => void
   /** Swap every live terminal's palette when the app theme resolves anew. */
   syncTheme: (theme: TerminalResolvedTheme) => void
   /** Swap every live terminal's font stack when the stored preference changes. */
@@ -194,15 +204,21 @@ async function connect(
     rt.target,
     {
       onOutput: (data) => term.write(data),
-      onExit: () => patch({ status: 'exited', closedReason: 'exit' }),
+      onExit: () => patch({ status: 'exited', closedReason: 'exit', busy: false }),
+      onBusy: (busy) => {
+        // A command that just finished gets a full idle window, so its
+        // output is still there when the user comes back to it.
+        if (!busy) rt.lastActivityAt = Date.now()
+        if (useTerminalStore.getState().sessions[id]?.busy !== busy) patch({ busy })
+      },
       onError: () => {
         if (useTerminalStore.getState().sessions[id]?.status === 'connected') {
-          patch({ status: 'error', errorMsg: 'Terminal connection error' })
+          patch({ status: 'error', errorMsg: 'Terminal connection error', busy: false })
         }
       },
       onClose: () => {
         if (useTerminalStore.getState().sessions[id]?.status === 'connected') {
-          patch({ status: 'exited', closedReason: 'exit' })
+          patch({ status: 'exited', closedReason: 'exit', busy: false })
         }
       },
     },
@@ -326,6 +342,10 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     })
   },
 
+  clear: (id) => {
+    runtimes.get(id)?.handle?.term.clear()
+  },
+
   syncTheme: (theme) => {
     currentTheme = theme
     for (const rt of runtimes.values()) {
@@ -358,7 +378,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     for (const [id, rt] of runtimes) {
       const meta = get().sessions[id]
       if (!meta || meta.status !== 'connected') continue
-      if (rt.attached) continue
+      if (rt.attached || meta.busy) continue
       if (now - rt.lastActivityAt <= TERMINAL_IDLE_CLOSE_MS) continue
       teardownRuntime(rt)
       set((state) => {

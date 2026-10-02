@@ -35,20 +35,30 @@ fn shared_client() -> &'static reqwest::Client {
 
 // Access keys live in the OS credential store, keyed by canonical origin;
 // the logic is shared with the desktop shell in `openagentd-shell-core`.
+// The commands are async so the keychain call (and any unlock prompt) runs
+// on the blocking pool, not the main thread; see the desktop's `commands.rs`.
 
-#[tauri::command]
-fn secure_get_access_key(origin: String) -> Result<Option<String>, String> {
-    openagentd_shell_core::get_access_key(&origin)
+async fn off_main_thread<T: Send + 'static>(
+    call: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(call)
+        .await
+        .map_err(|_| "credential store unavailable".to_string())?
 }
 
 #[tauri::command]
-fn secure_set_access_key(origin: String, key: String) -> Result<(), String> {
-    openagentd_shell_core::set_access_key(&origin, &key)
+async fn secure_get_access_key(origin: String) -> Result<Option<String>, String> {
+    off_main_thread(move || openagentd_shell_core::get_access_key(&origin)).await
 }
 
 #[tauri::command]
-fn secure_delete_access_key(origin: String) -> Result<(), String> {
-    openagentd_shell_core::delete_access_key(&origin)
+async fn secure_set_access_key(origin: String, key: String) -> Result<(), String> {
+    off_main_thread(move || openagentd_shell_core::set_access_key(&origin, &key)).await
+}
+
+#[tauri::command]
+async fn secure_delete_access_key(origin: String) -> Result<(), String> {
+    off_main_thread(move || openagentd_shell_core::delete_access_key(&origin)).await
 }
 
 #[derive(Clone, Serialize)]

@@ -25,18 +25,26 @@ mock.module('lucide-react', () => ({
   Copy: Icon, Download: Icon, ExternalLink: Icon, File: Icon, FileDiff: Icon, FileText: Icon,
   Folder: Icon, FolderOpen: Icon, GitCommitHorizontal: Icon, GitCompare: Icon, Loader2: Icon,
   Maximize2: Icon, Minimize2: Icon, Plus: Icon,
-  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Undo2: Icon, X: Icon,
+  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Eraser: Icon, Undo2: Icon, X: Icon,
 }))
 mock.module('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => false }))
 mock.module('@/hooks/use-platform', () => ({
   usePlatform: () => ({ isTauri: false, os: 'linux', isMacOverlay: false }),
   getPlatform: () => ({ isTauri: false, os: 'linux', isMacOverlay: false }),
 }))
+// The mocked aside does not animate: tests finish its tween by hand.
+let finishTween: (() => void) | undefined
 mock.module('framer-motion', () => ({
   motion: {
-    aside: ({ children, className, 'aria-label': ariaLabel }: { children: React.ReactNode; className?: string; 'aria-label'?: string }) => (
-      <aside className={className} aria-label={ariaLabel}>{children}</aside>
-    ),
+    aside: ({ children, className, 'aria-label': ariaLabel, onAnimationComplete }: {
+      children: React.ReactNode
+      className?: string
+      'aria-label'?: string
+      onAnimationComplete?: () => void
+    }) => {
+      finishTween = onAnimationComplete
+      return <aside className={className} aria-label={ariaLabel}>{children}</aside>
+    },
   },
 }))
 
@@ -53,13 +61,13 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-async function renderPanel({ centerWidth = 1000, mobile = false } = {}) {
+async function renderPanel({ centerWidth = 1000, mobile = false, git = false } = {}) {
   const { WorkspacePanel } = await import('@/components/WorkspacePanel')
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
     render(
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} mobile={mobile} />
+        <WorkspacePanel workspace={WORKSPACE} open centerWidth={centerWidth} mobile={mobile} viewRequest={git ? { view: 'review', key: 1 } : null} />
       </QueryClientProvider>,
     )
   })
@@ -75,9 +83,13 @@ describe('Review dock layout', () => {
     // 45% of a 1000px center, capped so the chat keeps 400px.
     expect(separator.getAttribute('aria-valuenow')).toBe('450')
     expect(separator.getAttribute('aria-valuemax')).toBe('600')
-    // The body keeps that width while the aside tweens open or closed.
+    // The body keeps that width while the aside tweens open...
     const body = dock.querySelector<HTMLElement>('[data-review-dock]')!
     expect(body.parentElement!.style.width).toBe('450px')
+    // ...then fills it, so a later resize moves it with the edge instead of
+    // clipping its far side or leaving it blank until the tween ends.
+    act(() => finishTween?.())
+    expect(body.parentElement!.style.width).toBe('100%')
 
     fireEvent.keyDown(separator, { key: 'ArrowLeft' })
     expect(useLayoutStore.getState().dockRatio).toBeCloseTo(0.466, 3)
@@ -129,7 +141,54 @@ describe('Review dock layout', () => {
     expect(screen.getByRole('complementary', { name: 'Review dock' }).className).toContain('md:absolute')
   })
 
+  // Sized from the mid-tween center, the dock chased the sidebar a frame
+  // behind and the chat between them overshot, then snapped back.
+  it('sizes for where a tweening sidebar beside the center ends', async () => {
+    const { WorkspacePanel } = await import('@/components/WorkspacePanel')
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const centerRef: { current: HTMLDivElement | null } = { current: null }
+    // Collapsing: the sidebar is still 100px wide on its way to 0.
+    const sidebar = (node: HTMLDivElement | null) => {
+      if (node) node.getBoundingClientRect = () => ({ width: 100 }) as DOMRect
+    }
+    const attach = (node: HTMLDivElement | null) => {
+      if (node) node.getBoundingClientRect = () => ({ width: 1000 }) as DOMRect
+      centerRef.current = node
+    }
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <div>
+            <div ref={sidebar} data-panel-target-width={0} />
+            <div ref={attach}>
+              <WorkspacePanel workspace={WORKSPACE} open centerRef={centerRef} />
+            </div>
+          </div>
+        </QueryClientProvider>,
+      )
+    })
+
+    // 45% of the 1100px center the sidebar leaves, not of the 1000px now.
+    expect(screen.getByRole('separator', { name: 'Resize review dock' }).getAttribute('aria-valuenow')).toBe('495')
+  })
+
   it('takes focus stranded in the covered chat so keyboard users land on the active tab', async () => {
+    const chat = document.createElement('main')
+    chat.setAttribute('inert', '')
+    const composer = document.createElement('textarea')
+    chat.appendChild(composer)
+    document.body.appendChild(chat)
+    composer.focus()
+
+    await renderPanel({ centerWidth: 600, git: true })
+
+    const activeTab = document.querySelector('[data-review-dock] [aria-current="true"]')
+    expect(activeTab).not.toBeNull()
+    expect(document.activeElement).toBe(activeTab)
+    chat.remove()
+  })
+
+  it('lands stranded focus on the launcher when the covering dock is empty', async () => {
     const chat = document.createElement('main')
     chat.setAttribute('inert', '')
     const composer = document.createElement('textarea')
@@ -139,9 +198,7 @@ describe('Review dock layout', () => {
 
     await renderPanel({ centerWidth: 600 })
 
-    const activeTab = document.querySelector('[data-review-dock] [aria-current="true"]')
-    expect(activeTab).not.toBeNull()
-    expect(document.activeElement).toBe(activeTab)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Git \(/ }))
     chat.remove()
   })
 

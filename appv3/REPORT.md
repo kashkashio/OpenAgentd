@@ -292,6 +292,16 @@ explicitly.
     appends the same transition note. v2 copies the lead's mode only when
     the member is spawned, so a member spawned in Code mode keeps edit
     access after the lead enters Plan mode, where `delegate` is allowed.
+  - *Terminals running a command* (`terminal/src/lib.rs`,
+    `api/src/routes/terminal.rs`). `TerminalSession::busy` is true while
+    the PTY's foreground process group is not the shell's own, that is,
+    while a command runs. The idle reaper skips busy sessions, so a quiet
+    dev server or build is not killed after 30 minutes. The terminal
+    WebSocket sends a new `{"type": "busy", "busy": bool}` frame when this
+    changes (checked every 500 ms). The web client then skips its own idle
+    close and asks before the tab's close button closes the terminal.
+    Windows has no foreground process group, so it never sends the frame.
+    v2 has neither.
 - **Version:** the workspace `Cargo.toml` version is the release version
   (from 3.0.0 on; `scripts/bump_version.sh` sets it and
   `scripts/check_version_consistency.sh` holds every other release-facing
@@ -408,7 +418,10 @@ explicitly.
   is detected at compile time; malformed server payloads (non-object
   `params`, non-list `diagnostics`) are tolerated where v2's read loop would
   die; the `lsp` navigation tool is ported but, exactly like v2, is not in
-  any runtime registry.
+  any runtime registry. Python runs one type checker, not every installed
+  one: the first of ty, pyright and pylsp that starts, with ruff (lint)
+  beside it (`start_servers` in `tools/src/lsp/manager.rs`). v2 starts all
+  of them, so ty and pyright both reported the same type errors.
 - **OTEL:** full port without the opentelemetry crates
   (`crates/core/src/otel.rs`). It covers task-local span context, the JSONL
   span/metric writers and their export filter, retention, and
@@ -925,8 +938,11 @@ The app CSP gains `frame-src 'self' http://127.0.0.1:*`. The lead's
 page: the inspector long-polls `/__openagentd/agent` on the preview origin
 for commands (snapshot, click, fill, press, scroll, navigate, wait, inspect)
 and posts results back there, so commands fail fast when no Preview tab has
-the page open. Its definition lives in `crates/agent/src/tools/preview.rs`,
-not in the v2 tool contract. Design feedback travels inside the user message
-as a `<design-feedback>` block that the web UI renders as a card; the wire
-format is unchanged.
+the page open. `action: "chain"` runs up to 20 such commands from `steps`
+in order in one call, stopping at the first failure. A virtual cursor in
+the inspector's overlay glides to each acted-on element and labels the
+action. Its definition lives in `crates/agent/src/tools/preview.rs`, not in
+the v2 tool contract; `GET /agents` lists it for coding workspaces. Design
+feedback travels inside the user message as a `<design-feedback>` block
+that the web UI renders as a card; the wire format is unchanged.
 Not done: `wss://` relays, LAN or mobile access, and headless capture.

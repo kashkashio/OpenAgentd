@@ -661,14 +661,14 @@ fn open_help_url(app: &AppHandle, url: &str) {
     }
 }
 
-/// Load the saved access key for an external backend without exposing it in
-/// the tray's state or logs. A credential-store failure leaves the request
-/// unauthenticated; the backend response remains the source of truth.
+/// The saved access key for an external backend, from a
+/// ``secure_get_access_key`` result, without exposing it in the tray's state
+/// or logs. A credential-store failure leaves the request unauthenticated;
+/// the backend response remains the source of truth.
 pub(crate) fn external_usage_access_key(
-    base_url: &str,
-    load: impl FnOnce(String) -> std::result::Result<Option<String>, String>,
+    loaded: std::result::Result<Option<String>, String>,
 ) -> Option<String> {
-    match load(base_url.to_string()) {
+    match loaded {
         Ok(key) => key,
         Err(_) => {
             log::debug!("usage_summary_access_key_unavailable");
@@ -691,14 +691,17 @@ pub(crate) async fn resolve_backend_endpoint(app: &AppHandle) -> Option<(String,
         .or_else(|| external_map.get(crate::window::MAIN_WINDOW))
         .cloned()
     {
-        let access_key = external_usage_access_key(&base, crate::commands::secure_get_access_key);
+        let access_key =
+            external_usage_access_key(crate::commands::secure_get_access_key(base.clone()).await);
         return Some((base, access_key));
     }
     if let Some(active_base) = crate::config::load_app_backend_config(app)
         .ok()
         .and_then(|c| c.active_base_url)
     {
-        let access_key = external_usage_access_key(&active_base, crate::commands::secure_get_access_key);
+        let access_key = external_usage_access_key(
+            crate::commands::secure_get_access_key(active_base.clone()).await,
+        );
         return Some((active_base, access_key));
     }
     let base = state.backend_base_url.lock().await.clone()?;
@@ -996,12 +999,16 @@ mod tests {
     }
 
     #[test]
-    fn external_usage_access_key_loads_the_key_for_the_current_backend() {
-        let key = external_usage_access_key("https://agents.example.com", |origin| {
-            assert_eq!(origin, "https://agents.example.com");
-            Ok(Some("access-key".to_string()))
-        });
-
-        assert_eq!(key.as_deref(), Some("access-key"));
+    fn external_usage_access_key_uses_the_stored_key_and_drops_store_errors() {
+        assert_eq!(
+            external_usage_access_key(Ok(Some("access-key".to_string()))).as_deref(),
+            Some("access-key")
+        );
+        assert_eq!(external_usage_access_key(Ok(None)), None);
+        assert_eq!(
+            external_usage_access_key(Err("credential store unavailable".to_string())),
+            None,
+            "a store failure leaves the request unauthenticated"
+        );
     }
 }

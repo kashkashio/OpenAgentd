@@ -109,6 +109,8 @@ export interface UseOverlayStateResult {
 
   closeOtherMobileOverlays: (keep: MobileOverlay) => void
   handleWorkspaceFiles: () => void
+  /** Opens the dock on its Git tab, or shows the open one (workspace only). */
+  handleOpenGit: () => void
   handleSidebarToggle: () => void
   handleOpenWorkspaceDialog: () => void
   handleFileSelect: (file: WorkspaceFileInfo | null) => void
@@ -248,6 +250,14 @@ export function useOverlayState({
     }
     setSidebarCollapsed((value) => !value)
   }, [closeOtherMobileOverlays, isMobile, setSidebarCollapsed])
+
+  const handleOpenGit = useCallback(() => {
+    if (!workspace) return
+    if (isMobile) setMobileSidebarOpen(false)
+    closeOtherMobileOverlays('workspace-panel')
+    setWorkspacePanel((value) => value ?? 'changed')
+    setDockViewRequest((prev) => ({ view: 'review', key: (prev?.key ?? 0) + 1 }))
+  }, [closeOtherMobileOverlays, isMobile, workspace])
 
   const handleOpenWorkspaceDialog = useCallback(() => {
     setSidebarCollapsed(false)
@@ -577,6 +587,7 @@ export function useOverlayState({
 
     closeOtherMobileOverlays,
     handleWorkspaceFiles,
+    handleOpenGit,
     handleSidebarToggle,
     handleOpenWorkspaceDialog,
     handleFileSelect,

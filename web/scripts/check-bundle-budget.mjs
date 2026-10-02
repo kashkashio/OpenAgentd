@@ -41,8 +41,8 @@ if (import.meta.main) {
   // App surfaces (Settings pages, Telemetry, the review dock, the scheduler
   // and Session Settings modals, Markdown, MCP app results) load with the
   // shell, so opening one never waits on a chunk; that raised the eager graph
-  // by ~231 kB gzip. Only the heavy renderers stay lazy: Mermaid, PDF.js and
-  // xterm. Limits sit just above the measured 2.54 MB / 754 kB gzip, and the
+  // by ~231 kB gzip. Only the heavy renderers stay lazy: PDF.js, xterm and
+  // KaTeX (Mermaid was removed). Limits sit just above the measured 2.54 MB / 754 kB gzip, and the
   // 1.90 MB index chunk is now the largest one.
   // The plan review (Plan tab, transcript card) raised it to 2.57 MB / 765 kB.
   // The web preview (Preview tab, design comments) raised it to 2.61 MB /
@@ -51,7 +51,10 @@ if (import.meta.main) {
   // raised it to 2.62 MB / 783 kB, with a 1.98 MB index chunk.
   // Loading KaTeX and its stylesheet on first use lowered it to
   // 2.37 MB / 705 kB, with a 1.72 MB index chunk.
-  const limits = { eagerBytes: 2_380_000, eagerGzipBytes: 712_000, largestChunkBytes: 1_730_000 }
+  // Desktop keyboard focus (zones, row keys, dock tab keys, drag and the
+  // launcher, chat menus, tooltip timing) raised it to 2.39 MB / 716 kB,
+  // with a 1.75 MB index chunk.
+  const limits = { eagerBytes: 2_400_000, eagerGzipBytes: 720_000, largestChunkBytes: 1_755_000 }
   console.log('Production JavaScript budget:', sizes)
   const failures = budgetFailures(sizes, limits)
   if (failures.length) {

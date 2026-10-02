@@ -49,7 +49,7 @@ mock.module('lucide-react', () => ({
   RefreshCw: Icon,
   RotateCcw: Icon,
   Search: Icon,
-  Pencil: Icon, TerminalSquare: Icon, Undo2: Icon,
+  Pencil: Icon, TerminalSquare: Icon, Eraser: Icon, Undo2: Icon,
   X: Icon,
 }))
 mock.module('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => false }))
@@ -102,7 +102,7 @@ async function renderWorkspacePanel(onFileSelect = mock(() => {}), selectedFileP
   await act(async () => {
     renderResult = render(
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open selectedFilePath={selectedFilePath} onFileSelect={onFileSelect} mobile={mobile} />
+        <WorkspacePanel workspace={WORKSPACE} open selectedFilePath={selectedFilePath} onFileSelect={onFileSelect} mobile={mobile} viewRequest={{ view: 'review', key: 1 }} />
       </QueryClientProvider>,
     )
   })
@@ -137,12 +137,12 @@ describe('Coding workspace two-layer file preview', () => {
     const { WorkspacePanel, queryClient, renderResult } = await renderWorkspacePanel(onFileSelect, readmePath)
 
     await waitFor(() => expect(onFileSelect).toHaveBeenCalledWith(readme))
-    await userEvent.setup().click(screen.getByRole('button', { name: /git/i }))
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Git' }))
     expect(screen.getByText('Not a git repository')).toBeTruthy()
 
     renderResult.rerender(
       <QueryClientProvider client={queryClient}>
-        <WorkspacePanel workspace={WORKSPACE} open selectedFilePath={readmePath} selectedFileOpenKey={1} onFileSelect={onFileSelect} />
+        <WorkspacePanel workspace={WORKSPACE} open selectedFilePath={readmePath} selectedFileOpenKey={1} onFileSelect={onFileSelect} viewRequest={{ view: 'review', key: 1 }} />
       </QueryClientProvider>,
     )
 

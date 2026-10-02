@@ -29,6 +29,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { usePlatform } from '@/hooks/use-platform'
 import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
+import { useFocusZone } from '@/lib/focus/zones'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/ResizableAside'
 import { useViewportWidth } from '@/hooks/use-viewport-width'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
@@ -277,6 +279,12 @@ export function Sidebar({
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchFocusKey, setSearchFocusKey] = useState(0)
   const searchButtonRef = useRef<HTMLButtonElement>(null)
+  // Two Tab stops: the header actions (a toolbar) and the list, where the
+  // arrow keys walk Needs-you rows, workspaces, sessions and scheduled tasks.
+  const sidebarListRef = useRef<HTMLDivElement>(null)
+  const sidebarActionsRef = useRef<HTMLDivElement>(null)
+  useFocusZone(sidebarListRef, { orientation: 'vertical', entry: 'active' })
+  useFocusZone(sidebarActionsRef, { orientation: 'horizontal', role: 'toolbar', label: 'Workspace actions', wrap: true })
   const [worktreeEditTarget, setWorktreeEditTarget] = useState<WorktreeInfo | null>(null)
   const [worktreeEditTitle, setWorktreeEditTitle] = useState('')
   const [worktreeEditLoading, setWorktreeEditLoading] = useState(false)
@@ -689,7 +697,7 @@ export function Sidebar({
     })
   }
 
-  const handleSessionDelete = (e: React.MouseEvent, session: SessionResponse) => {
+  const handleSessionDelete = (e: React.SyntheticEvent, session: SessionResponse) => {
     e.stopPropagation()
     setDeleteTarget(session)
   }
@@ -766,6 +774,9 @@ export function Sidebar({
       initial={false}
       resize={sidebarResize}
       getMotion={sidebarMotion}
+      // Collapsed (desktop) or closed (mobile), the sidebar is off screen
+      // but still in the DOM: keep Tab and screen readers out of it.
+      inert={isMobile ? !mobileOpen && mobileDragOffset === null : desktopCollapsed}
       className={
         isMobile
           ? 'mobile-safe-top fixed bottom-0 left-0 z-40 flex w-[min(272px,calc(100vw-2rem))] shrink-0 flex-col overflow-hidden border-r border-(--color-border) bg-(--bg-page) shadow-xl dark:bg-(--bg-sidebar)'
@@ -774,6 +785,20 @@ export function Sidebar({
     >
       {!isMobile && !desktopCollapsed && <PanelResizeHandle edge="right" />}
 
+      <div
+        ref={sidebarListRef}
+        className="flex min-h-0 flex-1 flex-col"
+        onKeyDown={(event) => {
+          // Left on a session row climbs to its workspace, like a tree.
+          if (event.defaultPrevented || event.key !== 'ArrowLeft' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+          const target = event.target as HTMLElement
+          if (!target.closest('[data-sidebar-session]')) return
+          const header = target.closest('[data-sidebar-workspace-group]')?.querySelector<HTMLElement>('[data-sidebar-workspace]')
+          if (!header) return
+          event.preventDefault()
+          header.focus()
+        }}
+      >
       <NeedsYouSection
         currentSessionId={currentSessionId}
         workspaceName={(path) => (isChatPath(path) ? (chatWorkspace?.name ?? path) : workspaceLabel(path))}
@@ -785,7 +810,7 @@ export function Sidebar({
         <span className="truncate text-[11px] font-semibold uppercase leading-none tracking-[0.05em] text-(--color-text-subtle)">
           Workspaces
         </span>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div ref={sidebarActionsRef} className="flex shrink-0 items-center gap-0.5">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -884,7 +909,7 @@ export function Sidebar({
           const checkoutLabel = selectedWorktree?.name ?? (checkouts.selected ? 'main worktree' : 'all')
 
           return (
-            <div key={path} className="relative">
+            <div key={path} className="relative" data-sidebar-workspace-group="">
               <div className="group mx-1.5 flex h-(--spacing-list-row) items-center rounded-sm hover:bg-(--bg-key)/40">
                 <Tooltip className="min-w-0 flex-1">
                   <TooltipTrigger
@@ -897,7 +922,20 @@ export function Sidebar({
                         // way left to start a new chat session.
                         onLongPress={() => setMobileWorkspaceActions({ path, sessionPath: sessionTarget, kind: sourceIsChat ? 'chat' : 'main' })}
                         type="button"
+                        data-sidebar-workspace=""
                         onClick={() => toggleWorkspaceExpanded(path)}
+                        onKeyDown={(event) => {
+                          const expandKey = event.key === 'ArrowRight' && !sourceIsExpanded
+                          const collapseKey = event.key === 'ArrowLeft' && sourceIsExpanded
+                          if (expandKey || collapseKey) {
+                            event.preventDefault()
+                            toggleWorkspaceExpanded(path)
+                          } else if (isMenuKey(event) && !mobileLongPressActions && !sourceIsChat) {
+                            event.preventDefault()
+                            const at = menuPointFor(event.currentTarget)
+                            setDesktopWorkspaceActions({ path, sessionPath: sessionTarget, x: at.clientX, y: at.clientY })
+                          }
+                        }}
                         onContextMenu={(event) => {
                           if (mobileLongPressActions || sourceIsChat) return
                           event.preventDefault()
@@ -967,6 +1005,7 @@ export function Sidebar({
                     render={
                       <button
                         type="button"
+                        data-zone-skip
                         onClick={() => { void selectWorkspace(sessionTarget, { create: true }) }}
                         className={`ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-xs border border-(--color-border) text-(--color-text-muted) transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) pointer-coarse:size-9 ${mobileLongPressActions ? 'hidden' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'}`}
                         aria-label={selectedWorktree ? `New session in worktree ${selectedWorktree.name}` : `New session in ${sourceLabel}`}
@@ -983,6 +1022,7 @@ export function Sidebar({
                       render={
                         <button
                           type="button"
+                          data-zone-skip
                           onClick={(event) => setDesktopWorkspaceActions({ path, sessionPath: sessionTarget, x: event.clientX, y: event.clientY })}
                           className={`mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-xs text-(--color-text-subtle) transition-all hover:bg-(--bg-key) hover:text-(--color-text-2) pointer-coarse:size-9 ${mobileLongPressActions ? 'hidden' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'}`}
                           aria-label={`Actions for ${sourceLabel}`}
@@ -1051,6 +1091,7 @@ export function Sidebar({
       )}
 
       <ScheduledSection onMobileClose={onMobileClose} />
+      </div>
 
       {/* Mobile drawer footer — on desktop this lives in AppFooter status bar */}
       <div className="flex md:hidden items-center justify-between gap-2 border-t border-(--color-border) px-3 py-2 pb-safe">
@@ -1345,6 +1386,9 @@ export function Sidebar({
                     value={worktreeName}
                     onChange={(e) => setWorktreeName(e.target.value)}
                     placeholder="feature-login"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                     className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 font-mono text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-subtle) focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                     maxLength={80}
                     autoFocus
@@ -1357,6 +1401,9 @@ export function Sidebar({
                     value={worktreeBranch}
                     onChange={(e) => setWorktreeBranch(e.target.value)}
                     placeholder="openagentd/feature-login"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                     className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 font-mono text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-subtle) focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                     maxLength={255}
                   />
@@ -1395,7 +1442,7 @@ export function Sidebar({
                                     type="button"
                                     onClick={() => setRemoveWorktreeTarget(item)}
                                     disabled={worktreeRemoving === item.directory}
-                                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xs text-(--color-text-subtle) opacity-100 transition-colors hover:bg-(--color-error-subtle) hover:text-(--color-error) disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100"
+                                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xs text-(--color-text-subtle) opacity-100 transition-colors hover:bg-(--color-error-subtle) hover:text-(--color-error) disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
                                     aria-label={`Remove worktree ${item.name}`}
                                   >
                                     {worktreeRemoving === item.directory ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Trash2 size={12} aria-hidden="true" />}
@@ -1666,6 +1713,9 @@ export function Sidebar({
                 ref={worktreeEditInputRef}
                 value={worktreeEditTitle}
                 onChange={(e) => setWorktreeEditTitle(e.target.value)}
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 text-sm text-(--color-text) outline-none focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                 aria-label="Worktree title"
                 maxLength={255}

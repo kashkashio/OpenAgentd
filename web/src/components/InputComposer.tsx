@@ -20,6 +20,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { usePlatform } from '@/hooks/use-platform'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { isPrimaryModifierOS } from '@/lib/keyboard-shortcut'
+import { useFocusZone } from '@/lib/focus/zones'
 import { SessionModeToggle } from './SessionModeToggle'
 
 // Re-export the public type so callers can import ``FileRef`` from this module
@@ -288,6 +289,11 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
   }, [mentionRanges])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const expandButtonRef = useRef<HTMLButtonElement>(null)
+  // The action row (attach, mode, send) is one Tab stop beside the textarea:
+  // Shift+Tab from the textarea reaches it, Left/Right walk it. Tab inside
+  // the textarea keeps switching Plan/Code mode.
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  useFocusZone(toolbarRef, { orientation: 'horizontal', entry: 'active', wrap: true, role: 'toolbar', label: 'Message actions' })
   const isMobile = useIsMobile()
   const { os } = usePlatform()
   const prefersReducedMotion = useReducedMotion()
@@ -513,7 +519,18 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
   useEffect(() => {
     const wasMinimized = prevMinimizedRef.current
     prevMinimizedRef.current = minimized
-    if (!wasMinimized || minimized) return
+    if (wasMinimized === minimized) return
+    if (minimized) {
+      // Minimizing disables the textarea, and the browser drops its focus
+      // onto <body> without an event (after a send, or Esc). Keep focus in
+      // the composer on the pill instead, so the next Tab, Enter or typed
+      // key starts here rather than at the top of the page.
+      const active = document.activeElement
+      if (active === textareaRef.current || active === document.body || active === null) {
+        expandButtonRef.current?.focus({ preventScroll: true })
+      }
+      return
+    }
     // ``resizeAfterLayout``'s double-rAF lets Framer's spring reach (or get
     // very close to) the bar's final width before scrollHeight is measured.
     return resizeAfterLayout(() => textareaRef.current?.focus())
@@ -774,6 +791,7 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
     <button
       ref={expandButtonRef}
       type="button"
+      data-zone-active
       onClick={(e) => { stopClick(e); handleExpand() }}
       aria-label="Expand input bar"
       className={actionBtnClass}
@@ -942,6 +960,10 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
         // text-layout paths drift by 1–2px, leaving the squiggle a word
         // off. Same call Discord/Slack/ChatGPT make for the same reason.
         spellCheck={false}
+        // Prompts carry code and paths: on desktop, no smart quotes, dashes
+        // or autocapitalised identifiers. Phone keyboards keep theirs.
+        autoCorrect={isMobile ? undefined : 'off'}
+        autoCapitalize={isMobile ? undefined : 'off'}
         aria-label="Message input"
         aria-expanded={menu !== null}
         aria-controls={activePopupId}
@@ -962,6 +984,7 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
     // stopClick so they don't trigger this. No ARIA role — the Send button is
     // the keyboard-accessible "Expand input bar" affordance.
     <div
+      ref={toolbarRef}
       onClick={minimized ? handleExpand : undefined}
       className={`flex w-full flex-wrap items-center gap-2 ${minimized ? 'cursor-text' : ''}`}
     >

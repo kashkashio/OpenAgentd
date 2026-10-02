@@ -27,6 +27,11 @@ This file adds source-level guidance to `web/AGENTS.md`.
   for centering because motion owns that property, and do not add backdrop blur
   to streaming/repainting surfaces on iOS WebKit.
 - Call hooks such as `useDeferredUnmount` before conditional returns.
+- Keyboard areas are focus zones (`lib/focus/zones.ts`): controls inside one
+  rove automatically, so do not hand-set `tabIndex` there. A new area gets a
+  zone, not more Tab stops. Hover-revealed row actions carry `data-zone-skip`
+  and each needs a keyboard path (F2, Delete, Shift+F10 via
+  `lib/focus/item-keys.ts`, or a shortcut).
 
 Keep the detailed scroll, compaction, gesture, suggestion-positioning, and file
 tree invariants beside their implementations and regression tests rather than
@@ -37,9 +42,10 @@ duplicating them in this guide. Relevant tests live under
 
 - `utils/markdown.tsx` owns streamed Markdown composition; syntax highlighting
   stays in `utils/code-highlight.ts` so it is memoized outside the parse path.
-- Render model-authored code as React text/tokens. Preserve Mermaid's strict
-  security mode and the existing controlled KaTeX/Mermaid renderer paths; do
-  not pass untrusted arbitrary HTML to `dangerouslySetInnerHTML`.
+- Render model-authored code as React text/tokens. Keep the existing controlled
+  KaTeX renderer path; do not pass untrusted arbitrary HTML to
+  `dangerouslySetInnerHTML`. Chat does not render diagrams (`mermaid` fences
+  are plain code); drawn diagrams belong in a Preview tab.
 - Keep table overflow on the `.oa-table-wrap` wrapper rather than applying
   block/overflow styles directly to `<table>`.
 - When adding a syntax grammar, update the shared highlighter tests and any

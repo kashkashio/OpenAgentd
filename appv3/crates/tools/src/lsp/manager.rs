@@ -64,6 +64,36 @@ fn python_multi_servers() -> Vec<Vec<String>> {
     vec![sv(&["ty", "server"]), sv(&["ruff", "server"]), sv(&["pyright-langserver", "--stdio"]), sv(&["pylsp"])]
 }
 
+/// `ruff` by name, also as a managed or packaged absolute path.
+fn is_ruff(cmd: &[String]) -> bool {
+    let name = Path::new(&cmd[0]).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    name == "ruff" || name == "ruff.exe"
+}
+
+/// Start `cmds` in order, keeping those that start. Python's type checkers
+/// (ty, pyright, pylsp) overlap, so only the first one that starts runs, in
+/// the order given (ty first); a later one is never started. ruff is a
+/// linter and starts beside it. Other languages start every command.
+async fn start_servers<T, F, Fut>(lang_id: &str, cmds: Vec<Vec<String>>, mut start: F) -> Vec<T>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let mut started = vec![];
+    let mut have_checker = false;
+    for cmd in cmds {
+        let checker = lang_id == "python" && !is_ruff(&cmd);
+        if checker && have_checker {
+            continue;
+        }
+        if let Some(client) = start(cmd).await {
+            have_checker |= checker;
+            started.push(client);
+        }
+    }
+    started
+}
+
 fn lsp_commands(lang: &str) -> Vec<Vec<String>> {
     match lang {
         "python" => vec![sv(&["pyright-langserver", "--stdio"]), sv(&["pylsp"]), sv(&["ruff", "server"])],
@@ -534,12 +564,7 @@ impl LspManager {
             }
             None
         };
-        let semantic_ok = |cmd: &Vec<String>| {
-            lang_id != "python" || {
-                let name = Path::new(&cmd[0]).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                name != "ruff" && name != "ruff.exe"
-            }
-        };
+        let semantic_ok = |cmd: &Vec<String>| lang_id != "python" || !is_ruff(cmd);
         if let Some(root) = project_root {
             let project_cmds =
                 || -> Vec<Vec<String>> { detect_project_lsp_commands(lang_id, root).iter().filter_map(&resolve_cmd).filter(|r| !semantic_only || semantic_ok(r)).collect() };
@@ -608,35 +633,36 @@ impl LspManager {
             }
             return vec![];
         }
-        let mut clients: Vec<Arc<LspClient>> = vec![];
-        for cmd in cmds {
-            let key: ClientKey = (ws.clone(), lang_id.to_string(), cmd.clone());
-            if let Some(existing) = self.get_client(&key) {
-                if existing.is_running() {
-                    clients.push(existing);
-                    continue;
-                }
-                existing.stop().await;
-                self.pop_client_if(&key, &existing);
-            }
-            let mut env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "PATH").collect();
-            env.push(("PATH".into(), get_user_path(false).await));
-            let client = Arc::new(LspClient::new(cmd.clone(), workspace_root.to_path_buf(), build_init_options(lang_id, workspace_root), Some(env)));
-            match tokio::time::timeout(CLIENT_START_TIMEOUT, client.start()).await {
-                Ok(Ok(())) => {
-                    self.set_client(key, client.clone());
-                    clients.push(client);
-                    continue;
-                }
-                Ok(Err(e)) => tracing::warn!("Failed to start LSP client {} for {}: {}", py_list_repr(&cmd), lang_id, e),
-                Err(_) => tracing::warn!("Timed out starting LSP client {} for {} after {}s", py_list_repr(&cmd), lang_id, CLIENT_START_TIMEOUT.as_secs_f64()),
-            }
-            client.stop().await;
-        }
+        let clients = start_servers(lang_id, cmds, |cmd| self.start_client(&ws, workspace_root, lang_id, cmd)).await;
         if clients.is_empty() && !semantic_only {
             self.mark_unsupported(lang_id);
         }
         clients
+    }
+
+    /// The cached client for `cmd` if it still runs, else a newly started one.
+    async fn start_client(&self, ws: &str, workspace_root: &Path, lang_id: &str, cmd: Vec<String>) -> Option<Arc<LspClient>> {
+        let key: ClientKey = (ws.to_string(), lang_id.to_string(), cmd.clone());
+        if let Some(existing) = self.get_client(&key) {
+            if existing.is_running() {
+                return Some(existing);
+            }
+            existing.stop().await;
+            self.pop_client_if(&key, &existing);
+        }
+        let mut env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "PATH").collect();
+        env.push(("PATH".into(), get_user_path(false).await));
+        let client = Arc::new(LspClient::new(cmd.clone(), workspace_root.to_path_buf(), build_init_options(lang_id, workspace_root), Some(env)));
+        match tokio::time::timeout(CLIENT_START_TIMEOUT, client.start()).await {
+            Ok(Ok(())) => {
+                self.set_client(key, client.clone());
+                return Some(client);
+            }
+            Ok(Err(e)) => tracing::warn!("Failed to start LSP client {} for {}: {}", py_list_repr(&cmd), lang_id, e),
+            Err(_) => tracing::warn!("Timed out starting LSP client {} for {} after {}s", py_list_repr(&cmd), lang_id, CLIENT_START_TIMEOUT.as_secs_f64()),
+        }
+        client.stop().await;
+        None
     }
 
     pub async fn get_diagnostics(&self, file_path: &Path, workspace_root: &Path) -> Vec<Value> {
@@ -970,6 +996,43 @@ mod tests {
         assert_eq!(py_suffix(Path::new("a/b.PY")), Some(".PY".into()));
         assert_eq!(py_suffix(Path::new(".bashrc")), None);
         assert_eq!(lang_for_path(Path::new("x.tsx")), Some("typescriptreact"));
+    }
+
+    /// Start `cmds` with a fake launcher: names in `failing` fail to start.
+    /// Returns what started and every attempt, in order.
+    async fn start_with(lang: &str, cmds: &[&[&str]], failing: &[&str]) -> (Vec<String>, Vec<String>) {
+        let attempts = Mutex::new(vec![]);
+        let started = start_servers(lang, cmds.iter().map(|c| sv(c)).collect(), |cmd| {
+            attempts.lock().unwrap().push(cmd[0].clone());
+            let ok = !failing.contains(&cmd[0].as_str());
+            async move { ok.then(|| cmd[0].clone()) }
+        })
+        .await;
+        (started, attempts.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn python_runs_one_type_checker_beside_ruff() {
+        let all: &[&[&str]] = &[&["ty", "server"], &["ruff", "server"], &["pyright-langserver", "--stdio"], &["pylsp"]];
+        // ty wins; pyright and pylsp are never started.
+        let (started, attempts) = start_with("python", all, &[]).await;
+        assert_eq!(started, ["ty", "ruff"]);
+        assert_eq!(attempts, ["ty", "ruff"]);
+        // ty fails to start: pyright takes over, pylsp still skipped.
+        let (started, _) = start_with("python", all, &["ty"]).await;
+        assert_eq!(started, ["ruff", "pyright-langserver"]);
+        // Only pylsp left.
+        let (started, _) = start_with("python", all, &["ty", "pyright-langserver"]).await;
+        assert_eq!(started, ["ruff", "pylsp"]);
+        // A managed ruff is an absolute path; it is still the linter.
+        let (started, _) = start_with("python", &[&["/cache/ruff-0.1/ruff", "server"], &["ty", "server"]], &[]).await;
+        assert_eq!(started, ["/cache/ruff-0.1/ruff", "ty"]);
+    }
+
+    #[tokio::test]
+    async fn other_languages_start_every_command() {
+        let (started, _) = start_with("go", &[&["gopls"], &["other"]], &[]).await;
+        assert_eq!(started, ["gopls", "other"]);
     }
 
     #[test]
