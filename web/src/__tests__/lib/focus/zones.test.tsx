@@ -158,6 +158,20 @@ describe('useFocusZone', () => {
     expect(document.activeElement).toBe(item(2))
   })
 
+  it('marks focus from a click quiet until it moves, and keeps arrow focus loud', async () => {
+    const user = userEvent.setup()
+    render(<List />)
+    await user.click(item(1))
+    expect(item(1).hasAttribute('data-quiet-focus')).toBe(true)
+    await user.keyboard('{ArrowDown}')
+    expect(document.activeElement).toBe(item(2))
+    expect(item(1).hasAttribute('data-quiet-focus')).toBe(false)
+    expect(item(2).hasAttribute('data-quiet-focus')).toBe(false)
+    // A click on the item that already holds keyboard focus hides its ring too.
+    await user.click(item(2))
+    expect(item(2).hasAttribute('data-quiet-focus')).toBe(true)
+  })
+
   it('sets toolbar semantics', () => {
     render(<List orientation="horizontal" role="toolbar" label="Actions" />)
     const zone = screen.getByRole('toolbar', { name: 'Actions' })

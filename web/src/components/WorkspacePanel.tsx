@@ -38,6 +38,7 @@ import {
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/ResizableAside'
 import { useClaimStrandedFocus } from '@/hooks/use-dock-focus'
+import { focusQuietly } from '@/lib/focus/zones'
 import { useElementWidth } from '@/hooks/use-element-width'
 import { usePlatform } from '@/hooks/use-platform'
 import {
@@ -248,7 +249,10 @@ export function WorkspacePanel({
     previewRequest,
     handledPreviewRequestKeyRef,
     onTabClosed: handleTabClosed,
-    focusTab: (id) => requestAnimationFrame(() => tabButtonRefs.current.get(id)?.focus()),
+    focusTab: (id) => requestAnimationFrame(() => {
+      const button = tabButtonRefs.current.get(id)
+      if (button) focusQuietly(button)
+    }),
     onCloseDock: onRequestClose,
   })
   const [mobileFileActions, setMobileFileActions] = useState<ChangedFileInfo | null>(null)

@@ -65,6 +65,25 @@ export function isTextField(el: Element): boolean {
   return el instanceof HTMLElement && el.isContentEditable
 }
 
+const QUIET = 'data-quiet-focus'
+
+/**
+ * Focus without the keyboard ring, for focus the user did not steer by
+ * keyboard: a click (WebKit counts the script ``focus()`` that gives a
+ * clicked button focus as keyboard focus and draws the ring) or a tab
+ * switch that moves focus onto the new tab. index.css drops the outline
+ * while ``data-quiet-focus`` is set; it clears on blur, so the next item
+ * reached with the keyboard shows its ring as usual.
+ */
+export function focusQuietly(el: HTMLElement, options: FocusOptions = { preventScroll: true }): void {
+  if (!el.hasAttribute(QUIET)) {
+    el.setAttribute(QUIET, '')
+    el.addEventListener('blur', () => el.removeAttribute(QUIET), { once: true })
+  }
+  if (document.activeElement !== el) el.focus(options)
+  if (document.activeElement !== el) el.removeAttribute(QUIET)
+}
+
 function isRendered(el: Element): boolean {
   // ``checkVisibility`` covers display:none and closed <details>; engines
   // without it (older WebKit, test DOMs) count every element as rendered.
@@ -209,7 +228,7 @@ function attachZone(zone: HTMLElement, latest: { readonly current: FocusZoneOpti
     const item = itemOf(zone, event.target)
     if (!item) return
     setCurrent(zone, item)
-    if (document.activeElement !== item) item.focus({ preventScroll: true })
+    focusQuietly(item)
   }
 
   const onKeyDown = (event: KeyboardEvent) => {

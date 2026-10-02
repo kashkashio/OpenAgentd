@@ -150,6 +150,8 @@ describe('dock tab keys', () => {
     await frame()
     expect(isActive('Terminal 3')).toBe(true)
     expect(document.activeElement).toBe(tab('Terminal 3'))
+    // A tab switch is not keyboard navigation inside the strip: no ring.
+    expect(tab('Terminal 3').hasAttribute('data-quiet-focus')).toBe(true)
     outside.remove()
   })
 })

@@ -1100,6 +1100,11 @@ html[data-app-hidden="true"] *::after {
   outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
 }
+/* Focus given by a click or a tab switch, not steered by keyboard; see
+ * focusQuietly in lib/focus/zones.ts. Clears on blur. */
+[data-quiet-focus]:focus-visible {
+  outline: none;
+}
 :where(input, textarea):focus,
 :where(input, textarea):focus-visible {
   outline: none;
