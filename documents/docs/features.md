@@ -457,13 +457,12 @@ run from the terminal (the native Rust binary since v3.0.0).
 - **Clickable URLs in user message bubbles** `[v1.77.0]` — plain-text URLs typed
   or pasted into a user message are rendered as tappable links; style matches
   agent response links.
-- **Mermaid diagrams in agent responses** `[v1.121.0, v1.123.0]` — completed
-  `mermaid` code fences render as responsive diagrams with Diagram and Code
-  views. A fence now renders as soon as it closes while later response content
-  is still streaming; unfinished and invalid diagrams retain readable source.
-  Full-screen diagrams keep the chrome minimal while supporting keyboard,
-  wheel/trackpad and pinch zoom, double-click/double-tap, and drag-to-pan;
-  diagram text selection is disabled so gestures stay responsive.
+- **Mermaid diagrams in agent responses** *(deprecated)* `[v1.121.0, v1.123.0, v3.5.0]` —
+  completed `mermaid` code fences rendered as diagrams with Diagram and Code
+  views and a full-screen pan/zoom view. Since v3.5.0 the chat no longer
+  renders diagrams: a `mermaid` fence shows as an ordinary code block with copy,
+  and the Mermaid library is no longer shipped. For drawn diagrams, an agent
+  writes a self-contained HTML/SVG file and opens it in the Preview tab.
 - **LaTeX math rendering** `[v1.133.0]` — inline math (`$math$` and `\(math\)`),
   display math (`$$math$$` and `\[math\]`), and fenced code blocks (`math`, `katex`)
   render formatted LaTeX mathematics via KaTeX. Distinguishes mathematical
@@ -484,14 +483,14 @@ run from the terminal (the native Rust binary since v3.0.0).
 - **Pin chat transcript via CSS `overflow-anchor`** `[v2.0.0]` — pins chat transcript
   scrolling using native browser `overflow-anchor` instead of per-frame JS `scrollTop`
   calculations, eliminating stream stutter and CPU churn during fast agent output.
-- **On-demand bundle splitting for heavy components** `[v2.0.0]` — xterm.js, Mermaid
-  diagrams, and PDF.js load lazily on demand when first needed, accelerating cold-start
+- **On-demand bundle splitting for heavy components** `[v2.0.0, v3.5.0]` — xterm.js,
+  KaTeX, and PDF.js load lazily on demand when first needed, accelerating cold-start
   boot time and reducing initial bundle memory.
 - **App surfaces open without a loading step** `[v3.0.0]` — Settings pages,
   Telemetry, the review dock with its Tasks and Schedule tabs, the scheduler and
   session settings dialogs, session search, message Markdown, and MCP app
   results ship with the app instead of loading on first open, so none of them
-  shows a placeholder first. Only xterm.js, Mermaid, and PDF.js still load on
+  shows a placeholder first. Only xterm.js, KaTeX, and PDF.js still load on
   demand.
 - **Stream auto-stick restored after scroll-to-bottom on mobile** `[v1.77.0]` —
   tapping the scroll-to-bottom button no longer detaches the stream
