@@ -51,13 +51,21 @@ worktrees are not part of the tracked instruction hierarchy.
 
 ## Setup and development
 
+Prerequisites: Bun (CI uses 1.4.0), stable Rust/cargo, `python3` (maintainer
+scripts only), and `lsof` + `nc` for `make dev`. Native shells also need
+`cargo tauri` (tauri-cli 2) and the platform's Tauri system dependencies.
+
 From the repository root:
 
 ```bash
 bun install --cwd web --frozen-lockfile
-make run       # v3 API only on :8000 (needs cargo)
+make run       # v3 API only on :8000
 make dev       # v3 API + Vite on :5173
 ```
+
+Source checkouts run with `APP_ENV=development`, so the database, config,
+logs, and telemetry live under the ignored `.openagentd/dev/` tree, never in
+the user's installed app state.
 
 Build outputs have distinct targets:
 
@@ -119,8 +127,8 @@ Choose every target covering the paths changed:
 
 ```bash
 make verify-v3       # v3 Rust: cargo fmt check, clippy -D warnings, tests
-make verify-scripts  # pytest for scripts, installers, and workflow contracts (uv)
-make verify-web      # ESLint, app/test TypeScript, Bun tests
+make verify-scripts  # pytest for scripts, installers, and workflow contracts (local .venv)
+make verify-web      # oxlint, app/test TypeScript (tsc -b), Bun tests
 make verify-docs     # Markdown links/frontmatter/Make references
 make verify-version  # synchronized release versions and catalogue metadata
 make verify-desktop  # locked desktop cargo check/test/clippy
@@ -135,6 +143,16 @@ Always run Bun tests with `--parallel` (`bun test --cwd web --parallel` or `cd w
 Cross-surface API or event changes require both backend and web checks; SSE
 event types must also match `appv3/contract/sse_events.json`. Run
 `make help` for maintained health and build targets.
+CI additionally runs `bun run build` for `web/`, which enforces the bundle
+budget and chunk-cycle checks. Pre-commit hooks run file hygiene plus `oxlint`
+and `tsc` for `web/src`.
+
+## Agent workflows
+
+Repository workflows live in `.openagentd/skills/oad/`: `oad/testing`
+(test-first and per-surface commands), `oad/debug` (including logs and
+telemetry), `oad/review`, `oad/commit` (including the documentation pass),
+and `oad/release`.
 
 ## Documentation
 

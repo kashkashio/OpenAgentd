@@ -1,132 +1,67 @@
-# Debug reference: Tauri / Rust (desktop & mobile)
+# Debug reference: Tauri shells (desktop and mobile)
 
-Use when the symptom is in the Rust layer — sidecar lifecycle, window management, tray, IPC, permissions, CSP, or native plugin behavior.
-
----
-
-## Surface overview
+Use for the native layer: sidecar lifecycle, windows, tray, IPC, permissions,
+CSP, updater, and plugins.
 
 | Shell | Path | Role |
 |---|---|---|
-| Desktop | `desktop/src-tauri/` | Sidecar supervisor, tray, multi-window, auto-update |
-| Mobile | `mobile/src-tauri/` | Minimal shell, no sidecar, remote API only |
+| Desktop | `desktop/src-tauri/` | supervises the bundled `openagentd` sidecar (built from `appv3/`), tray, windows, updater |
+| Mobile | `mobile/src-tauri/` | remote-only: connects to an existing API, no sidecar |
+| Shared | `native/shell-core/` | Tauri-free: server config, URL normalization, keyring access keys, download limits |
 
----
-
-## Evidence commands
-
-### Fast Rust checks (no full Tauri build)
+## Run
 
 ```bash
-# Desktop
-cd desktop/src-tauri && cargo check
-cd desktop/src-tauri && cargo clippy -- -D warnings
-
-# Mobile
-cd mobile/src-tauri && cargo check
-cd mobile/src-tauri && cargo clippy -- -D warnings
+cd web && bun dev               # terminal 1: Vite :5173
+make -C desktop dev             # terminal 2: dev shell (tauri.dev.conf.json), bundled-sidecar connection model
+make -C desktop dev-bundled     # builds the sidecar first; state shared with root `make dev` via .openagentd/dev/
+make -C desktop sidecar         # stage appv3's binary into desktop/sidecar-bundle/
+make -C mobile dev              # mobile shell against the Vite dev server
+make -C mobile ios-dev          # iOS simulator or device
 ```
 
-### Run in dev mode (see live logs)
+`make -C desktop dev` and `build` need `cargo tauri` (tauri-cli 2). The dev
+identity coexists with an installed production app (separate bundle id, logs,
+and tray). External servers are added from the app's Server connection dialog.
+
+## Fast checks
 
 ```bash
-# Desktop — requires root `make dev` already running
-make -C desktop dev              # against external backend + Vite
-make -C desktop dev-bundled      # against bundled sidecar
-
-# Mobile
-make -C mobile dev               # Android
-make -C mobile ios-dev           # iOS simulator
+cd desktop/src-tauri && TAURI_CONFIG="$(cat tauri.dev.conf.json)" cargo check --locked
+cd desktop/src-tauri && TAURI_CONFIG="$(cat tauri.dev.conf.json)" cargo clippy --locked --all-targets
+make verify-desktop    # check + test + clippy, as CI runs them
+make verify-mobile
+make verify-shell-core
 ```
 
-Tauri dev mode prints Rust `log::` output to the terminal and writes to the platform log file. Filter with `RUST_LOG=debug` for verbose output.
-
----
-
-## File map — desktop
+## File map (desktop)
 
 ```
 desktop/src-tauri/
-  src/
-    main.rs              App entry, AppState, tray, window lifecycle, updater, IPC commands
-    sidecar.rs           Sidecar process supervisor, auth-token handshake
-  Cargo.toml             Deps: tauri 2, tokio, anyhow, serde, plugins
-  tauri.conf.json        Production config (updater endpoint, asset-protocol scope, bundles)
-  tauri.dev.conf.json    Dev against external backend + Vite
-  tauri.dev-bundled.conf.json  Dev against bundled sidecar
-  capabilities/          Tauri capability definitions (which commands/plugins frontend can call)
-  permissions/           Fine-grained permission sets
-  build.rs               Tauri build integration
+  src/main.rs         app entry, AppState, run-event handling, IPC registration
+  src/sidecar.rs      sidecar spawn, port detection, token handshake, log files
+  src/window.rs       window builders and init scripts (frontend token, backend URL)
+  src/updater.rs      update check, install, restart
+  src/menu.rs  tray_popup.rs  usage.rs  watchdog.rs  commands.rs  config.rs
+  tauri.conf.json              production config (updater endpoint, CSP, bundles)
+  tauri.dev.conf.json          dev identity (used by `make dev` and verify-desktop)
+  tauri.dev-bundled.conf.json  dev with the bundled sidecar
+  capabilities/default.json    which commands and plugins the webview may call
 ```
 
-## File map — mobile
-
-```
-mobile/src-tauri/
-  src/
-    main.rs              Minimal app entry — no sidecar, no tray
-  Cargo.toml             Minimal deps (no updater, no sidecar plugins)
-  tauri.conf.json        Window size (390×844 default), CSP, iOS/Android bundle config
-  build.rs               Tauri build integration
-```
-
----
-
-## Common failure boundaries
+## Failure boundaries
 
 | Symptom | Where to look |
 |---|---|
-| Sidecar won't start / crashes | `src/sidecar.rs` — spawn args, env vars, port detection |
-| Auth token missing / rejected | `src/sidecar.rs` token generation, `core/desktop_auth.py` validation |
-| Window not appearing / wrong size | `src/main.rs` `WebviewWindowBuilder` + all three Tauri configs |
-| Tray icon / menu broken | `src/main.rs` `build_tray` / menu builders |
-| URL not opening in browser | `OpenerExt::open_url` — check `tauri-plugin-opener` is registered and permission granted |
-| IPC command not found | Missing `#[tauri::command]` + `invoke_handler` registration + capability entry |
-| CSP blocking a resource | `tauri.conf.json` → `app.security.csp` (update all config variants) |
-| Permission denied in webview | `capabilities/` — add the required permission set |
-| Auto-update not triggering | Updater endpoint URL, `pubkey`, `createUpdaterArtifacts: true` in production config |
-| Update installs but app restarts at old version / user must quit-and-reopen | On macOS `install()` replaces the process itself — a subsequent `app.restart()` call races the plugin's own relaunch and wins, reopening the old binary. Check `run_update_install` for a post-install `restart()` on macOS. Also check for double-invoke: a second button press while the first install is in flight causes an extra restart. Guard with the `quitting` flag at entry. |
-| iOS signing error | the Apple `developmentTeam` in `mobile/src-tauri/tauri.conf.json` must be a valid Apple team ID |
-| Process not cleaned up on quit | `src/main.rs` `RunEvent::ExitRequested` / `WindowEvent::CloseRequested` handlers |
+| Sidecar won't start or exits | `sidecar.rs`: args, env, port; then the backend log (`reference/production.md`) |
+| Token missing or rejected | `sidecar.rs` handshake → `appv3/crates/api/src/middleware.rs` (`desktop_token`) |
+| Window missing or wrong size | `window.rs` builders and all three config variants |
+| IPC command not found | `#[tauri::command]`, `invoke_handler` registration, and a `capabilities/` entry |
+| CSP blocks a resource | `app.security.csp` in every config variant |
+| Update installs but the old version reopens | macOS `install()` relaunches itself; a later `app.restart()` races it. Check `updater.rs` for a post-install restart and for a second click while installing |
+| Process left running on quit | `RunEvent::ExitRequested` / `WindowEvent::CloseRequested` handling in `main.rs` |
+| iOS signing | the Apple `developmentTeam` in `mobile/src-tauri/tauri.conf.json` |
 
----
-
-## Config variants — keep all three consistent (desktop)
-
-When changing window config, CSP, plugin config, or permissions, touch:
-1. `tauri.conf.json` — production
-2. `tauri.dev.conf.json` — external dev
-3. `tauri.dev-bundled.conf.json` — bundled dev
-
----
-
-## Tauri ↔ frontend IPC patterns
-
-- **Rust → JS events**: `app_handle.emit("event-name", payload)` / `window.emit(...)`
-- **JS → Rust commands**: `invoke("command_name", args)` — requires `#[tauri::command]`, `invoke_handler`, and a `capabilities/` entry.
-- **Detect Tauri in frontend**: check `window.__TAURI_INTERNALS__` or use an `isTauri()` utility.
-
----
-
-## Gotchas
-
-- `#[cfg(test)]` dialog stubs in `main.rs` — keep in sync with plugin API signatures.
-- Windows, macOS, and Linux have different process cleanup lifecycle events — test all three mentally before changing exit handlers.
-- Never commit `target/`, generated sidecar bundles, or machine-local `.openagentd/` state.
-- Mobile has **no sidecar** — always connects to an external API server.
-- `cargo check` is fast; `cargo tauri build` is slow — always verify with `check` first.
-
----
-
-## Verification
-
-```bash
-cd desktop/src-tauri && cargo check && cargo clippy -- -D warnings
-cd mobile/src-tauri  && cargo check && cargo clippy -- -D warnings
-```
-
-For a full build smoke test:
-
-```bash
-make -C desktop build   # release bundle (slow — only when packaging)
-```
+Keep the three desktop config variants consistent when changing windows, CSP,
+plugins, or permissions. Treat CSP, capabilities, keyring, and updater signing
+as security-sensitive.
