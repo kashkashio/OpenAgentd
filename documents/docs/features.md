@@ -314,6 +314,33 @@ run from the terminal (the native Rust binary since v3.0.0).
   page uses itself stay with it), so `⌘W` there closes the tab instead of the
   window. **Keyboard Shortcuts** (`⌘/`/`Ctrl+/`, or the palette) lists every
   shortcut by area.
+- **Keyboard areas, like a desktop app** `[v3.5.0]` — Tab and Shift+Tab move
+  between areas (header, sidebar, chat, composer, dock, status bar) instead of
+  through every button; arrow keys, Home and End move inside an area. About a
+  dozen Tab stops replace 100 or more.
+  - Clicking an item sets the keyboard position, so arrow keys continue from it.
+  - Row actions that only show on hover are out of Tab order and have keys:
+    F2 renames, Delete (or `⌘⌫` / `Ctrl+Backspace`) deletes, Shift+F10 or
+    the Menu key opens the row's menu. In the sidebar, Left and Right
+    collapse and expand a workspace.
+  - Focus never drops to the page: after sending, Escape or a deleted row it
+    returns to the composer, and a collapsed sidebar or closed drawer cannot
+    take it. In the composer, Tab still switches Plan and Code; Shift+Tab or
+    Escape leaves it.
+  - The Keyboard Shortcuts sheet lists the new keys under **Moving around**.
+- **Desktop app polish** `[v3.5.0]` — in the desktop app, dragging across UI
+  chrome no longer highlights it (chat, code, diffs and the terminal still
+  select), buttons use the arrow cursor, links and images cannot be dragged
+  out, and a window in the background dims its highlights. The webview's
+  Reload / Back / Inspect menu is gone: right-click in the chat offers **Open
+  link** / **Copy link**, **Copy code**, **Copy response** / **Copy as
+  Markdown** and, on your messages, **Copy** / **Edit**; text fields and
+  selected text keep the native menu. Shift+F10 opens the same menus in the
+  browser too.
+  - Tooltips wait half a second before appearing, then show at once while you
+    move along a toolbar, and only open on keyboard focus, not after a click.
+  - Search, palette, find, title and worktree fields, and the desktop
+    composer, no longer autocorrect or curl quotes.
 - **Type-to-focus composer** `[v1.40.0]` — in coding chat, start
   typing on the chat surface to expand/focus the composer and capture the first
   character without pressing `⌘I`/`Ctrl+I` first.
@@ -492,6 +519,9 @@ run from the terminal (the native Rust binary since v3.0.0).
   results ship with the app instead of loading on first open, so none of them
   shows a placeholder first. Only xterm.js, KaTeX, and PDF.js still load on
   demand.
+- **Scroll position per session** `[v3.5.0]` — leave a session scrolled up and
+  come back to it, and the transcript opens where you were reading; a session
+  you left at the bottom keeps following new output. Kept while the app runs.
 - **Stream auto-stick restored after scroll-to-bottom on mobile** `[v1.77.0]` —
   tapping the scroll-to-bottom button no longer detaches the stream
   auto-follow; direction-based detach logic removed from `onScroll` (was
@@ -850,6 +880,21 @@ agent against it.
     the palette gives the dock the full width over the chat; the conversation
     stays loaded underneath. Tabs close with ×, middle-click or `Ctrl/⌘+W`, and
     focus moves to the neighbouring tab.
+  - **Movable dock tabs and Git on demand** `[v3.5.0]` — the dock works like
+    an editor's tab bar.
+    - A new dock opens empty, on a launcher with Git, Terminal, Preview and
+      Open File. Git is an ordinary tab you can close and move; it opens from
+      the status-bar branch, `⌘⇧G` / `Ctrl+Shift+G`, **Open Git** in the
+      palette, or the launcher. `⌘D` is **Toggle Review Dock**, and `⌘W` on
+      the empty launcher closes the dock.
+    - New tabs open right after the active one. Drag a tab to move it, or
+      use `⌥⇧←/→` (`Alt+Shift+←/→`) or **Move Left / Move Right** in its menu.
+      Closing the active tab activates its right neighbour.
+    - `⌘1`–`⌘8` pick a tab and `⌘9` the last; `⌃Tab` / `⌃⇧Tab` step through
+      them, also from the terminal. In a browser, which keeps these keys for
+      its own tabs, they work in the desktop app only.
+    - Right-click or Shift+F10 on a tab: **Close**, **Close Others**, **Close
+      to the Right**, **Copy Path**; closing running terminals asks first.
   - **Tasks and Scheduled tasks in the dock** `[v3.0.0]` — on desktop with a
     workspace open, the header's task-list button (`Ctrl/⌘+T`) and **Scheduled
     Tasks** in the palette or the sidebar's Scheduled section open the agent's task list and the

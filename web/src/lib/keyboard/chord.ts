@@ -65,6 +65,8 @@ function keyLabel(key: string, mac: boolean): string {
   if (ARROWS[key]) return ARROWS[key]
   if (key === 'Escape' || key === 'Esc') return 'Esc'
   if (key === 'Enter') return mac ? '↵' : 'Enter'
+  if (key === 'Backspace') return mac ? '⌫' : 'Backspace'
+  if (key === 'Delete') return mac ? '⌦' : 'Delete'
   return key.length === 1 ? key.toUpperCase() : key
 }
 
