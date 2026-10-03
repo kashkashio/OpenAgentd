@@ -360,8 +360,8 @@ mod tests {
     #[tokio::test]
     async fn execute_shrinks_oversized_tool_images_and_keeps_small_ones() {
         let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
-        let small = ContentBlock::ImageData { data: b64(&fixtures::png(200, 100)), media_type: "image/png".into() };
-        let big = ContentBlock::ImageData { data: b64(&fixtures::png(2400, 1600)), media_type: "image/png".into() };
+        let small = ContentBlock::ImageData { data: b64(&fixtures::png(200, 100)).into(), media_type: "image/png".into() };
+        let big = ContentBlock::ImageData { data: b64(&fixtures::png(2400, 1600)).into(), media_type: "image/png".into() };
         let mut set = ToolSet::new();
         set.add(Arc::new(ImageTool(vec![ContentBlock::text("[screenshot]"), big, small.clone()])));
         let d = tempfile::tempdir().unwrap();

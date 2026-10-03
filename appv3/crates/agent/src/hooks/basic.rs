@@ -279,7 +279,7 @@ impl Hook for QueuedInjectionHook {
             }
         };
         // Every released row, so each steer arrives with its @-mention context.
-        state.messages.extend(crate::history::rows_to_llm_messages(&queued));
+        state.messages.extend(crate::history::rows_to_llm_messages(queued.clone()));
         state.meta_pop("question_resume");
         // The UI shows only what the user wrote.
         let visible: Vec<&appv3_db::SessionMessage> = queued.iter().filter(|r| !appv3_db::is_attached_row(r)).collect();

@@ -433,15 +433,15 @@ impl Agent {
             let model_span = otel_hook.map(|o| (o, o.start_model_span(&ctx, &req), Instant::now()));
             let span_ctx = model_span.as_ref().map(|(_, s, _)| s.ctx()).or_else(appv3_core::otel::current);
             let call = appv3_core::otel::scope(span_ctx, async {
-                let req = Self::prepare_call(&hooks, &ctx, &mut state, req).await;
+                let ModelRequest { messages, system_prompt } = Self::prepare_call(&hooks, &ctx, &mut state, req).await;
                 stream_and_assemble(StreamArgs {
                     ctx: &ctx,
                     state: &state,
                     hooks: &hooks,
                     interrupt: opts.interrupt.as_ref(),
                     hard_cancel: opts.hard_cancel.as_ref(),
-                    system_prompt: &req.system_prompt,
-                    messages: &req.messages,
+                    system_prompt: &system_prompt,
+                    messages,
                     tool_defs: &tool_defs,
                     provider: provider.clone(),
                     label: &label,

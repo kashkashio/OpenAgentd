@@ -126,7 +126,9 @@ pub fn resize_base64_image(data: &str, max_edge: u32) -> Option<(String, String)
 
 // ── resize cache (history images replayed on every turn) ────────────────────
 
-type Resized = Arc<(String, String)>;
+/// `(base64 data, media_type)`; the data is shared with every request that
+/// replays the image.
+type Resized = Arc<(Arc<str>, String)>;
 
 struct Cache {
     map: HashMap<[u8; 32], (Resized, u64)>,
@@ -182,7 +184,8 @@ pub fn fit_base64_image(data: &str, max_edge: u32) -> Option<Resized> {
     if let Some(hit) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return Some(hit);
     }
-    let out: Resized = Arc::new(resize_base64_image(data, max_edge)?);
+    let (d, mt) = resize_base64_image(data, max_edge)?;
+    let out: Resized = Arc::new((d.into(), mt));
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).put(key, out.clone());
     Some(out)
 }
@@ -209,17 +212,21 @@ async fn fit_blocks(blocks: Vec<&mut ContentBlock>, cached: bool) -> usize {
     let mut slots = Vec::with_capacity(blocks.len());
     for b in blocks {
         let ContentBlock::ImageData { data, media_type } = b else { continue };
-        // Move the data out (no copy); the task and the slot share it.
-        let shared = Arc::new(std::mem::take(data));
-        jobs.push(shared.clone());
-        slots.push((data, media_type, shared));
+        jobs.push(data.clone());
+        slots.push((data, media_type));
     }
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     // Unordered so a slow core never stalls the queue; indices restore order.
     let mut results: Vec<_> = futures::stream::iter(jobs.into_iter().enumerate())
         .map(|(i, task)| async move {
-            let r =
-                tokio::task::spawn_blocking(move || if cached { fit_base64_image(&task, MAX_IMAGE_EDGE) } else { resize_base64_image(&task, MAX_IMAGE_EDGE).map(Arc::new) }).await;
+            let r = tokio::task::spawn_blocking(move || {
+                if cached {
+                    fit_base64_image(&task, MAX_IMAGE_EDGE)
+                } else {
+                    resize_base64_image(&task, MAX_IMAGE_EDGE).map(|(d, mt)| Arc::new((d.into(), mt)))
+                }
+            })
+            .await;
             (i, r)
         })
         .buffer_unordered(workers)
@@ -227,20 +234,15 @@ async fn fit_blocks(blocks: Vec<&mut ContentBlock>, cached: bool) -> usize {
         .await;
     results.sort_by_key(|(i, _)| *i);
     let mut changed = 0;
-    for ((data, media_type, original), (_, res)) in slots.into_iter().zip(results) {
+    for ((data, media_type), (_, res)) in slots.into_iter().zip(results) {
         match res {
             Ok(Some(fit)) => {
-                let (d, mt) = Arc::try_unwrap(fit).unwrap_or_else(|a| (*a).clone());
-                *data = d;
-                *media_type = mt;
+                *data = fit.0.clone();
+                *media_type = fit.1.clone();
                 changed += 1;
             }
-            other => {
-                if let Err(e) = other {
-                    tracing::warn!("image_resize_task_failed error={e}");
-                }
-                *data = Arc::try_unwrap(original).unwrap_or_else(|a| (*a).clone());
-            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("image_resize_task_failed error={e}"),
         }
     }
     changed
@@ -359,7 +361,7 @@ mod tests {
     }
 
     fn image_part(bytes: &[u8], mt: &str) -> ContentBlock {
-        ContentBlock::ImageData { data: b64(bytes), media_type: mt.into() }
+        ContentBlock::ImageData { data: b64(bytes).into(), media_type: mt.into() }
     }
 
     fn decoded_dims(b: &ContentBlock) -> (u32, u32) {
@@ -438,7 +440,7 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b));
 
         let mut c = Cache::new(10);
-        let v = |s: &str| Arc::new((s.to_string(), "image/png".to_string()));
+        let v = |s: &str| Arc::new((Arc::<str>::from(s), "image/png".to_string()));
         c.put([1; 32], v("aaaa"));
         c.put([2; 32], v("bbbb"));
         assert!(c.get(&[1; 32]).is_some()); // 1 is now the most recent
