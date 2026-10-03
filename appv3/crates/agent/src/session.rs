@@ -439,22 +439,34 @@ impl AgentSession {
             self.dismiss_pending_question("dismissed", None).await;
         }
 
-        crate::history::heal_orphaned_tool_calls(&self.pool, &sid).await?;
-        if let Some(row) = db::get_session(&self.pool, &sid).await? {
-            let mode = interaction_mode::follow_lead(&self.pool, &sid, &row).await?;
-            if mode == "plan" {
-                interaction_mode::ensure_prompt(&self.pool, &sid, mode).await?;
+        // The workspace snapshot (the state before this turn, for revert)
+        // walks the whole tree; the database steps below never touch the
+        // workspace, so they run alongside it. Both finish before the message
+        // is saved and the turn starts, so no edit can land before the snapshot.
+        let ws = self.workspace();
+        let ws_dir = session_workspace_dir(&sid, Some(&ws));
+        let prepare = async {
+            crate::history::heal_orphaned_tool_calls(&self.pool, &sid).await?;
+            if let Some(row) = db::get_session(&self.pool, &sid).await? {
+                let mode = interaction_mode::follow_lead(&self.pool, &sid, &row).await?;
+                if mode == "plan" {
+                    interaction_mode::ensure_prompt(&self.pool, &sid, mode).await?;
+                }
+                let mut upd = db::SessionUpdate { workspace: Some(ws.clone()), ..Default::default() };
+                if m.model_provided {
+                    upd.model = Some(m.model.clone());
+                }
+                if m.thinking_level_provided {
+                    upd.thinking_level = Some(m.thinking_level.clone());
+                }
+                self.is_scheduler_session.store(row.scheduled_task_name.is_some(), Ordering::SeqCst);
+                db::update_session(&self.pool, &sid, upd).await?;
             }
-            let mut upd = db::SessionUpdate { workspace: Some(self.workspace()), ..Default::default() };
-            if m.model_provided {
-                upd.model = Some(m.model.clone());
-            }
-            if m.thinking_level_provided {
-                upd.thinking_level = Some(m.thinking_level.clone());
-            }
-            self.is_scheduler_session.store(row.scheduled_task_name.is_some(), Ordering::SeqCst);
-            db::update_session(&self.pool, &sid, upd).await?;
-        }
+            db::cleanup_reverted_tail(&self.pool, &sid).await?;
+            Ok::<(), SessionError>(())
+        };
+        let (snapshot, prepared) = tokio::join!(crate::snapshot::track(&sid, &ws_dir), prepare);
+        prepared?;
 
         let mut extra = Map::new();
         if let Some(a) = m.attachment_metas.as_ref().filter(|a| !a.is_empty()) {
@@ -472,11 +484,9 @@ impl AgentSession {
         if let Some(ms) = m.mentions.as_ref().filter(|x| !x.is_empty()) {
             extra.insert("mentions".into(), json!(ms));
         }
-        let ws = self.workspace();
-        if let Some(snap) = crate::snapshot::track(&sid, &session_workspace_dir(&sid, Some(&ws))).await {
+        if let Some(snap) = snapshot {
             extra.insert("snapshot".into(), Value::String(snap));
         }
-        db::cleanup_reverted_tail(&self.pool, &sid).await?;
         // Steers still queued (a failed turn, another device, a question that
         // was superseded) go first: saved after this message, the next model
         // call would promote them behind it, and the agent would read the

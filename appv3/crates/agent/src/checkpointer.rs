@@ -61,12 +61,12 @@ impl Checkpointer {
         }
     }
 
-    async fn seq_before(&self, anchor_id: &str) -> Result<Option<i64>> {
-        let Some(row) = db::get_message(&self.pool, anchor_id).await? else {
+    async fn seq_before(conn: &mut sqlx::SqliteConnection, anchor_id: &str) -> Result<Option<i64>> {
+        let Some(row) = db::get_message(&mut *conn, anchor_id).await? else {
             return Ok(None);
         };
         let prev: Option<i64> =
-            sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ? AND seq < ?").bind(&row.session_id).bind(row.seq).fetch_one(&self.pool).await?;
+            sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ? AND seq < ?").bind(&row.session_id).bind(row.seq).fetch_one(&mut *conn).await?;
         Ok(Some(db::seq_between(prev.unwrap_or(0), row.seq)))
     }
 
@@ -96,6 +96,11 @@ impl Checkpointer {
         };
         let new_idx: Vec<usize> = (0..state.messages.len()).filter(|&i| state.messages[i].meta().db_id.is_none()).collect();
         if !new_idx.is_empty() || !pin_updates.is_empty() {
+            // One write transaction per sync: the batch lands whole or not at
+            // all (unsaved messages keep no `db_id` and go again next sync).
+            // IMMEDIATE takes the write lock up front, so the reads below
+            // cannot go stale under a concurrent `save_message`.
+            let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             // Summary anchors (`_summary_anchor_ids`).
             let mut anchored: HashMap<usize, i64> = HashMap::new();
             for &i in &new_idx {
@@ -105,7 +110,7 @@ impl Checkpointer {
                 let anchor =
                     state.messages[i + 1..].iter().find(|m| m.meta().db_id.is_some() && !m.meta().exclude_from_context && !m.meta().pinned).and_then(|m| m.meta().db_id.clone());
                 if let Some(a) = anchor {
-                    if let Some(seq) = self.seq_before(&a).await? {
+                    if let Some(seq) = Self::seq_before(&mut tx, &a).await? {
                         anchored.insert(i, seq);
                     }
                 }
@@ -115,11 +120,11 @@ impl Checkpointer {
                 (false, pin_updates.iter().filter(|(_, v)| !*v).map(|(k, _)| k.clone()).collect()),
             ] {
                 for id in ids {
-                    sqlx::query("UPDATE session_messages SET pinned = ? WHERE id = ?").bind(flag).bind(db::codec::db_id(&id)).execute(&self.pool).await?;
+                    sqlx::query("UPDATE session_messages SET pinned = ? WHERE id = ?").bind(flag).bind(db::codec::db_id(&id)).execute(&mut *tx).await?;
                 }
             }
             let mut tail: Option<i64> = None;
-            let mut saved_summary = false;
+            let mut saved: Vec<(usize, String)> = Vec::with_capacity(new_idx.len());
             for &i in &new_idx {
                 let m = &state.messages[i];
                 let save = match m {
@@ -144,7 +149,7 @@ impl Checkpointer {
                 let seq = match (m, anchored.get(&i)) {
                     (ChatMessage::Tool { .. }, _) | (_, None) => {
                         let next = match tail {
-                            None => db::next_seq(&self.pool, &sid).await?,
+                            None => db::next_seq(&mut *tx, &sid).await?,
                             Some(t) => t + SEQ_STEP,
                         };
                         tail = Some(next);
@@ -156,18 +161,19 @@ impl Checkpointer {
                 nm.is_summary = m.meta().is_summary();
                 nm.pinned = Some(m.meta().pinned);
                 nm.seq = Some(seq);
-                let row = db::save_message(&self.pool, &sid, nm).await?;
-                saved_summary |= m.meta().is_summary();
-                let id = db::codec::api_uuid(&row.id);
-                let pinned = state.messages[i].meta().pinned;
-                state.messages[i].meta_mut().db_id = Some(id.clone());
-                self.flushed_pinned.lock().unwrap().insert(id, pinned);
+                let id = db::save_message_id(&mut tx, &sid, nm).await?;
+                saved.push((i, db::codec::api_uuid(&id)));
             }
             if !pin_updates.is_empty() {
-                db::bump_history_revision(&self.pool, &sid, true).await?;
+                db::bump_history_revision(&mut *tx, &sid, true).await?;
             }
-            let _ = saved_summary;
+            tx.commit().await?;
             let mut flushed = self.flushed_pinned.lock().unwrap();
+            for (i, id) in saved {
+                let pinned = state.messages[i].meta().pinned;
+                state.messages[i].meta_mut().db_id = Some(id.clone());
+                flushed.insert(id, pinned);
+            }
             for (k, v) in pin_updates {
                 flushed.insert(k, v);
             }
