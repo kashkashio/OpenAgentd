@@ -110,7 +110,15 @@ struct FileSink {
     path: PathBuf,
     min_level: u32,
     retention_secs: u64,
-    file: Mutex<Option<std::fs::File>>,
+    /// The open file and its size: counting the bytes written spares an
+    /// `fstat` per line (the size only decides when to rotate).
+    file: Mutex<Option<(std::fs::File, u64)>>,
+}
+
+fn open_append(path: &Path) -> Option<(std::fs::File, u64)> {
+    let f = std::fs::OpenOptions::new().create(true).append(true).open(path).ok()?;
+    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    Some((f, size))
 }
 
 impl FileSink {
@@ -118,7 +126,7 @@ impl FileSink {
         if let Some(d) = path.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        let f = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        let f = open_append(&path);
         FileSink { path, min_level, retention_secs: retention_days * 86_400, file: Mutex::new(f) }
     }
 
@@ -128,16 +136,18 @@ impl FileSink {
             if let Some(d) = self.path.parent() {
                 let _ = std::fs::create_dir_all(d);
             }
-            *g = std::fs::OpenOptions::new().create(true).append(true).open(&self.path).ok();
+            *g = open_append(&self.path);
         }
-        let size = g.as_ref().and_then(|f| f.metadata().ok()).map(|m| m.len()).unwrap_or(0);
+        let size = g.as_ref().map(|(_, n)| *n).unwrap_or(0);
         if size + line.len() as u64 > ROTATION_BYTES {
             *g = None;
             self.rotate();
-            *g = std::fs::OpenOptions::new().create(true).append(true).open(&self.path).ok();
+            *g = open_append(&self.path);
         }
-        if let Some(f) = g.as_mut() {
-            let _ = f.write_all(line.as_bytes());
+        if let Some((f, n)) = g.as_mut() {
+            if f.write_all(line.as_bytes()).is_ok() {
+                *n += line.len() as u64;
+            }
         }
     }
 
