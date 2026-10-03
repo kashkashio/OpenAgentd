@@ -27,7 +27,7 @@ export function readBlocks(blocks: ContentBlock[]): readonly ContentBlock[] {
  * sound cache key, and a WeakMap lets superseded arrays be collected. */
 const confirmedIdCache = new WeakMap<ContentBlock[], Set<string>>()
 
-function confirmedIdSet(blocks: ContentBlock[]): Set<string> {
+export function confirmedIdSet(blocks: ContentBlock[]): Set<string> {
   const cached = confirmedIdCache.get(blocks)
   if (cached) return cached
   const ids = new Set(blocks.map((b) => b.id))

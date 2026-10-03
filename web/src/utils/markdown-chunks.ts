@@ -28,12 +28,39 @@ export const MIN_CHUNK_CHARS = 2000
 
 // Document-wide constructs (reference definitions, footnotes, HTML blocks,
 // plan tags): text using them is rendered whole.
-const WHOLE_DOCUMENT = /^ {0,3}(?:\[[^\]\n]+\]:|<[A-Za-z!?/])|proposed_plan/im
+const DOCUMENT_WIDE_LINE = /^ {0,3}(?:\[[^\]\n]+\]:|<[A-Za-z!?/])/
+const DOCUMENT_WIDE = /^ {0,3}(?:\[[^\]\n]+\]:|<[A-Za-z!?/])/m
+const PLAN_TAG = /proposed_plan/i
 // Lines that can continue the block above a blank line. Unlike CommonMark,
 // the parser also joins quotes separated by a blank line.
 const CONTINUES_BLOCK = /^(?:(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)|>)/
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 const FENCE_OR_MATH = /```|~~~|\$\$|\\\[/
+
+/**
+ * Whether `text` uses document-wide markdown outside code fences. A fence's
+ * lines are code: a JSX snippet or a `[key]: value` line there changes
+ * nothing, and counting it rendered every answer that quoted HTML whole.
+ * Only plain top-level fences are trusted: a math block or a fence marker
+ * anywhere else (in a quote, a list, after `$$`) can change what is code, so
+ * such text falls back to checking every line.
+ */
+function usesDocumentWideMarkdown(text: string): boolean {
+  if (PLAN_TAG.test(text)) return true
+  let fence: { char: string; length: number } | null = null
+  for (const line of text.split(/\r\n?|\n/)) {
+    if (fence) {
+      const close = FENCE.exec(line)
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length && close[2].trim() === '') fence = null
+      continue
+    }
+    const open = FENCE.exec(line)
+    if (open) fence = { char: open[1][0], length: open[1].length }
+    else if (DOCUMENT_WIDE_LINE.test(line)) return true
+    else if (FENCE_OR_MATH.test(line)) return DOCUMENT_WIDE.test(text)
+  }
+  return false
+}
 
 /** Offsets in `text` where a cut may go, by the line scan alone. */
 function proposedCuts(text: string): number[] {
@@ -108,7 +135,7 @@ export function createMarkdownChunker(parse: ParseMarkdownText, minChunk: number
   let checked: { text: string; ok: boolean } | null = null
 
   return function chunk(text: string, final = false): MarkdownChunk[] | null {
-    if (WHOLE_DOCUMENT.test(text)) return null
+    if (usesDocumentWideMarkdown(text)) return null
     let keep = 0
     let end = 0
     while (keep < settled.length && text.startsWith(settled[keep].text, end)) end += settled[keep++].text.length

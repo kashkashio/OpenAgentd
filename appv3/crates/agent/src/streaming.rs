@@ -413,7 +413,9 @@ pub struct StreamArgs<'a> {
     pub interrupt: Option<&'a Event>,
     pub hard_cancel: Option<&'a Event>,
     pub system_prompt: &'a str,
-    pub messages: &'a [ChatMessage],
+    /// The request window, owned: the wire list is built around it without
+    /// another copy of the history.
+    pub messages: Vec<ChatMessage>,
     pub tool_defs: &'a [Value],
     pub provider: Arc<dyn LlmProvider>,
     pub label: &'a str,
@@ -455,8 +457,9 @@ pub async fn stream_and_assemble(a: StreamArgs<'_>) -> Result<(AssistantMessage,
     let mut first_output: Option<(Instant, Instant)> = None;
     let mut last_output: Option<Instant> = None;
 
-    let mut wire = vec![ChatMessage::system(a.system_prompt)];
-    wire.extend(a.messages.iter().cloned());
+    let mut wire = Vec::with_capacity(a.messages.len() + 1);
+    wire.push(ChatMessage::system(a.system_prompt));
+    wire.extend(a.messages);
     let wire = merge_consecutive_user_messages(wire);
     let wire = fit_request_images(wire, a.label).await;
     let effective_interrupt = if a.provider.support_interrupt() { a.interrupt.cloned() } else { None };
@@ -803,7 +806,6 @@ mod tests {
         });
         let ctx = ctx();
         let state = AgentState::new(vec![], String::new());
-        let messages = vec![ChatMessage::user("hi")];
         let (msg, _, timing) = stream_and_assemble(StreamArgs {
             ctx: &ctx,
             state: &state,
@@ -811,7 +813,7 @@ mod tests {
             interrupt: None,
             hard_cancel: None,
             system_prompt: "",
-            messages: &messages,
+            messages: vec![ChatMessage::user("hi")],
             tool_defs: &[],
             provider,
             label: "mock:mock",
@@ -846,7 +848,7 @@ mod tests {
         use appv3_providers::ContentBlock;
         let mock = Arc::new(MockProvider::new(vec![MockProvider::text("seen")]));
         let provider: Arc<dyn LlmProvider> = mock.clone();
-        let big = ContentBlock::ImageData { data: fixtures::b64(&fixtures::png(2600, 1200)), media_type: "image/png".into() };
+        let big = ContentBlock::ImageData { data: fixtures::b64(&fixtures::png(2600, 1200)).into(), media_type: "image/png".into() };
         let messages = vec![
             ChatMessage::user("look"),
             ChatMessage::Assistant(AssistantMessage { tool_calls: Some(vec![ToolCall::new("c1", "read", "{}")]), ..Default::default() }),
@@ -867,7 +869,7 @@ mod tests {
             interrupt: None,
             hard_cancel: None,
             system_prompt: "sys",
-            messages: &messages,
+            messages: messages.clone(),
             tool_defs: &[],
             provider,
             label: "mock:mock",

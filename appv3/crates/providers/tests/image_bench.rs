@@ -100,7 +100,7 @@ fn tool_msg(parts: Vec<ContentBlock>) -> ChatMessage {
 }
 
 fn image_part(bytes: &[u8]) -> ContentBlock {
-    ContentBlock::ImageData { data: B64.encode(bytes), media_type: "image/png".into() }
+    ContentBlock::ImageData { data: B64.encode(bytes).into(), media_type: "image/png".into() }
 }
 
 /// A distinct 2880×1800 screenshot per `i` (so the resize cache cannot hit).

@@ -205,25 +205,60 @@ fn rel_posix(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join("/")
 }
 
-/// `_iter_markdown_files`.
-pub fn iter_markdown_files(root: &Path) -> Vec<PathBuf> {
+/// Markdown pages under `root` in `rel` order, with the metadata of the one
+/// `stat` that filters them.
+fn markdown_files(root: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
     if !root.is_dir() {
         return vec![];
     }
     let mut all = Vec::new();
     walk_md(root, &mut all);
-    let mut paths: Vec<PathBuf> = all
+    let mut files: Vec<(String, PathBuf, std::fs::Metadata)> = all
         .into_iter()
-        .filter(|p| p.is_file())
-        .filter(|p| !rel_posix(root, p).split('/').any(|part| part.starts_with('.')))
-        .filter(|p| std::fs::metadata(p).map(|m| m.len() <= MAX_MEMORY_PAGE_BYTES).unwrap_or(false))
+        .filter_map(|p| {
+            let rel = rel_posix(root, &p);
+            if rel.split('/').any(|part| part.starts_with('.')) {
+                return None;
+            }
+            let m = std::fs::metadata(&p).ok()?;
+            (m.is_file() && m.len() <= MAX_MEMORY_PAGE_BYTES).then_some((rel, p, m))
+        })
         .collect();
-    paths.sort_by_key(|p| rel_posix(root, p));
-    paths
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files.into_iter().map(|(_, p, m)| (p, m)).collect()
+}
+
+/// `_iter_markdown_files`.
+pub fn iter_markdown_files(root: &Path) -> Vec<PathBuf> {
+    markdown_files(root).into_iter().map(|(p, _)| p).collect()
 }
 
 fn read_lossy(p: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&std::fs::read(p)?).to_string())
+}
+
+/// A page's `(modified, len)`: a change to either means re-reading it.
+type Stamp = (Option<std::time::SystemTime>, u64);
+type SummaryCache = std::collections::HashMap<PathBuf, (Stamp, String, String)>;
+
+/// `(title, summary)` per page, so a turn re-reads only the pages that
+/// changed since the last one. The walk and `stat` still run every time,
+/// so edits made outside the app are picked up.
+static SUMMARIES: std::sync::LazyLock<std::sync::Mutex<SummaryCache>> = std::sync::LazyLock::new(Default::default);
+
+fn page_summary(p: &Path, meta: &std::fs::Metadata) -> Option<(String, String)> {
+    let stamp: Stamp = (meta.modified().ok(), meta.len());
+    let lock = || SUMMARIES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((s, title, summary)) = lock().get(p) {
+        if *s == stamp {
+            return Some((title.clone(), summary.clone()));
+        }
+    }
+    let raw = read_lossy(p).ok()?;
+    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let (title, summary) = extract_summary(&raw, &stem);
+    lock().insert(p.to_path_buf(), (stamp, title.clone(), summary.clone()));
+    Some((title, summary))
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -248,14 +283,17 @@ pub fn compile_global_snapshot(root: &Path) -> GlobalSnapshot {
     }
     let mut entries = Vec::new();
     let mut total = 0usize;
-    for p in iter_markdown_files(root) {
-        let rel = rel_posix(root, &p);
+    let files = markdown_files(root);
+    {
+        let present: std::collections::HashSet<&Path> = files.iter().map(|(p, _)| p.as_path()).collect();
+        SUMMARIES.lock().unwrap_or_else(|e| e.into_inner()).retain(|p, _| !p.starts_with(root) || present.contains(p.as_path()));
+    }
+    for (p, meta) in &files {
+        let rel = rel_posix(root, p);
         if rel == "preferences.md" {
             continue;
         }
-        let Ok(raw) = read_lossy(&p) else { continue };
-        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let (title, summary) = extract_summary(&raw, &stem);
+        let Some((title, summary)) = page_summary(p, meta) else { continue };
         let topic = rel.strip_suffix(".md").unwrap_or(&rel);
         let mut entry = format!("- [[global:{topic}]]: {title}");
         if !summary.is_empty() && summary != title {
@@ -636,5 +674,19 @@ mod tests {
         // The old 1,500 budget left no room for a catalog next to long preferences.
         assert!(s.contains("[[global:topic00]]"));
         assert!(s.contains("more global pages via /memory search"));
+    }
+
+    /// Summaries are cached per page; an edit made outside the app (a new
+    /// size or mtime) or a deleted page must show on the next compile.
+    #[test]
+    fn catalog_follows_edits_and_deletes() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::write(root.join("db.md"), "# Database\n\nPostgres notes").unwrap();
+        std::fs::write(root.join("ops.md"), "# Ops\n\nDeploy notes").unwrap();
+        assert_eq!(compile_global_snapshot(root).knowledge_catalog, "- [[global:db]]: Database — Postgres notes\n- [[global:ops]]: Ops — Deploy notes");
+        std::fs::write(root.join("db.md"), "# Database\n\nSQLite notes, longer").unwrap();
+        std::fs::remove_file(root.join("ops.md")).unwrap();
+        assert_eq!(compile_global_snapshot(root).knowledge_catalog, "- [[global:db]]: Database — SQLite notes, longer");
     }
 }

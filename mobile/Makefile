@@ -1,4 +1,4 @@
-.PHONY: dev ios-init ios-icons ios-icons-force ios-web ios-dev ios-dev-device ios-install-device ios-install-device-fast ios-build ios-clean build clean
+.PHONY: dev ios-init ios-icons ios-icons-force ios-web ios-dev ios-dev-device ios-install-device ios-install-device-fast ios-ipa ios-release ios-build ios-clean build clean
 
 IOS_DEVICE ?= $(word 2,$(MAKECMDGOALS))
 IOS_DEV_IDENTIFIER ?= com.dev.openagentd.mobile
@@ -89,6 +89,15 @@ ios-install-device-fast: ## Build and install a bundled debug iOS app on a devic
 	./scripts/patch-xcode-project.sh
 	cd src-tauri && cargo tauri ios build --debug --archive-only
 	xcrun devicectl device install app --device "$(IOS_DEVICE)" src-tauri/gen/apple/build/openagentd-mobile_iOS.xcarchive/Products/Applications/OpenAgentd.app
+
+ios-ipa: ## Build the release archive and package a sideloadable IPA into dist/
+	$(MAKE) ios-icons
+	./scripts/patch-xcode-project.sh
+	cd src-tauri && cargo tauri ios build --archive-only
+	./scripts/package-ipa.sh
+
+ios-release: ios-ipa ## Build the IPA and upload it plus source.json to the GitHub release (DRY_RUN=1 to preview)
+	./scripts/publish-ipa.sh
 
 %:
 	@:

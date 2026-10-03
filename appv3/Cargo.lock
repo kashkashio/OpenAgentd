@@ -29,21 +29,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloc-no-stdlib"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
-
-[[package]]
-name = "alloc-stdlib"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
-dependencies = [
- "alloc-no-stdlib",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -132,7 +117,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "appv3-agent"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "appv3-core",
@@ -165,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-api"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "appv3-agent",
@@ -213,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-cli"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "appv3-agent",
@@ -246,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-core"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -270,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-db"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "appv3-core",
@@ -289,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-jsplugin"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "appv3-core",
  "base64 0.23.1",
@@ -318,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-mcp"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "appv3-agent",
@@ -343,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-memory"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "appv3-core",
@@ -361,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-preview"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "appv3-core",
  "appv3-tools",
@@ -383,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-providers"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anyhow",
  "appv3-core",
@@ -412,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-terminal"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "appv3-core",
  "appv3-tools",
@@ -425,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "appv3-tools"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "anydoc",
  "anyhow",
@@ -714,27 +699,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brotli"
-version = "9.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8b851b75c23ca7873623d612fe49bd1989aeb03d08fb9432187eb253d3d4c6b"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor",
-]
-
-[[package]]
-name = "brotli-decompressor"
-version = "6.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "941cd9bd4ddab83cb46fa5a2d428f1c857b24ac78cb876cf7beb710840934bd7"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
-]
-
-[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,8 +770,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f360145194ee8e21db5ee7f3fcd4fe52210864c75c985dae33218202c8bbe040"
 dependencies = [
  "find-msvc-tools",
- "jobserver",
- "libc",
  "shlex 2.0.1",
 ]
 
@@ -968,12 +930,9 @@ version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98fc98460ba0ad5317075d3632b8dfc45d0be8c4a49347c2a38272019717614a"
 dependencies = [
- "brotli",
  "compression-core",
  "flate2",
  "memchr",
- "zstd",
- "zstd-safe",
 ]
 
 [[package]]
@@ -3237,16 +3196,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jobserver"
-version = "0.1.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
-dependencies = [
- "getrandom 0.4.3",
- "libc",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5338,7 +5287,6 @@ dependencies = [
  "memchr",
  "once_cell",
  "percent-encoding",
- "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -5349,7 +5297,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -6341,24 +6288,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "webpki-roots"
-version = "0.26.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
-dependencies = [
- "webpki-roots 1.0.9",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "1.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
 name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6906,34 +6835,6 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
-]
-
-[[package]]
-name = "zstd"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf06bd8162af0734b344780deb55b42a2429ae430870d13fcc12f238e880fe6e"
-dependencies = [
- "zstd-safe",
-]
-
-[[package]]
-name = "zstd-safe"
-version = "8.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae42c0555055784c70058d19ba8e275528e8a99a706684868ace5da4e716a4ab"
-dependencies = [
- "zstd-sys",
-]
-
-[[package]]
-name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
-dependencies = [
- "cc",
- "pkg-config",
 ]
 
 [[package]]

@@ -15,6 +15,8 @@ make ios-init                    # generate the local Xcode project
 make ios-dev                     # simulator/device development
 make ios-dev-device <name>       # named physical device
 make ios-build                   # production iOS build
+make ios-ipa                     # release archive -> sideloadable dist/*.ipa
+make ios-release                 # ios-ipa + upload IPA and SideStore source (DRY_RUN=1 to preview)
 make build                       # generic Tauri bundle
 ```
 

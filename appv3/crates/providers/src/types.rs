@@ -6,6 +6,7 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::pin::Pin;
+use std::sync::Arc;
 
 // ── Multimodal content blocks ────────────────────────────────────────────────
 
@@ -23,7 +24,9 @@ pub enum ContentBlock {
         detail: Option<String>,
     },
     #[serde(rename = "image_data")]
-    ImageData { data: String, media_type: String },
+    /// Base64 bytes, shared: the agent copies its history into every request,
+    /// and an image is usually the largest thing in it.
+    ImageData { data: Arc<str>, media_type: String },
 }
 
 impl ContentBlock {

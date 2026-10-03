@@ -194,7 +194,7 @@ pub fn extract_parts(content: Option<&Value>) -> Vec<ContentBlock> {
             Some("image") => {
                 let mime = mime_of(b);
                 match b.get("data").and_then(|d| d.as_str()).filter(|d| !d.is_empty()) {
-                    Some(data) => parts.push(ContentBlock::ImageData { data: data.to_string(), media_type: normalize_image_mime(mime.as_deref()) }),
+                    Some(data) => parts.push(ContentBlock::ImageData { data: data.into(), media_type: normalize_image_mime(mime.as_deref()) }),
                     None => parts.push(ContentBlock::text(format!("[image: {}]", mime.unwrap_or_else(|| "image/*".into())))),
                 }
             }
@@ -208,7 +208,7 @@ pub fn extract_parts(content: Option<&Value>) -> Vec<ContentBlock> {
                 }
                 match (blob, &mime) {
                     (Some(blob), Some(m)) if m.starts_with("image/") || !m.contains('/') => {
-                        parts.push(ContentBlock::ImageData { data: blob.to_string(), media_type: normalize_image_mime(Some(m)) })
+                        parts.push(ContentBlock::ImageData { data: blob.into(), media_type: normalize_image_mime(Some(m)) })
                     }
                     _ => match res.get("text").and_then(|t| t.as_str()).filter(|t| !t.is_empty()) {
                         Some(t) => parts.push(ContentBlock::text(t)),

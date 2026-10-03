@@ -208,7 +208,7 @@ pub fn handle_image(resolved: &Path, rel: &str) -> Result<ToolOutput, ToolError>
         None => (format!("[Image: {rel}]"), raw, image_mime(resolved)),
     };
     Ok(ToolOutput::Parts {
-        parts: vec![ContentBlock::text(label), ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(raw), media_type }],
+        parts: vec![ContentBlock::text(label), ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(raw).into(), media_type }],
         mcp_app: None,
     })
 }
@@ -257,7 +257,7 @@ pub fn handle_document(resolved: &Path, rel: &str) -> Result<ToolOutput, ToolErr
         return Ok(ToolOutput::Parts {
             parts: vec![
                 ContentBlock::text(format!("[Document: {rel}] (PDF — raw, text extraction failed)")),
-                ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&raw), media_type: "application/pdf".into() },
+                ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&raw).into(), media_type: "application/pdf".into() },
             ],
             mcp_app: None,
         });
@@ -398,7 +398,7 @@ mod tests {
         std::fs::write(&small, &small_bytes).unwrap();
         let ToolOutput::Parts { parts, .. } = handle_image(&small, "small.jpg").unwrap() else { panic!("parts") };
         assert_eq!(parts[0], ContentBlock::text("[Image: small.jpg]"));
-        assert_eq!(parts[1], ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&small_bytes), media_type: "image/jpeg".into() });
+        assert_eq!(parts[1], ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&small_bytes).into(), media_type: "image/jpeg".into() });
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { ChevronDown, ChevronUp, Paperclip, Pencil } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAgentStore } from '@/stores/useAgentStore'
@@ -7,9 +8,11 @@ import { useToastStore } from '@/stores/useToastStore'
 import type { MessageAttachment } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { designFeedbackPlainText } from '@/lib/design-feedback'
+import { confirmedIdSet } from '@/utils/blocks'
 
 const QUEUED_COLLAPSE_LINES = 10
 const QUEUED_COLLAPSE_CHARS = 700
+const NO_IDS: string[] = []
 
 function QueuedAttachmentList({ attachments }: { attachments: MessageAttachment[] }) {
   return (
@@ -134,24 +137,29 @@ function restoreDraft(content: string, files?: File[]) {
 export const PendingMessageQueue = memo(function PendingMessageQueue() {
   const allMessages = useAgentStore((s) => s._pendingMessages)
   const sessionId = useAgentStore((s) => s.sessionId)
-  // `agentStreams` is replaced on every SSE flush. Subscribe to it only while
-  // something is queued; the empty-queue case (almost always) must not
-  // re-render — and re-flatten every block — per token on a phone WebView.
-  const agentStreams = useAgentStore((s) => (s._pendingMessages.length === 0 ? undefined : s.agentStreams))
+  // `agentStreams` is replaced on every SSE flush, so select only which
+  // queued ids a stream already shows: a token that changes nothing here must
+  // not re-render the queue (or re-scan the session) on a phone WebView. By
+  // id only: a queued message always has its server id, and matching text
+  // hid any steer the session had already sent once ("continue").
+  const shownIds = useAgentStore(
+    useShallow((s) => {
+      if (s._pendingMessages.length === 0) return NO_IDS
+      const streams = Object.values(s.agentStreams)
+      return s._pendingMessages
+        .filter((msg) => streams.some((st) => confirmedIdSet(st.blocks).has(msg.id) || st.currentBlocks.some((b) => b.id === msg.id)))
+        .map((msg) => msg.id)
+    }),
+  )
 
-  const messages = useMemo(() => {
-    if (allMessages.length === 0) return []
-    const allBlocks = agentStreams
-      ? Object.values(agentStreams).flatMap((s) => [...s.blocks, ...s.currentBlocks])
-      : []
-    // By id only: a queued message always has its server id, and matching
-    // text hid any steer the session had already sent once ("continue").
-    const activeIds = new Set(allBlocks.map((b) => b.id))
-    return allMessages.filter((msg) => {
-      if (msg.sessionId && sessionId && msg.sessionId !== sessionId) return false
-      return !activeIds.has(msg.id)
-    })
-  }, [allMessages, sessionId, agentStreams])
+  const messages = useMemo(
+    () =>
+      allMessages.filter((msg) => {
+        if (msg.sessionId && sessionId && msg.sessionId !== sessionId) return false
+        return !shownIds.includes(msg.id)
+      }),
+    [allMessages, sessionId, shownIds],
+  )
   const removePendingMessage = useAgentStore((s) => s.removePendingMessage)
   // A steer still queued after a failed turn (its files are on another
   // device, so it was not handed back) has no running turn to read it.

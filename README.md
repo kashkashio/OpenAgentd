@@ -57,6 +57,21 @@ Open **OpenAgentd** from your applications folder or Start menu. The desktop app
 
 Release artifacts are available for macOS, Windows, and Linux on the [latest release page](https://github.com/lthoangg/openagentd/releases/latest). Unsigned desktop builds may require an explicit operating-system confirmation before first launch.
 
+### iOS app
+
+The iOS app connects to an OpenAgentd server running on your computer (see
+[CLI server](#cli-server)). It is not on the App Store; each release includes an
+`.ipa` to sideload. With [SideStore](https://sidestore.io), add this source to
+get the app and its updates:
+
+```text
+https://github.com/lthoangg/openagentd/releases/download/latest-ios/source.json
+```
+
+See [Install the iOS app](mobile/INSTALL-IOS.md) for SideStore setup, other
+sideloading tools, free Apple Account limits, connecting to your server, and
+troubleshooting.
+
 ### CLI server
 
 Install the backend when you want to run it from a terminal, use a browser client, or connect another device:

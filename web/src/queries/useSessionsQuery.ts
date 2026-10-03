@@ -45,6 +45,10 @@ export function useWorkspaceSessionsQuery(workspace: string | readonly string[],
       lastPage.has_more ? lastPage.next_cursor : undefined,
     enabled: enabled && paths.length > 0,
     staleTime: CODING_WORKSPACE_SMOOTHING_MS,
+    // The global event stream patches these rows in place and resyncs after
+    // any gap; a focus refetch re-read every loaded page of every workspace
+    // in the sidebar, one request per page, on each alt-tab.
+    refetchOnWindowFocus: false,
   })
 }
 

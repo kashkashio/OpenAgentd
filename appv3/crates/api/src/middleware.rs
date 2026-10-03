@@ -396,10 +396,9 @@ pub fn gzip_layer() -> tower_http::compression::CompressionLayer<impl tower_http
             .any(|p| ct.starts_with(p));
         !compressed_already
     };
+    // Only `compression-gzip` is compiled in, so gzip is the only encoding
+    // the layer can negotiate.
     tower_http::compression::CompressionLayer::new()
-        .no_br()
-        .no_deflate()
-        .no_zstd()
         .quality(CompressionLevel::Fastest)
         .compress_when(SizeAbove::new(1000).and(NotForContentType::SSE).and(NotForContentType::GRPC).and(worth_compressing))
 }
