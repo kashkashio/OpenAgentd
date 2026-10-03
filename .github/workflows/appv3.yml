@@ -1,8 +1,11 @@
 name: appv3
 
-# OpenAgentd v3 (native Rust backend): lint, test and smoke-test the release
-# binary on every desktop OS, so platform-specific code paths stay compiled
-# and exercised.
+# OpenAgentd v3 (native Rust backend): lint, test and smoke-test the binary
+# on every desktop OS, so platform-specific code paths stay compiled and
+# exercised. The smoke and installer checks run the debug binary `cargo test`
+# already built (the CLI integration tests need it); one Linux release build
+# keeps release-only failures (LTO, linking) from first showing up in
+# release.yml.
 
 on:
   push:
@@ -71,6 +74,7 @@ jobs:
         run: cargo test --locked --workspace --no-fail-fast
 
       - name: Build release binary
+        if: runner.os == 'Linux'
         run: cargo build --locked --release -p appv3-cli
 
       - name: Smoke test (version, handshake, health)
@@ -78,7 +82,7 @@ jobs:
           OPENAGENTD_MODEL_REGISTRY_REFRESH: "false"
         run: |
           set -euo pipefail
-          bin=target/release/openagentd
+          bin=target/debug/openagentd
           [ "$RUNNER_OS" = "Windows" ] && bin="$bin.exe"
           "$bin" --version
           sb="$RUNNER_TEMP/oad-smoke"
@@ -98,6 +102,6 @@ jobs:
       - name: Installer + self-update e2e
         working-directory: .
         run: |
-          bin=appv3/target/release/openagentd
+          bin=appv3/target/debug/openagentd
           [ "$RUNNER_OS" = "Windows" ] && bin="$bin.exe"
           scripts/e2e_cli_install.sh "$bin"

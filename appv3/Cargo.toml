@@ -34,7 +34,9 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 directories = "6.0"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "tls-rustls", "chrono", "uuid", "macros", "migrate"] }
+# SQLite only (no TLS); migrations are replayed by hand and no query macros
+# are used, so only the `FromRow` derive is needed.
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "chrono", "uuid", "derive"] }
 ignore = "0.4"
 dunce = "1"
 gix = { version = "0.87", default-features = false, features = ["status", "attributes", "excludes", "dirwalk", "index", "sha1", "parallel", "max-performance-safe"] }
@@ -50,7 +52,8 @@ cron = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-full", "set-header", "limit", "catch-panic"] }
+# gzip is the only encoding the API negotiates (`middleware::gzip_layer`).
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "set-header", "limit", "catch-panic"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 appv3-core = { path = "crates/core" }
 appv3-db = { path = "crates/db" }
@@ -68,6 +71,16 @@ appv3-preview = { path = "crates/preview" }
 lto = "thin"
 codegen-units = 16
 strip = false
+
+# `make dev` and `cargo test`: line tables keep panic and backtrace locations
+# at a fraction of full debug info's link time and size, and dependencies
+# (bundled SQLite, gix, regex, oxc, QuickJS) run optimised. Workspace crates
+# stay at opt-level 0, so rebuilding them is as fast as before.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
 
 # Shipped binaries (`cargo build --profile dist`): whole-program optimisation
 # for the desktop sidecar, at the cost of a much slower build. `strip` stays
