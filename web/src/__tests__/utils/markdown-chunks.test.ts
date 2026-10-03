@@ -64,6 +64,22 @@ describe('createMarkdownChunker', () => {
     }
   })
 
+  it('keeps chunking when HTML or reference lines sit inside a code fence', () => {
+    // A JSX snippet or a `[x]: y` line in a fence is code, not document-wide
+    // markdown; rendering whole re-parsed the entire answer on every frame.
+    const snippet = '```tsx\n<div className="card">\n  <Title />\n</div>\n[key]: not a reference\n```\n\n'
+    const text = longAnswer(30_000) + snippet + longAnswer(10_000)
+    const chunks = createMarkdownChunker(parseMarkdownText)(text)
+    expect(chunks).not.toBeNull()
+    expect(chunks!.length).toBeGreaterThan(10)
+    expect(blocksOf(chunks!)).toBe(wholeBlocks(text))
+    // Outside a fence the same line still renders whole.
+    expect(createMarkdownChunker(parseMarkdownText)(`${longAnswer(5_000)}<div>\nhi\n</div>\n`)).toBeNull()
+    // A fence marker inside a math block is not a fence: the footnote after
+    // it is document-wide.
+    expect(createMarkdownChunker(parseMarkdownText)(`${longAnswer(5_000)}$$\n~~~\n\n[^1]: n\n\n$$\n\nSee[^1].\n`)).toBeNull()
+  })
+
   it('renders whole when the finished text no longer parses like its chunks', () => {
     const text = 'first paragraph\n\nsecond paragraph\n'
     // Stands in for later text changing how earlier text parses.
@@ -105,6 +121,8 @@ const LINES = [
   '```mermaid', 'graph TD; A-->B',
   '$$', '$$x^2$$', '$$ a + b', 'c $$', '\\[', '\\]', '$$x$$ inline after',
   '| a | b |', '| --- | --- |', '| 1 | 2 |',
+  // Document-wide only outside a fence: inside one they are code.
+  '<div className="x">', '</div>', '[ref]: https://example.com',
 ]
 
 function fuzzDoc(next: () => number): string {

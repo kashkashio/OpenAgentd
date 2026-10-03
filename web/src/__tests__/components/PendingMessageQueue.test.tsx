@@ -62,6 +62,40 @@ describe('PendingMessageQueue', () => {
     expect(onRender.mock.calls.length).toBe(rendersAfterMount)
   })
 
+  it('does not re-render on stream deltas while a message waits in the queue', () => {
+    // Steering mid-turn is when the queue is non-empty and tokens stream; each
+    // flush must not re-render it (and re-scan every block of the session).
+    const onRender = mock(() => {})
+    const stream = (i: number) => ({
+      openagentd: {
+        blocks: Array.from({ length: 200 }, (_, n) => ({ id: `old-${n}`, type: 'text', content: 'x' })),
+        currentBlocks: [{ id: `text-${i}`, type: 'text', content: `token ${i}` }],
+        status: 'working',
+        usage: { promptTokens: 0, completionTokens: 0, cachedTokens: 0 },
+      } as never,
+    })
+    useAgentStore.setState({
+      sessionId: 'session-1',
+      _pendingMessages: [{ id: 'pending-1', sessionId: 'session-1', content: 'Steer this way' }],
+      agentStreams: stream(0),
+    })
+    render(
+      <Profiler id="queue" onRender={onRender}>
+        <PendingMessageQueue />
+      </Profiler>,
+    )
+    const rendersAfterMount = onRender.mock.calls.length
+
+    for (let i = 1; i <= 3; i++) {
+      act(() => {
+        useAgentStore.setState({ agentStreams: stream(i) })
+      })
+    }
+
+    expect(onRender.mock.calls.length).toBe(rendersAfterMount)
+    expect(screen.getByText('Steer this way')).toBeTruthy()
+  })
+
   it('renders queued messages for the active session only', () => {
     useAgentStore.setState({
       sessionId: 'session-1',
