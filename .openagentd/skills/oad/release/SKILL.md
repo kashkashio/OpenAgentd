@@ -99,7 +99,30 @@ gh workflow run release-desktop.yml -f confirm=release-desktop -f channel=stable
 - Homebrew formula and cask publish automatically after each workflow completes.
 - If the push-triggered `tauri.yml` fails after the bump, the usual cause is a
   stale desktop or mobile `Cargo.lock`: fix it on `main` before rerunning.
-- Afterwards, confirm the notes survived: `gh release view v<version> --repo lthoangg/openagentd`.
+
+Build and upload the iOS sideload IPA locally while `release-desktop.yml` runs.
+CI does not build iOS; this step needs a Mac with Xcode and the signing team from
+`mobile/src-tauri/tauri.conf.json`:
+
+```bash
+git fetch --tags && git checkout v<version>   # HEAD must be the tagged commit
+DRY_RUN=1 make -C mobile ios-release      # optional preview: checks + mobile/dist/source.json
+make -C mobile ios-release                # build, package, upload IPA + .sha256 and source.json
+git checkout main
+```
+
+- `ios-release` uploads `OpenAgentd_<version>_iOS.ipa` and its `.sha256` to
+  `v<version>`. It also refreshes `source.json` on the rolling `latest-ios`
+  pre-release that SideStore reads; the feed's What's New text is the release body.
+  Apply the notes first.
+- The script refuses a dirty tree, a HEAD other than the tag, or a missing
+  release. Re-running is safe (`--clobber`; the feed replaces the same version).
+- If the iOS build cannot run, say so in the release report; the rest of the
+  release does not depend on it.
+
+Afterwards, confirm the notes survived and the IPA is attached
+(`gh release view v<version> --repo lthoangg/openagentd`), and that
+`gh release view latest-ios --repo lthoangg/openagentd` lists `source.json`.
 
 ## 5. Release notes
 
