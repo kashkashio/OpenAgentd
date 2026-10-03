@@ -573,6 +573,23 @@ async fn list_sessions(State(st): State<AppState>, q: Qs) -> ApiResult<Response>
     Ok(json(json!({"data": data, "next_cursor": next_cursor, "has_more": has_more})))
 }
 
+/// The workspace's default model, or for a managed worktree its source
+/// repository's. A default no longer in the registry (provider removed or
+/// hidden) is ignored rather than failing session creation.
+async fn workspace_default_model(workspace: &str) -> Option<(Option<String>, Option<String>)> {
+    let source = worktrees::find_managed_worktree_source(Path::new(workspace)).await;
+    let ws = workspace.to_string();
+    let (model, thinking) = blocking(move || {
+        appv3_agent::workspace_settings::default_model_for(Some(&ws)).or_else(|| source.and_then(|s| appv3_agent::workspace_settings::default_model_for(Some(&s))))
+    })
+    .await?;
+    if !crate::providers::is_registered_model_id(&model) {
+        tracing::warn!("workspace_default_model_unavailable workspace={workspace} model={model}");
+        return None;
+    }
+    Some((Some(model), thinking))
+}
+
 async fn resolve_session(State(st): State<AppState>, raw: Bytes) -> ApiResult<Response> {
     let b = body_value(&raw)?;
     if !b.is_object() {
@@ -618,6 +635,10 @@ async fn resolve_session(State(st): State<AppState>, raw: Bytes) -> ApiResult<Re
     let session = match session {
         Some(s) => s,
         None => {
+            // A new session starts on the workspace default (its
+            // `.openagentd/settings.yaml`) over the model the client carried
+            // over from the previous session; it can be changed afterwards.
+            let (model, thinking) = workspace_default_model(&workspace).await.unwrap_or((model, thinking));
             db::create_session(&st.pool, db::NewSession { workspace: workspace.clone(), model, thinking_level: thinking, agent_name: Some("code".into()), ..Default::default() })
                 .await?
         }

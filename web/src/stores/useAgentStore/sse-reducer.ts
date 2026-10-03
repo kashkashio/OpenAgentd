@@ -672,6 +672,13 @@ export function createSSEHandler({ set, get }: CreateSSEHandlerArgs) {
         set((draft) => {
           ensureAgent(draft, agent)
           if (status === 'working') {
+            const stream = draft.agentStreams[agent]
+            // A new turn (not a resume from waiting on the user): remember the
+            // usage so far, so the live row counts this turn's tokens and cost.
+            if (stream.status !== 'working' && stream.status !== 'waiting_input') {
+              stream.usage.turnStartCompletionTokens = stream.usage.completionTokens
+              stream.usage.turnStartCostUsd = stream.usage.estimatedCostUsd ?? 0
+            }
             draft.agentStreams[agent].status = 'working'
             draft.isAgentWorking = true
             if (draft.liveAgentNames && !draft.liveAgentNames.includes(agent)) draft.liveAgentNames.push(agent)

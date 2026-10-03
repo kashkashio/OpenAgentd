@@ -56,9 +56,11 @@ import {
   Plus,
   Search,
   Settings,
+  Settings2,
   Trash2,
   X,
 } from 'lucide-react'
+import { WorkspaceSettingsDialog } from '@/components/WorkspaceSettingsDialog'
 import { APP_EVENTS } from '@/lib/app-events'
 import { SIDEBAR_FIND_SCOPE } from '@/lib/find-shortcut'
 import { useDeleteSessionMutation, useSessionsQuery, useUpdateSessionTitleMutation } from '@/queries/useSessionsQuery'
@@ -295,6 +297,7 @@ export function Sidebar({
   // Workspace pending removal — null when no confirmation is open. The
   // confirmation dialog reads this; ``confirmRemoveWorkspace`` commits.
   const [removeWorkspaceTarget, setRemoveWorkspaceTarget] = useState<string | null>(null)
+  const [workspaceSettingsTarget, setWorkspaceSettingsTarget] = useState<string | null>(null)
   const [worktreeTarget, setWorktreeTarget] = useState<string | null>(null)
   const [worktreeName, setWorktreeName] = useState('')
   const [worktreeBranch, setWorktreeBranch] = useState('')
@@ -1262,6 +1265,21 @@ export function Sidebar({
                 Copy repo absolute path
               </Button>
             )}
+            {mobileWorkspaceActions?.kind !== 'chat' && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="justify-start"
+                onClick={() => {
+                  const action = mobileWorkspaceActions
+                  setMobileWorkspaceActions(null)
+                  if (action) setWorkspaceSettingsTarget(action.path)
+                }}
+              >
+                <Settings2 size={14} aria-hidden="true" />
+                Workspace settings…
+              </Button>
+            )}
             {mobileWorkspaceActions?.kind === 'main' && (
               <>
                 <Button
@@ -1424,6 +1442,12 @@ export function Sidebar({
         </DialogContent>
       </Dialog>
 
+      <WorkspaceSettingsDialog
+        workspace={workspaceSettingsTarget}
+        open={workspaceSettingsTarget !== null}
+        onOpenChange={(open) => { if (!open) setWorkspaceSettingsTarget(null) }}
+      />
+
       {desktopWorkspaceActions && (
         <ContextMenu
           at={desktopWorkspaceActions}
@@ -1469,6 +1493,19 @@ export function Sidebar({
             >
               <GitBranch size={12} aria-hidden="true" />
               Create worktree
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className={CONTEXT_MENU_ITEM_CLASS}
+              onClick={() => {
+                const action = desktopWorkspaceActions
+                setDesktopWorkspaceActions(null)
+                setWorkspaceSettingsTarget(action.path)
+              }}
+            >
+              <Settings2 size={12} aria-hidden="true" />
+              Workspace settings…
             </button>
             <button
               type="button"

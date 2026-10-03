@@ -191,6 +191,9 @@ pub fn build_provider(model_str: Option<&str>, model_kwargs: Kwargs) -> Provider
             p.provider_name = pname;
             Ok(named(p))
         }
+        // Claude Code turns run the `claude` CLI (agent::claude_code); there
+        // is no API client to build.
+        "claude-code" => Err(ProviderError::Unconfigured("Claude Code models run through the claude CLI and cannot back an OpenAgentd agent loop.".into())),
         _ => match crate::plugin::find_provider_plugin(name) {
             Some(plugin) => plugin.build(crate::plugin::BuildContext {
                 provider_id: name.to_string(),

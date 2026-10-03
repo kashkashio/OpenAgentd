@@ -341,8 +341,14 @@ impl AgentSession {
                         parent_session_id: self.parent_session_id.clone(),
                         agent_name: Some(self.name()),
                         title: title.map(String::from),
+                        // Top-level sessions start on the workspace default
+                        // (`.openagentd/settings.yaml`); subagents keep theirs.
+                        model: if self.parent_session_id.is_none() {
+                            crate::workspace_settings::default_model_for(Some(&ws)).map(|(m, _)| m).or_else(|| self.agent().model_id.clone())
+                        } else {
+                            self.agent().model_id.clone()
+                        },
                         workspace: ws,
-                        model: self.agent().model_id.clone(),
                         ..Default::default()
                     },
                 )
@@ -868,6 +874,34 @@ impl AgentSession {
         let history = crate::history::get_messages_for_llm(&self.pool, &sid).await.map_err(dberr)?;
 
         let effective_model = runtime_model.clone().filter(|m| !m.is_empty()).or_else(|| agent.model_id.clone());
+        if let Some(model) = effective_model.as_deref().filter(|m| crate::claude_code::alias(m).is_some()) {
+            // The installed `claude` CLI runs the whole turn with its own tools.
+            let permission_mode = if workspace.is_empty() {
+                crate::workspace_settings::DEFAULT_CLAUDE_CODE_PERMISSION_MODE.to_string()
+            } else {
+                crate::workspace_settings::load(Path::new(&workspace)).permission_mode().to_string()
+            };
+            let ws_dir = session_workspace_dir(&sid, Some(&workspace));
+            let _ = std::fs::create_dir_all(&ws_dir);
+            let result = crate::claude_code::run_turn(crate::claude_code::TurnContext {
+                pool: &self.pool,
+                session_id: sid.clone(),
+                workspace: ws_dir.display().to_string(),
+                agent_name: name.clone(),
+                model: model.to_string(),
+                permission_mode,
+                cancel: &self.cancel,
+                hard_cancel: &self.hard_cancel,
+            })
+            .await;
+            if self.cancel.is_set() || self.hard_cancel.is_set() {
+                if let Err(e) = db::mark_last_assistant_interrupted(&self.pool, &sid).await {
+                    tracing::warn!("mark_interrupted_failed session_id={} error={}", sid, e);
+                }
+                return Ok(());
+            }
+            return result;
+        }
         let overridden = runtime_model.as_deref().map(|m| !m.is_empty() && Some(m) != agent.model_id.as_deref()).unwrap_or(false) || runtime_thinking.is_some();
         let mut runtime_provider: Option<Arc<dyn LlmProvider>> = None;
         if overridden {

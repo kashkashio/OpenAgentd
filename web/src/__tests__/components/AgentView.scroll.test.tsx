@@ -483,26 +483,26 @@ describe("chat layout resize", () => {
   })
 })
 
-// ── bounce dots ───────────────────────────────────────────────────────────
+// ── working indicator ───────────────────────────────────────────────────────────
 
-describe("AgentView — bounce dots indicator", () => {
+describe("AgentView — working indicator", () => {
   it("no dots when isWorking=false and no blocks", () => {
     const { container } = renderStream({ blocks: [], currentBlocks: [], isWorking: false })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(0)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(0)
   })
 
-  it("shows 3 dots when isWorking=true before the first block arrives", () => {
+  it("shows the working spark when isWorking=true before the first block arrives", () => {
     const { container } = renderStream({ blocks: [], currentBlocks: [], isWorking: true })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(3)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(1)
   })
 
-  it("shows 3 dots when isWorking=true with only user currentBlocks", () => {
+  it("shows the working spark when isWorking=true with only user currentBlocks", () => {
     const { container } = renderStream({
       blocks: [],
       currentBlocks: [makeUserBlock("u1", "Hello")],
       isWorking: true,
     })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(3)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(1)
   })
 
   it("no dots when isWorking=true with a text block in currentBlocks", () => {
@@ -511,7 +511,7 @@ describe("AgentView — bounce dots indicator", () => {
       currentBlocks: [makeTextBlock("b1", "Response")],
       isWorking: true,
     })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(0)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(0)
   })
 
   it("no dots when isWorking=true with mixed blocks including text", () => {
@@ -520,7 +520,7 @@ describe("AgentView — bounce dots indicator", () => {
       currentBlocks: [makeUserBlock("u1", "Hi"), makeTextBlock("b1", "Response")],
       isWorking: true,
     })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(0)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(0)
   })
 
   it("no dots when isWorking=true with thinking block only", () => {
@@ -529,7 +529,7 @@ describe("AgentView — bounce dots indicator", () => {
       currentBlocks: [makeThinkingBlock("t1", "Thinking...")],
       isWorking: true,
     })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(0)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(0)
   })
 
   it("no dots when isWorking=true with user and thinking blocks", () => {
@@ -538,7 +538,7 @@ describe("AgentView — bounce dots indicator", () => {
       currentBlocks: [makeUserBlock("u1", "Hi"), makeThinkingBlock("t1", "Thinking...")],
       isWorking: true,
     })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(0)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(0)
   })
 
   // Regression: a provider (e.g. OpenAI /responses reasoning-part boundary,
@@ -554,7 +554,7 @@ describe("AgentView — bounce dots indicator", () => {
       currentBlocks: [makeUserBlock("u1", "Hi"), makeThinkingBlock("t1", "\n\n")],
       isWorking: true,
     })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(3)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(1)
   })
 
   it("still shows dots when the only non-user block is a whitespace-only text chunk", () => {
@@ -563,7 +563,7 @@ describe("AgentView — bounce dots indicator", () => {
       currentBlocks: [makeUserBlock("u1", "Hi"), makeTextBlock("b1", "   ")],
       isWorking: true,
     })
-    expect(container.querySelectorAll(".animate-bounce").length).toBe(3)
+    expect(container.querySelectorAll("[aria-label='Agent is preparing a response']").length).toBe(1)
   })
 })
 

@@ -49,7 +49,9 @@ if (import.meta.main) {
   // 778 kB, with a 1.97 MB index chunk.
   // Design feedback chips, comment editing and React 19 source mapping
   // raised it to 2.62 MB / 783 kB, with a 1.98 MB index chunk.
-  const limits = { eagerBytes: 2_640_000, eagerGzipBytes: 790_000, largestChunkBytes: 1_990_000 }
+  // Raised for workspace settings, Claude Code tool displays and the live
+  // turn status (~2 KB eager, ~6 KB in the main chunk), with some headroom.
+  const limits = { eagerBytes: 2_680_000, eagerGzipBytes: 800_000, largestChunkBytes: 2_030_000 }
   console.log('Production JavaScript budget:', sizes)
   const failures = budgetFailures(sizes, limits)
   if (failures.length) {

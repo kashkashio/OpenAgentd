@@ -74,12 +74,18 @@ export function partitionTurns(blocks: ContentBlock[], options: PartitionOptions
  * The model that produced a turn, with the thinking level it ran at: read
  * together from the newest block that names a model.
  */
-export function turnModel(blocks: ContentBlock[]): { model: string; thinkingLevel?: string } | undefined {
+export function turnModel(blocks: ContentBlock[]): { model: string; thinkingLevel?: string; claudeAuth?: string } | undefined {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const extra = blocks[i].extra
     if (typeof extra?.model !== 'string') continue
     const level = extra.thinking_level
-    return { model: extra.model, thinkingLevel: typeof level === 'string' && level ? level : undefined }
+    // Claude Code turns record how the CLI authenticated (`apiKeySource`).
+    const auth = extra.claude_auth
+    return {
+      model: extra.model,
+      thinkingLevel: typeof level === 'string' && level ? level : undefined,
+      ...(typeof auth === 'string' && auth ? { claudeAuth: auth } : {}),
+    }
   }
   return undefined
 }

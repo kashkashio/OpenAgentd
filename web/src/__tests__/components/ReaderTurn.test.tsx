@@ -7,6 +7,7 @@ import { AssistantTurn } from '@/components/AssistantTurnFooter'
 import { FileRefContext, type FileRefOpener } from '@/components/FileRefLink'
 import { useAgentStore } from '@/stores/useAgentStore'
 import type { ContentBlock } from '@/api/types'
+const liveText = () => document.querySelector('[data-live-turn-status]')?.textContent ?? ''
 
 beforeEach(() => {
   Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.resolve() }, configurable: true, writable: true })
@@ -52,7 +53,7 @@ function renderTurn(blocks: ContentBlock[], props: {
 }
 
 const rendered = (id: string) => screen.queryByTestId(`block-${id}`)
-const workRow = () => screen.getByRole('button', { name: /1 read, 1 edit/ })
+const workRow = () => screen.getByRole('button', { name: /Read 1 file, edited 1 file/ })
 const running: ContentBlock[] = [
   ...finished.slice(0, 4),
   { id: 'test', type: 'tool', content: '', toolName: 'shell', toolArgs: '{"command":"bun test","description":"Run web tests"}', toolDone: false },
@@ -92,7 +93,7 @@ describe('AssistantTurn — reader mode', () => {
     expect(rendered('answer')).not.toBeNull()
     for (const id of ['think', 'read', 'narrate', 'edit']) expect(rendered(id)).toBeNull()
 
-    const row = screen.getByRole('button', { name: /1 read, 1 edit/ })
+    const row = screen.getByRole('button', { name: /Read 1 file, edited 1 file/ })
     expect(row.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(row)
 
@@ -159,7 +160,7 @@ describe('AssistantTurn — reader mode', () => {
   it('names the step in progress while the turn runs, and lists no files yet', () => {
     renderTurn(running, { isWorking: true })
 
-    expect(screen.getByRole('button', { name: /Working · Shell: Run web tests/ })).toBeTruthy()
+    expect(liveText()).toMatch(/Working · Shell: Run web tests/)
     expect(screen.queryByText(/files? changed/)).toBeNull()
   })
 
@@ -167,13 +168,13 @@ describe('AssistantTurn — reader mode', () => {
     const clock = fakeClock(1_000_000)
     try {
       renderTurn(running, { isWorking: true, startedAt: 1_000_000 - 59_000 })
-      expect(screen.getByRole('button', { name: /^Working · 59s · Shell: Run web tests/ })).toBeTruthy()
+      expect(liveText()).toMatch(/^Working · 59s · Shell: Run web tests/)
 
       clock.tick(1000)
-      expect(screen.getByRole('button', { name: /^Working · 1m 0s · Shell: Run web tests/ })).toBeTruthy()
+      expect(liveText()).toMatch(/^Working · 1m 0s · Shell: Run web tests/)
 
       clock.tick(3_600_000)
-      expect(screen.getByRole('button', { name: /^Working · 1h 1m · Shell: Run web tests/ })).toBeTruthy()
+      expect(liveText()).toMatch(/^Working · 1h 1m · Shell: Run web tests/)
     } finally {
       clock.restore()
     }
@@ -182,15 +183,26 @@ describe('AssistantTurn — reader mode', () => {
   it('counts the work so far once no step is taking output', () => {
     renderTurn([...finished.slice(0, 4), { id: 'answer', type: 'text', content: 'Writing the answer' }], { isWorking: true, startedAt: Date.now() - 5000 })
 
-    expect(screen.getByRole('button', { name: /^Working · 5s · 1 read, 1 edit/ })).toBeTruthy()
+    expect(liveText()).toMatch(/^Working · 5s · Read 1 file, edited 1 file/)
+  })
+
+  it('shows the tokens and cost this turn has used', () => {
+    const usage = { promptTokens: 0, completionTokens: 21_200, totalTokens: 21_200, cachedTokens: 0, estimatedCostUsd: 0.5, turnStartCompletionTokens: 3_000, turnStartCostUsd: 0.39 }
+    useAgentStore.setState({ leadName: 'lead', agentStreams: { lead: { usage } } } as never)
+    try {
+      renderTurn([...finished.slice(0, 4), { id: 'answer', type: 'text', content: 'Writing the answer' }], { isWorking: true, startedAt: Date.now() - 42_000 })
+      expect(liveText()).toMatch(/^Working · 42s · 18\.2k tokens · \$0\.11 · Read 1 file/)
+    } finally {
+      useAgentStore.setState({ leadName: null, agentStreams: {} } as never)
+    }
   })
 
   it('does not mention failures while working', () => {
     const failedRun: ContentBlock = { id: 'run', type: 'tool', content: '', toolName: 'shell', toolArgs: '{"command":"false"}', toolDone: true, toolResult: '[Failed — exit code 1]' }
     renderTurn([failedRun, running[4]], { isWorking: true, startedAt: Date.now() - 5000 })
 
-    const row = screen.getByRole('button', { name: /^Working/ })
-    expect(row.textContent).not.toMatch(/failed/)
+    expect(liveText()).toMatch(/^Working/)
+    expect(liveText()).not.toMatch(/failed/)
   })
 
   it('says a thought-only trace thought, and counts failures', () => {
@@ -199,7 +211,7 @@ describe('AssistantTurn — reader mode', () => {
       { id: 'run', type: 'tool', content: '', toolName: 'shell', toolArgs: '{"command":"false"}', toolDone: true, toolResult: '[Failed — exit code 1]' },
       { id: 'answer', type: 'text', content: 'It failed.' },
     ])
-    expect(screen.getByRole('button', { name: /1 command · 1 failed/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Ran 1 command · 1 failed/ })).toBeTruthy()
     cleanup()
 
     renderTurn([{ id: 'think', type: 'thinking', content: 'Hmm.' }, { id: 'answer', type: 'text', content: 'Hi.' }])
@@ -216,20 +228,19 @@ describe('AssistantTurn — reader mode, across a compaction', () => {
   it('reads the work before a compaction as done, and works on after the divider', () => {
     renderTurn([finished[1], compaction('compacted'), running[4]], { isWorking: true, startedAt: Date.now() - 5000 })
 
-    const done = screen.getByRole('button', { name: /^1 read$/ })
-    const working = screen.getAllByRole('button', { name: /Working/ })
-    expect(working).toHaveLength(1)
-    expect(working[0].textContent).toMatch(/^Working · .*Shell: Run web tests/)
+    const done = screen.getByRole('button', { name: /^Read 1 file$/ })
+    const live = document.querySelector('[data-live-turn-status]') as HTMLElement
+    expect(live.textContent).toMatch(/^Working · .*Shell: Run web tests/)
     const divider = screen.getByTestId('block-compact')
     expect(follows(done, divider)).toBe(true)
-    expect(follows(divider, working[0])).toBe(true)
+    expect(follows(divider, live)).toBe(true)
   })
 
   it('does not say it is working while the session compacts', () => {
     renderTurn([finished[1], compaction('compacting')], { isWorking: true, startedAt: Date.now() - 5000 })
 
     expect(screen.queryByRole('button', { name: /Working/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /^1 read$/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Read 1 file$/ })).toBeTruthy()
     expect(screen.getByTestId('block-compact')).toBeTruthy()
   })
 })
@@ -343,7 +354,7 @@ describe('AssistantTurn — reader mode, ask_user', () => {
     renderTurn([read, ask('User has answered your questions: "Which?"="A". Continue with the user\'s answers in mind.'), shell, answer])
 
     expect(rendered('ask')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /1 read/ }))
+    fireEvent.click(screen.getByRole('button', { name: /read 1 file/i }))
     expect(rendered('ask')).not.toBeNull()
   })
 
@@ -369,7 +380,7 @@ describe('AssistantTurn — reader mode, ask_user', () => {
     renderTurn([read, ask(PLACEHOLDER)], { isTurnOpen: true, startedAt: Date.now() - 5000 })
 
     expect(screen.queryByRole('button', { name: /Working/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /^1 read$/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Read 1 file$/ })).toBeTruthy()
   })
 })
 

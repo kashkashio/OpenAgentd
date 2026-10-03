@@ -30,6 +30,7 @@ import { formatSpend } from '@/utils/telemetryFormat'
 import { queryKeys } from '@/queries/keys'
 import { getCodingWorkspaceStatus } from '@/api/client'
 import { cn } from '@/lib/utils'
+import { useWorkspaceSettingsQuery } from '@/queries/useWorkspaceSettingsQuery'
 
 // The summary endpoint only refreshes on demand; poll so spend follows turns.
 const SPEND_REFRESH_MS = 60_000
@@ -89,11 +90,21 @@ export const AppFooter = memo(function AppFooter({
 }: AppFooterProps) {
   const { os } = usePlatform()
   const openSettings = useSettingsStore((s) => s.openSettings)
-  const activeModel = sessionModel || defaultModel || null
+  // The project's `.openagentd/settings.yaml` default sits between the
+  // session's own model and the agent's: name it so the status bar never
+  // shows the agent default while the workspace picks something else.
+  const workspaceSettings = useWorkspaceSettingsQuery(workspace, Boolean(workspace) && !chatWorkspace)
+  const workspaceModel = chatWorkspace ? null : workspaceSettings.data?.model ?? null
+  const activeModel = sessionModel || workspaceModel || defaultModel || null
+  const fromWorkspace = Boolean(workspaceModel) && activeModel === workspaceModel
   // Mirrors the backend: a session model override builds its own provider,
   // which carries only the session's level, never the agent's.
   const modelOverridden = Boolean(sessionModel) && sessionModel !== defaultModel
-  const activeThinkingLevel = sessionThinkingLevel || (modelOverridden ? null : defaultThinkingLevel) || null
+  const activeThinkingLevel = sessionThinkingLevel
+    || (!sessionModel && fromWorkspace ? workspaceSettings.data?.thinking_level : null)
+    || (modelOverridden || fromWorkspace ? null : defaultThinkingLevel)
+    || null
+  const modelSourceLabel = fromWorkspace ? 'Workspace model' : sessionModel && modelOverridden ? 'Session model' : 'Agent default model'
   const sessionSettingsShortcut = shortcutLabel(APP_SHORTCUTS.sessionSettings, os)
   const spend = useObservabilitySummaryQuery(1, {}, { refetchInterval: SPEND_REFRESH_MS }).data?.totals.estimated_cost_usd
   const spendLabel = spend === undefined ? null : formatSpend(spend)
@@ -176,6 +187,9 @@ export const AppFooter = memo(function AppFooter({
                   className={cn(ITEM, 'max-w-[320px] font-mono lg:max-w-[440px]')}
                 >
                   <Sparkles size={11} className="shrink-0 text-(--color-accent)" aria-hidden="true" />
+                  {fromWorkspace && (
+                    <span data-model-source="workspace" className="shrink-0 font-sans text-(--color-text-subtle)">workspace:</span>
+                  )}
                   <span className="truncate">{activeModel}</span>
                   {activeThinkingLevel && activeThinkingLevel !== 'off' && (
                     <span className="shrink-0 text-(--color-text-subtle)">({activeThinkingLevel})</span>
@@ -183,7 +197,7 @@ export const AppFooter = memo(function AppFooter({
                 </button>
               }
             />
-            <TooltipContent>{`Active Model: ${activeModel}${activeThinkingLevel ? ` (thinking: ${activeThinkingLevel})` : ''} (${sessionSettingsShortcut})`}</TooltipContent>
+            <TooltipContent>{`${modelSourceLabel}: ${activeModel}${activeThinkingLevel ? ` (thinking: ${activeThinkingLevel})` : ''} (${sessionSettingsShortcut})`}</TooltipContent>
           </Tooltip>
         )}
 

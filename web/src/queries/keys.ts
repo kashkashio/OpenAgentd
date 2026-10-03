@@ -49,6 +49,8 @@ export const queryKeys = {
       ['coding-workspace-history', workspace, limit, allBranches] as const,
     commitDiff: (workspace: string, sha: string) =>
       ['coding-workspace-commit-diff', workspace, sha] as const,
+    settings: (workspace: string) =>
+      ['coding-workspace-settings', workspace] as const,
   },
   agentFiles: {
     all: () => ['agentFiles'] as const,

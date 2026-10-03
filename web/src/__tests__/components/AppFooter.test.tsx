@@ -147,7 +147,7 @@ describe('AppFooter', () => {
     expect(screen.getByText('(high)')).toBeTruthy()
 
     await user.hover(modelButton)
-    expect((await screen.findByRole('tooltip')).textContent).toMatch(/Active Model: anthropic\/claude-3-7-sonnet/i)
+    expect((await screen.findByRole('tooltip')).textContent).toMatch(/Session model: anthropic\/claude-3-7-sonnet/i)
 
     fireEvent.click(modelButton)
     expect(onToggleSessionSettings).toHaveBeenCalledTimes(1)
@@ -169,7 +169,24 @@ describe('AppFooter', () => {
     expect(screen.getByText('(high)')).toBeTruthy()
 
     await user.hover(button)
-    expect((await screen.findByRole('tooltip')).textContent).toMatch(/Active Model: openai\/gpt-5 \(thinking: high\)/)
+    expect((await screen.findByRole('tooltip')).textContent).toMatch(/Agent default model: openai\/gpt-5 \(thinking: high\)/)
+  })
+
+  it('labels a model that comes from the workspace settings', async () => {
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['coding-workspace-settings', '/path/to/project'], {
+      workspace: '/path/to/project', path: '', model: 'claude-code:opus', thinking_level: null, claude_code: { permission_mode: null },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <AppFooter workspace="/path/to/project" sessionModel={null} defaultModel="openai/gpt-5" onToggleSessionSettings={() => {}} />
+      </QueryClientProvider>,
+    )
+    const button = screen.getByRole('button', { name: /claude-code:opus/i })
+    expect(button.textContent).toContain('workspace:')
+    await user.hover(button)
+    expect((await screen.findByRole('tooltip')).textContent).toMatch(/Workspace model: claude-code:opus/)
   })
 
   it('drops the agent thinking level once the session picks another model', () => {

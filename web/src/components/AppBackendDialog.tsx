@@ -29,7 +29,140 @@ interface AppBackendDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-export function AppBackendDialog({ open, onOpenChange }: AppBackendDialogProps) {
+export function AppBackendDialog(props: AppBackendDialogProps) {
+  // Switching backends is a native shell command. Without the shell (Vite dev,
+  // a LAN browser) the status probe returns null: the page is pinned to the
+  // server it was served from and only needs that server's access key.
+  const [native, setNative] = useState(true)
+  const { open } = props
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void getAppBackendStatus().then((status) => {
+      if (!cancelled) setNative(status !== null)
+    })
+    return () => { cancelled = true }
+  }, [open])
+
+  return native ? <NativeBackendDialog {...props} /> : <BrowserBackendDialog {...props} />
+}
+
+function BrowserBackendDialog({ open, onOpenChange }: AppBackendDialogProps) {
+  const [accessKey, setAccessKeyInput] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setAccessKeyInput('')
+    setError(null)
+  }, [open])
+
+  if (!open) return null
+
+  const origin = currentApiOrigin()
+
+  async function saveKey() {
+    const key = accessKey.trim()
+    if (!key) {
+      setError('Enter the access key the server was started with.')
+      return
+    }
+    setPending(true)
+    setError(null)
+    try {
+      if (!(await pingServer(origin))) {
+        setError(connectionFailureMessage(origin))
+        return
+      }
+      if (!(await checkServerAuth(origin, key))) {
+        setError('Server is reachable, but the access key is invalid.')
+        return
+      }
+      await setStoredAccessKey(key, apiBaseUrl())
+      installDesktopAuth()
+      window.location.reload()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <AppOverlay open={open} onClose={() => onOpenChange(false)} label="Backend connection" maxWidth="480px">
+      <div className="flex h-11 shrink-0 items-center justify-between border-b border-(--color-border) bg-(--bg-sidebar) px-4 select-none">
+        <div className="flex items-center gap-2">
+          <Server size={14} className="shrink-0 text-(--color-text-muted)" aria-hidden="true" />
+          <h2 className="text-base font-semibold text-(--color-text)">Backend connection</h2>
+        </div>
+      </div>
+
+      <div className="relative min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain touch-pan-y px-5 py-4">
+        <div className="rounded-sm border border-(--color-border) bg-(--bg-card) p-3 font-mono text-[11px] text-(--color-text-muted) flex items-center justify-between select-none">
+          <span className="truncate">
+            Connected: <span className="text-(--color-text) font-semibold">{origin}</span>
+          </span>
+          <SectionCardBadge>browser</SectionCardBadge>
+        </div>
+
+        <SectionCard>
+          <SectionCardHeader>Access key</SectionCardHeader>
+          <div className="p-3.5 space-y-3.5">
+            <div className="grid gap-1.5">
+              <label className="text-xs md:text-[10px] font-semibold text-(--color-text-muted)" htmlFor="app-backend-key">
+                Access key
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  id="app-backend-key"
+                  value={accessKey}
+                  onChange={(event) => setAccessKeyInput(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') void saveKey() }}
+                  placeholder="Required when server was started with --key"
+                  type="password"
+                  className="min-w-0 flex-1"
+                />
+                <Button type="button" variant="default" size="sm" onClick={() => void saveKey()} disabled={pending}>
+                  {pending ? 'Testing…' : 'Test & save'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </SectionCard>
+
+        <p className="text-xs md:text-[10px] leading-relaxed text-(--color-text-subtle)">
+          In a browser this page always talks to the server it was loaded from (in Vite dev, the
+          <span className="font-mono"> VITE_API_PROXY_TARGET</span> server). Switching servers is available in the desktop app.
+        </p>
+
+        {error ? (
+          <div className="rounded-sm border border-(--color-error)/25 bg-(--color-error-subtle) px-3.5 py-2.5 text-xs text-(--color-error)" role="alert">
+            {error}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="flex flex-wrap justify-end gap-2 border-t border-(--color-border) bg-(--bg-sidebar) px-4 py-3 select-none">
+        <Button type="button" variant="default" size="sm" onClick={() => onOpenChange(false)} disabled={pending}>
+          Cancel
+        </Button>
+      </div>
+    </AppOverlay>
+  )
+}
+
+function currentApiOrigin(): string {
+  const base = apiBaseUrl()
+  try {
+    return new URL(base, window.location.origin).origin
+  } catch {
+    return window.location.origin
+  }
+}
+
+function NativeBackendDialog({ open, onOpenChange }: AppBackendDialogProps) {
   const [status, setStatus] = useState<AppBackendStatus | null>(null)
   const [baseUrl, setBaseUrl] = useState('')
   const [serverName, setServerName] = useState('')

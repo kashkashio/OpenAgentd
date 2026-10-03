@@ -5,6 +5,7 @@ import { AgentView } from "@/components/AgentView"
 import { useAgentStore } from "@/stores/useAgentStore"
 import { useDisplayPrefsStore } from "@/stores/useDisplayPrefsStore"
 import type { ContentBlock } from "@/api/types"
+const liveText = () => document.querySelector('[data-live-turn-status]')?.textContent ?? ''
 
 afterEach(() => {
   cleanup()
@@ -64,14 +65,14 @@ describe("AgentView — reader transcript", () => {
 
     expect(screen.getByText("Fixed.")).toBeTruthy()
     expect(screen.queryByText("Looking around.")).toBeNull()
-    expect(screen.getByRole("button", { name: /^1 read/ }).getAttribute("aria-expanded")).toBe("false")
+    expect(screen.getByRole("button", { name: /^Read 1 file/ }).getAttribute("aria-expanded")).toBe("false")
   })
 
   it("shows every step in the default detailed transcript", () => {
     renderStream({ blocks })
 
     expect(screen.getByText("Looking around.")).toBeTruthy()
-    expect(screen.queryByRole("button", { name: /^1 read/ })).toBeNull()
+    expect(screen.queryByRole("button", { name: /^Read 1 file/ })).toBeNull()
   })
 
   it("times the running turn from the prompt that started it", () => {
@@ -85,7 +86,7 @@ describe("AgentView — reader transcript", () => {
       isWorking: true,
     })
 
-    expect(screen.getByRole("button", { name: /^Working · 1m 5s · Read/ })).toBeTruthy()
+    expect(liveText()).toMatch(/^Working · 1m 5s · Read/)
   })
 
   describe("with a subagent report", () => {
@@ -122,7 +123,7 @@ describe("AgentView — reader transcript", () => {
       useDisplayPrefsStore.setState({ transcriptStyle: "reader" })
       renderStream({ blocks: delegated.slice(0, 3), currentBlocks: [delegated[3]], isWorking: true })
 
-      expect(screen.getByRole("button", { name: /^Working · .*Report from explorer#1/ })).toBeTruthy()
+      expect(liveText()).toMatch(/^Working · .*Report from explorer#1/)
       expect(screen.queryByRole("status", { name: "Agent is preparing a response" })).toBeNull()
     })
   })

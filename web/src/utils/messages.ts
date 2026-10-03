@@ -70,6 +70,8 @@ function assistantBlocks(
     usage?: { output?: number; cost?: { estimated_usd?: number }; estimated_cost_usd?: number }
     cost?: { estimated_usd?: number }
     estimated_cost_usd?: number
+    claude_auth?: unknown
+    claude_code_api_cost_usd?: unknown
   } | null
   const responseDurationMs = typeof extra?.duration_ms === 'number' ? extra.duration_ms : undefined
   const model = typeof extra?.model === 'string' ? extra.model : undefined
@@ -83,7 +85,16 @@ function assistantBlocks(
       content: msg.content,
       timestamp,
       responseDurationMs,
-      extra: model ? { model, ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}) } : undefined,
+      extra: model
+        ? {
+            model,
+            ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+            // Claude Code turns: how the CLI signed in, and what the turn
+            // would have cost on the API (never counted as spend).
+            ...(typeof extra?.claude_auth === 'string' ? { claude_auth: extra.claude_auth } : {}),
+            ...(typeof extra?.claude_code_api_cost_usd === 'number' ? { claude_code_api_cost_usd: extra.claude_code_api_cost_usd } : {}),
+          }
+        : undefined,
     })
   }
 

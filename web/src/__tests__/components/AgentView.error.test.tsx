@@ -104,7 +104,7 @@ describe("AgentView — error state", () => {
         lastError="Something went wrong"
       />
     )
-    const dots = container.querySelectorAll("[class*='animate-bounce']")
+    const dots = container.querySelectorAll("[aria-label='Agent is preparing a response']")
     expect(dots.length).toBe(0)
   })
 })
@@ -131,8 +131,8 @@ describe("AgentView — omitting isError/lastError props", () => {
         isWorking={true}
       />
     )
-    const dots = container.querySelectorAll("[class*='animate-bounce']")
-    expect(dots.length).toBe(3)
+    const dots = container.querySelectorAll("[aria-label='Agent is preparing a response']")
+    expect(dots.length).toBe(1)
   })
 })
 

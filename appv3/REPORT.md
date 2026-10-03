@@ -182,6 +182,16 @@ No v2 feature is left unported. Each item below is a deliberate, documented
 deviation. The harnesses in §1 either did not reach it or normalised it
 explicitly.
 
+- **v3-only: workspace settings and Claude Code sessions.**
+  `GET/PUT /api/agent/workspace/settings` reads and writes the optional
+  per-project `<workspace>/.openagentd/settings.yaml` (`model`,
+  `thinking_level`, `claude_code.permission_mode`; unknown keys preserved).
+  `sessions/resolve` and first-turn session creation prefer its `model`.
+  The provider catalog gains `claude-code` (kind `local`), whose turns run
+  the `claude` CLI (`crates/agent/src/claude_code.rs`) instead of the agent
+  loop. No DB column, SSE event or existing YAML format changed; v2 ignores
+  the new file and would reject `claude-code:*` models.
+
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and

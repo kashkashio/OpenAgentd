@@ -240,7 +240,7 @@ function TooltipContent({ className, side = 'top', sideOffset = 8, children, ...
       className={cn(
         'pointer-events-none fixed z-[9999] w-max max-w-xs',
         'rounded-sm px-2 py-1 text-[11px]',
-        'bg-(--bg-send) text-(--color-text-on-accent)',
+        'bg-(--bg-tooltip) text-(--color-text-on-tooltip)',
         'shadow-sm',
         // Hide (not unmount) until the first measurement lands, so the box
         // never flashes at (0, 0) before `reposition()` places it.
@@ -258,7 +258,7 @@ function TooltipContent({ className, side = 'top', sideOffset = 8, children, ...
       <span
         aria-hidden="true"
         className={cn(
-          'absolute size-[6px] rotate-45 bg-(--bg-send)',
+          'absolute size-[6px] rotate-45 bg-(--bg-tooltip)',
           arrowClass,
         )}
       />

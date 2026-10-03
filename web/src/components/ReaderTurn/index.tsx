@@ -2,15 +2,16 @@
  * Reader mode's two additions to a turn (rules in ``segments.ts``): the row
  * standing in for the work, and the list of files the turn edited.
  *
- * The row uses the tool-call row language (mono label, trailing chevron, no
- * card), so the fold reads as one more step. Opened, the steps render as
+ * The row reads like Claude's ("Ran 2 commands ›": muted sans, trailing
+ * chevron, no card), so the fold reads as one more line of the reply. Opened, the steps render as
  * they do in the detailed transcript, on a hairline. A long fold stays easy
  * to close: the open row pins to the top of the transcript while its steps
  * scroll under it, and a Collapse row ends the steps.
  *
- * While the agent works, the row reads "Working · 1m 12s · Shell: Run web
- * tests": how long the turn has run, then the step taking output (or the
- * counts so far). Only "Working" pulses, so the rest stays easy to read. A
+ * While the agent works, the row reads "✻ 1m 12s · 18.2k tokens · $0.11 ·
+ * Shell: Run web tests": a spinning spark, how long the turn has run, the
+ * output tokens and cost so far (cost only where it is billed per token),
+ * then the step taking output (or the counts so far). A
  * turn waiting on the user is not working, so its row shows the counts.
  * Failures are counted only once the row stops working ("… · 1 failed").
  * A compaction divider ends the row before it, which then shows its counts;
@@ -24,6 +25,9 @@ import { ChevronRight, ChevronUp } from 'lucide-react'
 
 import type { ContentBlock } from '@/api/types'
 import { cn } from '@/lib/utils'
+import { SparkSpinner } from '@/components/ui/spark-spinner'
+import { useAgentStore } from '@/stores/useAgentStore'
+import { formatCompact, formatSpend } from '@/utils/telemetryFormat'
 import { FileRefContext } from '../FileRefLink'
 import { FileTypeIcon } from '../FileTypeIcon'
 import { formatToolLabel, subscribeLiveClock } from '../ToolCall'
@@ -40,7 +44,7 @@ function stepLabel(block: ContentBlock): string {
   const name = block.toolName ?? ''
   const display = getToolDisplay(name, block.toolArgs)
   // A shell call without a description is known by its command.
-  const command = name === 'shell' && typeof display.formattedArgs === 'string' ? display.formattedArgs.split('\n', 1)[0] : null
+  const command = (name === 'shell' || name === 'Bash') && typeof display.formattedArgs === 'string' ? display.formattedArgs.split('\n', 1)[0] : null
   const detail = display.headerTitle ?? command
   return detail ? `${formatToolLabel(name)}: ${detail}` : formatToolLabel(name)
 }
@@ -76,17 +80,13 @@ function scrollContainer(el: HTMLElement): HTMLElement | null {
 }
 
 /** Both of the fold's controls; each adds its own text tone. */
-const ROW_CLASS = 'group inline-flex max-w-full items-center gap-1.5 py-1 text-left font-mono text-xs transition-colors duration-(--motion-instant) pointer-coarse:min-h-9 hover:text-(--color-text) focus-visible:outline-2 focus-visible:outline-(--focus-ring)/40'
+const ROW_CLASS = 'group inline-flex max-w-full items-center gap-1.5 py-1 text-left font-sans text-[0.9375rem] transition-colors duration-(--motion-instant) pointer-coarse:min-h-9 hover:text-(--color-text) focus-visible:outline-2 focus-visible:outline-(--focus-ring)/40'
 
-export function WorkSummaryRow({ blocks, live, startedAt, currentStep, forceOpen = false, children }: {
+export function WorkSummaryRow({ blocks, live, forceOpen = false, children }: {
   /** The folded blocks. */
   blocks: readonly ContentBlock[]
   /** The agent is working on this turn right now. */
   live: boolean
-  /** When the turn began (epoch ms); a live row counts from it. */
-  startedAt?: number
-  /** The step taking output right now, if the turn ends on one. */
-  currentStep?: ContentBlock | null
   /** Show the steps whatever the toggle says, e.g. transcript find matched in them. */
   forceOpen?: boolean
   children: ReactNode
@@ -100,11 +100,6 @@ export function WorkSummaryRow({ blocks, live, startedAt, currentStep, forceOpen
   const open = forceOpen || manualOpen
   const summary = useMemo(() => summarizeWork(blocks), [blocks])
   const detail = workSummaryDetail(summary)
-  const now = useLiveNow(live)
-  const elapsed = live && startedAt !== undefined && Number.isFinite(startedAt) ? formatElapsed(now - startedAt) : null
-  // Memoized so the clock's tick does not re-parse the step's arguments.
-  const doing = useMemo(() => (currentStep ? stepLabel(currentStep) : detail), [currentStep, detail])
-
   const close = (control: HTMLElement) => {
     if (!forceOpen) closeAtRef.current = control.getBoundingClientRect().top
     setManualOpen(false)
@@ -135,20 +130,12 @@ export function WorkSummaryRow({ blocks, live, startedAt, currentStep, forceOpen
           onClick={(event) => (open ? close(event.currentTarget) : setManualOpen(true))}
           aria-expanded={open}
           aria-controls={bodyId}
-          className={cn(ROW_CLASS, 'text-(--color-text-2)')}
+          className={cn(ROW_CLASS, 'text-(--color-text-muted)')}
         >
-          {live ? (
-            <>
-              <span className="shrink-0 font-semibold text-(--color-text) animate-pulse motion-reduce:animate-none">Working</span>
-              {elapsed && <span className="shrink-0 text-(--color-text-muted)">{` · ${elapsed}`}</span>}
-              {doing && <span className="min-w-0 truncate">{` · ${doing}`}</span>}
-            </>
-          ) : (
-            <>
-              <span className="min-w-0 truncate">{detail || (summary.thought ? 'Thought' : 'Worked')}</span>
-              {summary.failed > 0 && <span className="shrink-0 text-(--color-error)">{` · ${summary.failed} failed`}</span>}
-            </>
-          )}
+          {/* While the turn runs, the live line at the end of the turn says
+              what is happening; this row only counts the steps so far. */}
+          <span className="min-w-0 truncate">{detail || (summary.thought ? 'Thought' : live ? 'Working' : 'Worked')}</span>
+          {!live && summary.failed > 0 && <span className="shrink-0 text-(--color-error)">{` · ${summary.failed} failed`}</span>}
           <ChevronRight
             size={13}
             aria-hidden
@@ -174,6 +161,50 @@ export function WorkSummaryRow({ blocks, live, startedAt, currentStep, forceOpen
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * The live line at the end of a running turn, like Claude's: a spinning
+ * spark, how long the turn has run, the output tokens and cost so far (cost
+ * only where it is billed per token), then the step taking output or the
+ * counts so far. It stays at the bottom while the reply grows above it.
+ */
+export function LiveTurnStatus({ blocks, startedAt, currentStep }: {
+  /** The turn's blocks so far. */
+  blocks: readonly ContentBlock[]
+  /** When the turn began (epoch ms). */
+  startedAt?: number
+  /** The step taking output right now, if the turn ends on one. */
+  currentStep?: ContentBlock | null
+}) {
+  const now = useLiveNow(true)
+  const elapsed = startedAt !== undefined && Number.isFinite(startedAt) ? formatElapsed(now - startedAt) : null
+  const detail = useMemo(() => workSummaryDetail(summarizeWork(blocks)), [blocks])
+  const doing = useMemo(() => (currentStep ? stepLabel(currentStep) : detail), [currentStep, detail])
+  // What this turn has used so far (lead agent's usage since the turn began).
+  const turnTokens = useAgentStore((s) => {
+    const u = s.leadName ? s.agentStreams[s.leadName]?.usage : undefined
+    return u ? Math.max(0, u.completionTokens - (u.turnStartCompletionTokens ?? u.completionTokens)) : 0
+  })
+  const turnCost = useAgentStore((s) => {
+    const u = s.leadName ? s.agentStreams[s.leadName]?.usage : undefined
+    return u ? Math.max(0, (u.estimatedCostUsd ?? 0) - (u.turnStartCostUsd ?? u.estimatedCostUsd ?? 0)) : 0
+  })
+  const parts = [
+    elapsed,
+    turnTokens > 0 ? `${formatCompact(turnTokens).toLowerCase()} tokens` : null,
+    turnCost > 0 ? formatSpend(turnCost) : null,
+    doing || null,
+  ].filter(Boolean)
+  return (
+    <div data-live-turn-status role="status" className="flex min-w-0 items-center gap-2 py-1 font-sans text-[0.9375rem] text-(--color-text-muted)">
+      <SparkSpinner className="text-base" label={null} />
+      <span className="min-w-0 truncate">
+        <span className="sr-only">Working · </span>
+        {parts.length > 0 ? parts.join(' · ') : 'Working'}
+      </span>
     </div>
   )
 }

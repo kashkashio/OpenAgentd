@@ -310,7 +310,7 @@ export const UserBubble = memo(function UserBubble({ content, timestamp, attachm
           {/* No shadow: the bubble is a tonal step above the page, not a
               floating layer (see DESIGN.md — Elevation & Depth). */}
           {text && (
-          <div className="relative min-w-0 max-w-full overflow-hidden rounded-sm border border-(--color-border) bg-(--bg-card) px-3 py-2.5 text-sm leading-relaxed text-(--color-text) selectable-text">
+          <div className="relative min-w-0 max-w-full overflow-hidden rounded-xl bg-(--bg-card) px-4 py-3 text-base leading-relaxed text-(--color-text) selectable-text">
            {/* Expand / collapse button — top-right inside bubble */}
            {needsCollapse && (
              <Tooltip className="absolute top-1.5 right-1.5 z-10">

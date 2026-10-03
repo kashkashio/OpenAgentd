@@ -19,6 +19,7 @@ import type { ToolDisplay } from './types'
 import { parsePatchText } from './diffUtils'
 import { pathBasename } from '@/utils/workspace'
 import { parsePartialJSON } from './displayText'
+import { CLAUDE_CODE_EDIT_TOOLS, CLAUDE_CODE_TOOL_KIND, claudeCodeAsOpenAgentd, claudeCodeEditDiff, claudeCodeEditPath } from './claudeCode'
 
 /**
  * Keep argument values in headers easy to restyle consistently.
@@ -174,7 +175,7 @@ export function getToolDisplay(name: string, args: string | undefined, done = fa
   const resultDisplay = name === 'plan' ? planDisplay(parsed, done && isComplete) : getToolDisplayInternal(name, parsed)
   // A streaming plan reads better as its partial Markdown than as raw JSON.
   if (!isComplete && name !== 'plan') {
-    const shouldHideArgs = HIDE_ARGS_TOOLS.has(name)
+    const shouldHideArgs = HIDE_ARGS_TOOLS.has(CLAUDE_CODE_TOOL_KIND[name] ?? name)
     return {
       ...resultDisplay,
       formattedArgs: shouldHideArgs ? null : args,
@@ -239,6 +240,23 @@ function previewPageActionLabel(action: string, parsed: Record<string, unknown>)
 }
 
 function getToolDisplayInternal(name: string, parsed: Record<string, unknown>): ToolDisplay {
+  // ── Claude Code tools: shown as the OpenAgentd tool they correspond to ──
+  const counterpart = claudeCodeAsOpenAgentd(name, parsed)
+  if (counterpart) return getToolDisplayInternal(counterpart.name, counterpart.args)
+  if (CLAUDE_CODE_EDIT_TOOLS.has(name)) {
+    const path = claudeCodeEditPath(parsed)
+    const fileName = path ? pathBasename(path) : null
+    return { header: fileName ? <Arg>{fileName}</Arg> : null, headerTitle: path ?? null, formattedArgs: claudeCodeEditDiff(name, parsed) }
+  }
+  if (name === 'Task' || name === 'Agent') {
+    const description = str(parsed, 'description')
+    return { header: description ? <Arg>{description}</Arg> : null, headerTitle: description, formattedArgs: str(parsed, 'prompt') }
+  }
+  if (name === 'TodoWrite' && Array.isArray(parsed.todos)) {
+    const todos = (parsed.todos as Array<Record<string, unknown>>).map((t) => `${t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '›' : '·'} ${String(t.content ?? '')}`)
+    return { header: 'Updated todos', headerTitle: 'Updated todos', formattedArgs: todos.join('\n') || null }
+  }
+
   // ── preview: the page it opens, the console it reads, or the page action ──
   if (name === 'preview') {
     const action = str(parsed, 'action')

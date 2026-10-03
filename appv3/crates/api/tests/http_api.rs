@@ -398,6 +398,32 @@ async fn http_api_end_to_end() {
     let (st, _, _) = lan.send(lan_get("https://evil.example", None)).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 
+    // ── workspace settings (v3 only) ─────────────────────────────────────
+    appv3_core::runtime_settings::set_provider_cached_models("ollama", &["mock-1".to_string()]).unwrap();
+    let proj2 = root.path().join("proj2");
+    std::fs::create_dir_all(&proj2).unwrap();
+    let p2 = proj2.display().to_string();
+    let settings_uri = format!("/api/agent/workspace/settings?workspace={}", p2.replace('/', "%2F"));
+    let (st, v) = c.json("GET", &settings_uri, None).await;
+    assert_eq!((st, v["model"].clone()), (StatusCode::OK, Value::Null), "{v}");
+    let (st, v) = c.json("PUT", "/api/agent/workspace/settings", Some(json!({"workspace": p2, "model": "nope:x"}))).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (st, v) = c.json("PUT", "/api/agent/workspace/settings", Some(json!({"workspace": p2, "model": null, "claude_code": {"permission_mode": "yolo"}}))).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (st, v) = c.json("PUT", "/api/agent/workspace/settings", Some(json!({"workspace": p2, "model": "ollama:mock-1"}))).await;
+    assert_eq!((st, v["model"].clone()), (StatusCode::OK, json!("ollama:mock-1")), "{v}");
+    assert!(proj2.join(".openagentd/settings.yaml").is_file());
+    // A new session starts on the workspace default even with no model sent.
+    let (st, v) = c.json("POST", "/api/agent/sessions/resolve", Some(json!({"workspace": p2, "create": true}))).await;
+    assert_eq!((st, v["model"].clone()), (StatusCode::OK, json!("ollama:mock-1")), "{v}");
+    let p2_sid = v["id"].as_str().unwrap().to_string();
+    // Changing the default can switch the workspace's existing sessions too.
+    let (st, v) =
+        c.json("PUT", "/api/agent/workspace/settings", Some(json!({"workspace": p2, "model": "ollama:mock-1", "thinking_level": "low", "apply_to_sessions": true}))).await;
+    assert_eq!((st, v["sessions_updated"].clone()), (StatusCode::OK, json!(1)), "{v}");
+    let (st, v) = c.json("GET", &format!("/api/agent/sessions/{p2_sid}"), None).await;
+    assert_eq!((st, v["thinking_level"].clone()), (StatusCode::OK, json!("low")), "{v}");
+
     preview_routes(&c, root.path()).await;
 
     appv3_api::startup::shutdown().await;

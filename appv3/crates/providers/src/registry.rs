@@ -516,6 +516,22 @@ pub fn supports_vision(model_id: Option<&str>) -> bool {
     capabilities_dict(model_id)["input"]["vision"].as_bool().unwrap_or(false)
 }
 
+/// A provider's models from the cached models.dev catalog, newest release
+/// first. A dated snapshot (`…-20251001`) is dropped when its undated alias
+/// is listed too. Empty when the catalog has not been downloaded.
+pub fn models_dev_models_newest_first(provider: &str) -> Vec<String> {
+    let Some(doc) = read_models_dev() else { return vec![] };
+    let Some(models) = doc.get(provider).and_then(|p| p.get("models")).and_then(Value::as_object) else { return vec![] };
+    let mut rows: Vec<(String, String)> = models.iter().map(|(id, m)| (m.get("release_date").and_then(Value::as_str).unwrap_or("").to_string(), id.clone())).collect();
+    rows.sort_by(|a, b| b.cmp(a));
+    let ids: std::collections::HashSet<&str> = rows.iter().map(|(_, id)| id.as_str()).collect();
+    let dated_alias = |id: &str| -> Option<String> {
+        let (base, date) = id.rsplit_once('-')?;
+        (date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())).then(|| base.to_string())
+    };
+    rows.iter().filter(|(_, id)| dated_alias(id).is_none_or(|base| !ids.contains(base.as_str()))).map(|(_, id)| id.clone()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

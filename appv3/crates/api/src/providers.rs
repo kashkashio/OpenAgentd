@@ -39,6 +39,9 @@ pub fn provider_is_configured(entry: &Value) -> bool {
         return plugin.info().credentials.iter().filter(|f| f.required).all(|f| !store.get(&f.name).is_empty());
     }
     let env = |n: &str| appv3_core::env::os_environ(n).filter(|v| !v.is_empty()).is_some();
+    if id == "claude-code" {
+        return appv3_agent::claude_code::find_cli().is_some();
+    }
     match kind {
         "local" => true,
         "oauth" => {
@@ -199,6 +202,7 @@ pub async fn discover_provider_models(entry: &Value, overrides: &HashMap<String,
             return Ok(filter_opencode_models_for_access(id, &models, !key.is_empty()));
         }
         match id {
+            "claude-code" => Ok(appv3_agent::claude_code::model_choices(&appv3_providers::registry::models_dev_models_newest_first("anthropic"))),
             "zai" => openai_compatible_models("https://api.z.ai/api/paas/v4", &resolve(overrides, "ZAI_API_KEY", "")).await,
             "googlegenai" => {
                 let key = resolve(overrides, "GOOGLE_API_KEY", "");

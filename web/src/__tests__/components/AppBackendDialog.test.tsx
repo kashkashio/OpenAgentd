@@ -9,6 +9,7 @@ const originalReload = window.location.reload
 const invokeCalls: Array<{ command: string; args: unknown }> = []
 const reloadMock = mock(() => {})
 let failExternalSwitch = false
+let nativeUnavailable = false
 let fetchCalls: Array<{ url: string; init?: RequestInit }> = []
 let statusPayload = {
   base_url: 'http://127.0.0.1:5999',
@@ -25,6 +26,7 @@ let statusPayload = {
 const invokeMock = mock(async (...args: unknown[]) => {
   const command = String(args[0])
   const commandArgs = args[1]
+  if (nativeUnavailable) throw new TypeError("Cannot read properties of undefined (reading 'invoke')")
   invokeCalls.push({ command, args: commandArgs })
   if (command === 'app_backend_status') return statusPayload
   if (command === 'app_save_backend_server') return statusPayload
@@ -76,6 +78,7 @@ beforeEach(() => {
     ],
   }
   window.__OAD_API_BASE_URL__ = 'http://127.0.0.1:5999'
+  nativeUnavailable = false
   const fetchMock = mock((...args: unknown[]) => {
     const url = String(args[0])
     fetchCalls.push({ url, init: args[1] as RequestInit | undefined })
@@ -413,5 +416,37 @@ describe('AppBackendDialog', () => {
     await user.click(title)
 
     expect(onOpenChangeMock).not.toHaveBeenCalled()
+  })
+
+  it('in a plain browser stores the current server key without native calls', async () => {
+    nativeUnavailable = true
+    window.__OAD_API_BASE_URL__ = 'http://127.0.0.1:4082'
+    const user = userEvent.setup()
+    render(<AppBackendDialog open onOpenChange={() => {}} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Test & save' })).toBeTruthy())
+    expect(screen.queryByLabelText(/server url/i)).toBeNull()
+    await user.type(screen.getByLabelText(/access key/i), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Test & save' }))
+
+    await waitFor(() => expect(reloadMock).toHaveBeenCalled())
+    expect(invokeCalls).toEqual([])
+    expect(window.localStorage.getItem('openagentd.accessKey:http://127.0.0.1:4082')).toBe('secret')
+    const authCheck = fetchCalls.find((call) => call.url === 'http://127.0.0.1:4082/api/auth/check')
+    expect(new Headers(authCheck?.init?.headers).get('Authorization')).toBe('Bearer secret')
+  })
+
+  it('in a plain browser rejects a wrong key', async () => {
+    nativeUnavailable = true
+    window.__OAD_API_BASE_URL__ = 'http://127.0.0.1:5999'
+    const user = userEvent.setup()
+    render(<AppBackendDialog open onOpenChange={() => {}} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Test & save' })).toBeTruthy())
+    await user.type(screen.getByLabelText(/access key/i), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Test & save' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+    expect(reloadMock).not.toHaveBeenCalled()
   })
 })

@@ -12,10 +12,10 @@ import { Copy, Check } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { formatTime, formatFullDateTime, lastTurnText, shortModelName } from '@/utils/format'
 import { formatCompact, formatInt, formatSpend } from '@/utils/telemetryFormat'
-import { turnModel } from '@/utils/turns'
+import { isAgentReport, turnModel } from '@/utils/turns'
 import type { ContentBlock } from '@/api/types'
 import { useQuestionAwaitsUser } from '@/components/AskUser'
-import { TurnChangedFiles, WorkSummaryRow } from '@/components/ReaderTurn'
+import { LiveTurnStatus, TurnChangedFiles, WorkSummaryRow } from '@/components/ReaderTurn'
 import { readerSegments, turnChangedFiles } from '@/components/ReaderTurn/segments'
 
 export interface AssistantTurnFooterProps {
@@ -45,9 +45,12 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({ turnBlock
     let hasTool = false
     let outputTokens = 0
     let costUsd = 0
+    let apiCostUsd = 0
     for (const block of turnBlocks) {
       outputTokens += block.usage?.outputTokens ?? 0
       costUsd += block.usage?.costUsd ?? 0
+      const apiCost = block.extra?.claude_code_api_cost_usd
+      if (typeof apiCost === 'number') apiCostUsd += apiCost
     }
     for (let i = turnBlocks.length - 1; i >= 0; i--) {
       const block = turnBlocks[i]
@@ -64,12 +67,14 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({ turnBlock
       responseDurationMs,
       modelName: shortModelName(model?.model),
       thinkingLevel: model?.thinkingLevel,
+      claudeAuth: model?.claudeAuth,
       hasTool,
       outputTokens,
       costUsd: Math.round(costUsd * 1e8) / 1e8,
+      apiCostUsd,
     }
   }, [turnBlocks])
-  const { textContent, timestamp, responseDurationMs, modelName, thinkingLevel, outputTokens, costUsd } = footerData
+  const { textContent, timestamp, responseDurationMs, modelName, thinkingLevel, claudeAuth, outputTokens, costUsd, apiCostUsd } = footerData
 
   const handleCopy = useCallback(async () => {
     try {
@@ -113,6 +118,17 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({ turnBlock
           {thinkingLevel ? `${modelName} · ${thinkingLevel}` : modelName}
         </span>
       )}
+      {claudeAuth && (
+        <span
+          data-turn-auth
+          className={`font-mono text-[11px] ${claudeAuth === 'none' ? 'text-(--color-text-muted)' : 'text-(--color-warning)'}`}
+          title={claudeAuth === 'none'
+            ? 'Claude Code ran on your Claude login (no API key).'
+            : `Claude Code authenticated with an API key (${claudeAuth}); usage is billed to that key.`}
+        >
+          {claudeAuth === 'none' ? 'Claude login' : 'API key'}
+        </span>
+      )}
       {timestamp && (
         <Tooltip className="text-[11px] text-(--color-text-muted)">
           <TooltipTrigger render={<span className="text-[11px] text-(--color-text-muted)">{formatTime(timestamp)}</span>} />
@@ -122,18 +138,45 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({ turnBlock
       {responseDurationMs !== undefined && (
         <span className="font-mono text-[11px] text-(--color-text-muted)">{formatDuration(responseDurationMs)}</span>
       )}
-      {(outputTokens > 0 || costUsd > 0) && (
+      {outputTokens > 0 && (
         <span
           className="font-mono text-[11px] text-(--color-text-muted)"
-          aria-label={`${formatInt(outputTokens)} output tokens${costUsd > 0 ? `, $${costUsd.toFixed(4)}` : ''}`}
-          title={`${formatInt(outputTokens)} output tokens${costUsd > 0 ? ` · $${costUsd.toFixed(4)}` : ''}`}
+          aria-label={`${formatInt(outputTokens)} output tokens`}
+          title={`${formatInt(outputTokens)} output tokens`}
         >
-          {costUsd > 0 ? formatSpend(costUsd) : `${formatCompact(outputTokens)} tok`}
+          {`${formatCompact(outputTokens).toLowerCase()} tokens`}
+        </span>
+      )}
+      {costUsd > 0 && (
+        <span className="font-mono text-[11px] text-(--color-text-muted)" title={`$${costUsd.toFixed(4)}`}>
+          {formatSpend(costUsd)}
+        </span>
+      )}
+      {costUsd === 0 && apiCostUsd > 0 && (
+        <span
+          data-turn-api-cost
+          className="font-mono text-[11px] text-(--color-text-subtle)"
+          title={`About $${apiCostUsd.toFixed(4)} at API prices. Not billed: this turn ran on your Claude login.`}
+        >
+          {`≈${formatSpend(apiCostUsd)}`}
         </span>
       )}
     </div>
   )
 })
+
+/** A turn parked on a provider (quota wait, retry notice) shows that card,
+ *  not a working line. */
+function waitsOnProvider(block: ContentBlock | undefined): boolean {
+  if (block?.type === 'provider_status') return true
+  // A compaction in progress shows its own divider state.
+  return block?.type === 'compaction' && block.extra?.state === 'compacting'
+}
+
+/** A trailing block the live line names as the current step. */
+function isLiveStep(block: ContentBlock | undefined): boolean {
+  return block?.type === 'tool' || block?.type === 'thinking' || (block !== undefined && isAgentReport(block))
+}
 
 export interface AssistantTurnProps {
   /** Blocks belonging to this turn (no user blocks inside). */
@@ -240,7 +283,6 @@ export const AssistantTurn = memo(function AssistantTurn({
         ? segments.map((segment) => {
             if (segment.kind === 'block') return renderAt(segment.index)
             const work = segment.indices.map((j) => blocks[j])
-            const lastIndex = segment.indices[segment.indices.length - 1]
             const live = turnIsWorking && segment.indices[0] > lastCompaction
             return (
               <WorkSummaryRow
@@ -248,8 +290,6 @@ export const AssistantTurn = memo(function AssistantTurn({
                 key={`work-${work[0].id}`}
                 blocks={work}
                 live={live}
-                startedAt={startedAt}
-                currentStep={live && lastIndex === blocks.length - 1 ? blocks[lastIndex] : null}
                 forceOpen={work.some((block) => findHitBlockIds?.has(block.id) ?? false)}
               >
                 {segment.indices.map(renderAt)}
@@ -257,6 +297,13 @@ export const AssistantTurn = memo(function AssistantTurn({
             )
           })
         : blocks.map((_, j) => renderAt(j))}
+      {turnIsWorking && !waitsOnProvider(blocks[blocks.length - 1]) && (
+        <LiveTurnStatus
+          blocks={blocks}
+          startedAt={startedAt}
+          currentStep={isLiveStep(blocks[blocks.length - 1]) ? blocks[blocks.length - 1] : null}
+        />
+      )}
       {changedFiles.length > 0 && <TurnChangedFiles files={changedFiles} />}
       {!turnIsOpen && <AssistantTurnFooter turnBlocks={blocks} size={size} />}
     </div>

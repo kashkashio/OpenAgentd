@@ -79,6 +79,27 @@ export interface CodingWorkspaceTreeChat {
   name: string
 }
 
+/** `<workspace>/.openagentd/settings.yaml`, via `/agent/workspace/settings`. */
+export interface WorkspaceSettings {
+  workspace: string
+  path: string
+  /** `provider:model` for new sessions in this workspace; null = agent default. */
+  model: string | null
+  thinking_level: string | null
+  claude_code: { permission_mode: string | null }
+  /** PUT only: how many existing sessions were switched to `model`. */
+  sessions_updated?: number
+}
+
+export interface WorkspaceSettingsUpdate {
+  workspace: string
+  model: string | null
+  thinking_level: string | null
+  claude_code?: { permission_mode: string | null }
+  /** Also switch the workspace's existing top-level sessions to `model`. */
+  apply_to_sessions?: boolean
+}
+
 export interface CodingWorkspaceTreeResponse {
   repositories: CodingWorkspaceTreeRepository[]
   chat?: CodingWorkspaceTreeChat | null
@@ -402,6 +423,10 @@ export interface AgentUsage {
   turnCompletionTokens?: number
   turnTotalTokens?: number
   turnCachedTokens?: number
+  /** ``completionTokens`` / ``estimatedCostUsd`` when the running turn began,
+   *  so the live work row can count what this turn has used. */
+  turnStartCompletionTokens?: number
+  turnStartCostUsd?: number
 }
 
 // ── Agent management ────────────────────────────────────────────────────────

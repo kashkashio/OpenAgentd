@@ -100,7 +100,7 @@ describe('summarizeWork', () => {
     const summary = summarizeWork(blocks)
 
     expect(summary).toEqual({ reads: 2, searches: 3, fetches: 1, commands: 1, edits: 1, reports: 1, other: 1, failed: 1, thought: true })
-    expect(workSummaryDetail(summary)).toBe('2 reads, 3 searches, 1 fetch, 1 command, 1 edit, 1 report, 1 other')
+    expect(workSummaryDetail(summary)).toBe('Ran 1 command, read 2 files, searched 3 times, fetched 1 page, edited 1 file, 1 report, 1 other step')
   })
 
   it('says nothing about steps for a trace that only thought', () => {

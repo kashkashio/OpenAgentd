@@ -26,6 +26,14 @@
     "docs_url": "https://console.anthropic.com/settings/keys"
   },
   {
+    "id": "claude-code",
+    "label": "Claude Code (local login)",
+    "description": "Runs your installed claude CLI with its own login \u2014 no API key.",
+    "kind": "local",
+    "env_var": "",
+    "docs_url": "https://docs.anthropic.com/en/docs/claude-code/overview"
+  },
+  {
     "id": "googlegenai",
     "label": "Google Gemini",
     "description": "Google AI Studio \u2014 free tier available.",

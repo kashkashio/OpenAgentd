@@ -26,6 +26,7 @@ import { MCPAppResult } from './MCPAppResult'
 import { TimelineScrubber } from './AgentView/TimelineScrubber'
 import { CompactionDivider } from './CompactionDivider'
 import { AssistantTurn } from './AssistantTurnFooter'
+import { SparkSpinner } from '@/components/ui/spark-spinner'
 import { PendingMessageQueue } from './PendingMessageQueue'
 import { appendCurrentTurns, getVisibleTurnWindow, partitionTurns, promptModels } from '@/utils/turns'
 import { countBlocksAfter, liveBlockTail } from '@/utils/blocks'
@@ -383,14 +384,14 @@ const BlockRenderer = memo(function BlockRenderer({ block, isStreaming, sessionI
       const sleepPrefix = extractSleepPrefix(block.content)
       if (sleepPrefix !== null) {
         return (
-          <div>
+          <div className="oa-assistant-text">
             {sleepPrefix && <MarkdownBlock content={sleepPrefix} sessionId={sessionId} />}
             <p className="text-xs text-(--color-text-subtle) italic">— idle —</p>
           </div>
         )
       }
       return (
-        <div>
+        <div className="oa-assistant-text">
           <MarkdownBlock content={block.content} sessionId={sessionId} isStreaming={isStreaming} />
         </div>
       )
@@ -952,10 +953,9 @@ export function AgentView({
             {((!isTurnOpen && !isError && currentBlocks.some(isDirectUserBlock)) ||
               isAwaitingRestart ||
               (isWorking && !answerHoldsReport && currentBlocks.every((b) => b.type === 'user' || isBlankContentBlock(b)))) && (
-              <div className="flex items-center gap-1.5 py-1" role="status" aria-label="Agent is preparing a response">
-                <span aria-hidden="true" className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--color-accent)" style={{ animationDelay: '0ms' }} />
-                <span aria-hidden="true" className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--color-accent)" style={{ animationDelay: '150ms' }} />
-                <span aria-hidden="true" className="h-1.5 w-1.5 animate-bounce rounded-full bg-(--color-accent)" style={{ animationDelay: '300ms' }} />
+              <div className="flex items-center gap-2 py-1 text-[0.9375rem] text-(--color-text-muted)" role="status" aria-label="Agent is preparing a response">
+                <SparkSpinner className="text-lg" label="Thinking" />
+                <span>Thinking…</span>
               </div>
             )}
 

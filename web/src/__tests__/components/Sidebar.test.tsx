@@ -204,9 +204,14 @@ mock.module('lucide-react', () => ({
   Plus: Icon,
   Search: Icon,
   Settings: Icon,
+  Settings2: Icon,
   Pencil: Icon,
   Trash2: Icon,
   X: Icon,
+}))
+
+mock.module('@/components/WorkspaceSettingsDialog', () => ({
+  WorkspaceSettingsDialog: () => null,
 }))
 
 mock.module('@/components/ThemeToggle', () => ({

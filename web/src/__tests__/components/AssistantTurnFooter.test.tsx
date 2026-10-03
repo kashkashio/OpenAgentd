@@ -139,7 +139,7 @@ describe("AssistantTurnFooter", () => {
     expect(screen.getByText("1m 33s")).toBeTruthy()
   })
 
-  it("sums the turn's cost across its messages, with the output tokens in the label", () => {
+  it("sums the turn's tokens and cost across its messages", () => {
     const blocks: ContentBlock[] = [
       { id: "t1", type: "tool", content: "", toolName: "read", toolDone: true, usage: { outputTokens: 500, costUsd: 0.004 } },
       { id: "b1", type: "text", content: "Answer", usage: { outputTokens: 1000, costUsd: 0.016 } },
@@ -147,8 +147,8 @@ describe("AssistantTurnFooter", () => {
 
     render(<AssistantTurnFooter turnBlocks={blocks} />)
 
-    const cost = screen.getByText("$0.02")
-    expect(cost.getAttribute("aria-label")).toBe("1,500 output tokens, $0.0200")
+    expect(screen.getByText("$0.02")).toBeTruthy()
+    expect(screen.getByText("1.5k tokens").getAttribute("aria-label")).toBe("1,500 output tokens")
   })
 
   it("shows output tokens when the provider reports no cost", () => {
@@ -158,7 +158,17 @@ describe("AssistantTurnFooter", () => {
 
     render(<AssistantTurnFooter turnBlocks={blocks} />)
 
-    expect(screen.getByText("1.5K tok")).toBeTruthy()
+    expect(screen.getByText("1.5k tokens")).toBeTruthy()
+  })
+
+  it("shows a Claude Code turn's API-equivalent cost apart from spend", () => {
+    const blocks: ContentBlock[] = [
+      { id: "b1", type: "text", content: "Answer", usage: { outputTokens: 1500, costUsd: 0 }, extra: { model: "claude-code:opus", claude_code_api_cost_usd: 0.24 } },
+    ]
+
+    render(<AssistantTurnFooter turnBlocks={blocks} />)
+
+    expect(screen.getByText("≈$0.24").getAttribute("title")).toMatch(/Not billed/)
   })
 })
 

@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod broadcaster;
 pub mod checkpointer;
+pub mod claude_code;
 pub mod errors;
 pub mod events;
 pub mod history;
@@ -31,6 +32,7 @@ pub mod streaming;
 pub mod subagents;
 pub mod tools;
 pub mod util;
+pub mod workspace_settings;
 
 pub use agent::{Agent, RunOptions, RunOutcome};
 pub use errors::{format_agent_error, AgentError};

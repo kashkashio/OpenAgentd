@@ -1130,7 +1130,7 @@ OpenAgentd carries context across sessions via rolling-window summarization.
 Switch providers with one line in your agent config. The product is provider-
 agnostic by design.
 
-**18 first-class providers:**
+**19 first-class providers:**
 
 | Provider | Config syntax | Auth |
 |---|---|---|
@@ -1152,11 +1152,38 @@ agnostic by design.
 | Router9 (local) | `router9:cc/claude-sonnet-4-5` | `ROUTER9_API_KEY` (optional) |
 | CLIProxyAPI (local) | `cliproxy:gemini-2.5-pro` | `CLIPROXY_API_KEY` (optional) |
 | Ollama (local + cloud) | `ollama:llama3.2` · `ollama:kimi-k2.6-cloud` | none (cloud: `ollama signin`) |
+| Claude Code (local login) | `claude-code:sonnet` · `claude-code:opus` | your installed `claude` CLI and its own login `[v3.3.1]` |
 
 - **Keyless first-run model** `[v1.124.0]` *(deprecated — removed)* — previously
   defaulted new installations to OpenCode Zen free models; removed because
   OpenCode free models only open within OpenCode's own harness. OpenCode Zen
   now requires `OPENCODE_ZEN_API_KEY`.
+- **Claude Code sessions** `[v3.3.1]` — a session on a `claude-code:` model —
+  an alias that follows the latest of its family (`default`, `sonnet`, `opus`,
+  `haiku`, `opusplan`) or a specific version from the Anthropic catalog
+  (`claude-code:claude-opus-5-5`) — runs each turn
+  through the locally installed `claude` CLI in the workspace, using the CLI's
+  own login instead of an API key (`ANTHROPIC_API_KEY` is removed from its
+  environment). Text, thinking, tool calls and results stream into the normal
+  transcript; later turns resume the same Claude conversation, and Stop ends
+  the CLI process. Claude Code's own tools and permission rules apply, not
+  OpenAgentd's; the permission mode is set per workspace (default
+  `acceptEdits`). Attachments are not forwarded, and switching an existing
+  session to Claude Code starts it without the earlier context. The provider
+  shows as configured when `claude` is on `PATH`, in a standard install
+  location, or set with `OPENAGENTD_CLAUDE_BIN`. Replies record the exact
+  model the CLI ran, so an alias shows its version. Each reply's footer says how
+  the CLI authenticated: **Claude login**, or **API key** (highlighted) when
+  Claude Code's own configuration supplied one.
+- **Per-workspace default model** `[v3.3.1]` — **Workspace settings…** in a
+  workspace's sidebar menu sets the model (and thinking level) new sessions in
+  that workspace start on, stored in the project at
+  `.openagentd/settings.yaml`. It takes precedence over the model carried from
+  the previous session, and changing it also switches the workspace's existing
+  sessions unless you untick that option; each session can still change its
+  model afterwards. The status bar marks a model that comes from the workspace
+  (`workspace: claude-code:opus`). A managed worktree falls back to its
+  repository's setting, and a default whose provider is gone is ignored.
 - **Drop-in provider plugins** `[v1.6.0]` — Python files in the configured
   plugins directory register new providers at startup.
 - **Resilient provider construction** `[v1.17.0]` — missing/unavailable

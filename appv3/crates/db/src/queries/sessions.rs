@@ -268,3 +268,21 @@ pub async fn delete_session_rows(pool: &DbPool, id: &str) -> Result<Vec<(String,
     tx.commit().await?;
     Ok(tree)
 }
+
+/// Point every top-level session in `workspace` at `model` / `thinking_level`
+/// (the workspace settings "apply to existing sessions" action). Subagent
+/// sessions keep their own models. Returns how many sessions changed.
+pub async fn set_workspace_session_models(pool: &DbPool, workspace: &str, model: &str, thinking_level: Option<&str>) -> Result<u64> {
+    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM chat_sessions WHERE workspace = ? AND parent_session_id IS NULL").bind(workspace).fetch_all(pool).await?;
+    let mut changed = 0;
+    for id in ids {
+        let Some(cur) = get_session(pool, &id).await? else { continue };
+        if cur.model.as_deref() == Some(model) && cur.thinking_level.as_deref() == thinking_level {
+            continue;
+        }
+        let upd = SessionUpdate { model: Some(Some(model.to_string())), thinking_level: Some(thinking_level.map(str::to_string)), ..Default::default() };
+        update_session(pool, &id, upd).await?;
+        changed += 1;
+    }
+    Ok(changed)
+}

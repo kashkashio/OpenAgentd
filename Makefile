@@ -15,10 +15,18 @@ run-v3: run ## Alias for run
 
 run3: run
 
-dev: kill-dev-ports ## Start the v3 backend (:8000) and frontend (Vite :5173) together
+# Vite listens on DEV_HOST (LAN-reachable by default); the API stays on
+# loopback behind Vite's /api proxy. Set OPENAGENTD_ACCESS_KEY so other
+# devices can authenticate (the cross-origin guard refuses them otherwise).
+DEV_HOST ?= 0.0.0.0
+
+dev: kill-dev-ports ## Start the v3 backend (:8000) and frontend (Vite :5173 on DEV_HOST) together
+	@if [ "$(DEV_HOST)" != "127.0.0.1" ] && [ "$(DEV_HOST)" != "localhost" ] && [ -z "$$OPENAGENTD_ACCESS_KEY" ]; then \
+		echo "warning: Vite is exposed on $(DEV_HOST) without OPENAGENTD_ACCESS_KEY; LAN clients will be refused until a key is set."; \
+	fi
 	@trap 'kill 0' INT TERM EXIT; \
 	(APP_ENV=$${APP_ENV:-development} cargo run --manifest-path appv3/Cargo.toml -p appv3-cli -- server serve --port 8000 2>&1 | sed 's/^/[api] /') & \
-	(while ! nc -z 127.0.0.1 8000 2>/dev/null; do sleep 0.1; done; cd web && bun dev 2>&1 | sed 's/^/[web] /') & \
+	(while ! nc -z 127.0.0.1 8000 2>/dev/null; do sleep 0.1; done; cd web && bun dev --host $(DEV_HOST) 2>&1 | sed 's/^/[web] /') & \
 	wait
 
 dev-v3: dev ## Alias for dev

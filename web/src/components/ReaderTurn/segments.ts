@@ -23,6 +23,7 @@ import { isAgentReport } from '@/utils/turns'
 
 import { patchFileStats } from '../ToolCall/diffUtils'
 import { isFailedResult } from '../ToolCall/toolResultStatus'
+import { CLAUDE_CODE_TOOL_KIND } from '../ToolCall/claudeCode'
 import type { ChangedFileInfo } from '../WorkspacePanel/diff-helpers'
 
 export type ReaderSegment =
@@ -102,7 +103,8 @@ export function summarizeWork(blocks: readonly ContentBlock[]): WorkSummary {
     if (block.type === 'thinking' && block.content.trim()) summary.thought = true
     if (isAgentReport(block)) summary.reports += 1
     if (block.type !== 'tool') continue
-    summary[STEP_KIND[block.toolName ?? ''] ?? 'other'] += 1
+    const name = block.toolName ?? ''
+    summary[STEP_KIND[CLAUDE_CODE_TOOL_KIND[name] ?? name] ?? 'other'] += 1
     if (block.toolDone && isFailedResult(block.toolResult)) summary.failed += 1
   }
   return summary
@@ -110,17 +112,19 @@ export function summarizeWork(blocks: readonly ContentBlock[]): WorkSummary {
 
 const count = (n: number, one: string, many = `${one}s`) => (n ? `${n} ${n === 1 ? one : many}` : '')
 
-/** e.g. "6 reads, 3 searches, 4 commands, 2 edits"; empty when nothing ran. */
+/** e.g. "Ran 4 commands, read 6 files, searched 3 times, edited 2 files"; empty when nothing ran. */
 export function workSummaryDetail(summary: WorkSummary): string {
-  return [
-    count(summary.reads, 'read'),
-    count(summary.searches, 'search', 'searches'),
-    count(summary.fetches, 'fetch', 'fetches'),
-    count(summary.commands, 'command'),
-    count(summary.edits, 'edit'),
+  const parts = [
+    summary.commands ? `ran ${count(summary.commands, 'command')}` : '',
+    summary.reads ? `read ${count(summary.reads, 'file')}` : '',
+    summary.searches ? `searched ${summary.searches === 1 ? 'once' : `${summary.searches} times`}` : '',
+    summary.fetches ? `fetched ${count(summary.fetches, 'page')}` : '',
+    summary.edits ? `edited ${count(summary.edits, 'file')}` : '',
     count(summary.reports, 'report'),
-    summary.other ? `${summary.other} other` : '',
-  ].filter(Boolean).join(', ')
+    summary.other ? count(summary.other, 'other step') : '',
+  ].filter(Boolean)
+  const text = parts.join(', ')
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : ''
 }
 
 const STATUS = { add: 'A', update: 'M', delete: 'D' } as const

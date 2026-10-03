@@ -379,7 +379,9 @@ async fn warm_provider_model_cache() -> ApiResult<()> {
             }
             continue;
         }
-        if !pui.is_disconnected && pui.cached_models.is_empty() {
+        // Claude Code's list is local (aliases + the models.dev catalog), so it
+        // is rebuilt every time and follows new model releases.
+        if !pui.is_disconnected && (pui.cached_models.is_empty() || id == "claude-code") {
             candidates.push(entry);
         }
     }

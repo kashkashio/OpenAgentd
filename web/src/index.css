@@ -40,9 +40,13 @@
  * Tokens themselves are defined in :root.dark / :root.light below.
  * ───────────────────────────────────────────────────────────── */
 @theme inline {
+    /* Claude desktop type: native system sans for chrome, a book serif for
+     * assistant replies, the platform mono for code. Proprietary Anthropic
+     * faces are tried first for machines that have them installed. */
     --font-heading: var(--font-sans);
-    --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', 'Courier New', monospace;
+    --font-sans: 'Anthropic Sans', 'Styrene B', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, 'Inter Variable', sans-serif;
+    --font-serif: 'Anthropic Serif', 'Tiempos Text', 'Copernicus', ui-serif, Georgia, Cambria, 'Times New Roman', serif;
+    --font-mono: 'Anthropic Mono', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Monaco, 'JetBrains Mono Variable', monospace;
 
 
     --radius-xs: 4px;
@@ -94,41 +98,39 @@
 :root.dark {
     color-scheme: dark;
 
-    /* Surfaces
-     * Same ordering as light mode, not an inversion of the tones: the sidebar
-     * sits *below* the page (a recessed rail), cards sit above it, and the
-     * input matches the page. Collapsing --bg-sidebar onto --bg-card left the
-     * sidebar reading as a raised panel and made every card inside it
-     * invisible against its own container. */
-    --bg-page:           #15110D;
-    --bg-sidebar:        #110D0A;
-    --bg-card:           #1C1813;
-    --bg-input:          #15110D;
-    --bg-key:            #2A2219;
-    --bg-send:           #F5EBD8;
-    --color-surface:     #221C16;
-    --color-surface-2:   #2A2219;
-    --color-bg-elevated: #221C16;
+    /* Surfaces — Claude desktop dark: charcoal page, deeper sidebar rail,
+     * lifted cards/composer. */
+    --bg-page:           #262624;
+    --bg-sidebar:        #1F1E1D;
+    --bg-card:           #30302E;
+    --bg-input:          #30302E;
+    --bg-key:            #393937;
+    --bg-send:           #C6613F;
+    --bg-tooltip:        #FAF9F5;
+    --color-surface:     #30302E;
+    --color-surface-2:   #393937;
+    --color-bg-elevated: #30302E;
 
     /* Borders */
-    --border-soft:         #2C231A;
-    --border-card:         #3A2F23;
-    --color-border-subtle: #2C231A;
-    --color-border:        #3A2F23;
-    --color-border-strong: #5C4B36;
+    --border-soft:         #353532;
+    --border-card:         #42413D;
+    --color-border-subtle: #353532;
+    --color-border:        #42413D;
+    --color-border-strong: #5E5D59;
 
     /* Text */
-    --color-text:           #F5EBD8;
-    --color-text-2:         #C5B59A;
-    --color-text-muted:     #9C8A72;
-    --color-text-subtle:    #8E7D66; /* AA-compliant on --bg-page (≥4.5:1) */
-    --color-text-on-accent: #15110D;
-    --fg-primary:           #F5EBD8;
-    --fg-secondary:         #C5B59A;
-    --fg-muted:             #9C8A72;
+    --color-text:           #FAF9F5;
+    --color-text-2:         #C2C0B6;
+    --color-text-muted:     #A6A39A;
+    --color-text-subtle:    #9C9A92; /* AA-compliant on --bg-page (≥4.5:1) */
+    --color-text-on-accent: #FFFFFF;
+    --color-text-on-tooltip: #141413;
+    --fg-primary:           #FAF9F5;
+    --fg-secondary:         #C2C0B6;
+    --fg-muted:             #A6A39A;
 
-    /* Accent (UI) */
-    --color-accent:  #F5EBD8;
+    /* Accent (UI) — Claude clay */
+    --color-accent:  #D97757;
     --color-overlay: #00000099;
 
     /* Agent chips */
@@ -178,14 +180,19 @@
     --color-diff-del-text:  #FCA5A5;
 
     /* Syntax highlighting */
-    --color-syn-comment:  #9C8A72;
+    --color-syn-comment:  #9C9A92;
     --color-syn-keyword:  #A78BFA;
     --color-syn-function: #38BDF8;
     --color-syn-variable: #F87171;
     --color-syn-string:   #4ADE80;
     --color-syn-number:   #FBBF24;
-    --color-syn-type:     #FCC780;
-    --color-syn-operator: #C5B59A;
+    --color-syn-type:     #E8A88F;
+    --color-syn-operator: #C2C0B6;
+
+    /* Inline code in prose — Claude's coral on a soft tint */
+    --color-code-inline:  #E8836B;
+    --bg-code-inline:     rgba(255, 255, 255, 0.05);
+    --border-code-inline: rgba(255, 255, 255, 0.08);
 
     /* Depth & focus
      * Focus ring uses --accent-blue rather than --color-accent because the
@@ -204,37 +211,39 @@
 :root.light {
     color-scheme: light;
 
-    /* Surfaces */
-    --bg-page:           #FAF6EC;
-    --bg-sidebar:        #F5EFDD;
-    --bg-card:           #FFFBF1;
-    --bg-input:          #FAF6EC;
-    --bg-key:            #F0E9D4;
-    --bg-send:           #2D241B;
-    --color-surface:     #FFFDF7;
-    --color-surface-2:   #F5EBD8;
-    --color-bg-elevated: #FFFDF7;
+    /* Surfaces — Claude desktop light: near-neutral page, white cards/composer. */
+    --bg-page:           #F9F9F8;
+    --bg-sidebar:        #F3F3F1;
+    --bg-card:           #FFFFFF;
+    --bg-input:          #FFFFFF;
+    --bg-key:            #EDEDEA;
+    --bg-send:           #C6613F;
+    --bg-tooltip:        #141413;
+    --color-surface:     #FFFFFF;
+    --color-surface-2:   #EDEDEA;
+    --color-bg-elevated: #FFFFFF;
 
     /* Borders */
-    --border-soft:         #E7DCBF;
-    --border-card:         #D9CFA9;
-    --color-border-subtle: #E7DCBF;
-    --color-border:        #D9CFA9;
-    --color-border-strong: #B8A47E;
+    --border-soft:         #E6E6E3;
+    --border-card:         #DCDCD8;
+    --color-border-subtle: #E6E6E3;
+    --color-border:        #DCDCD8;
+    --color-border-strong: #BDBDB8;
 
     /* Text */
-    --color-text:           #1A1714;
-    --color-text-2:         #4B3E32;
-    --color-text-muted:     #6E604F;
-    --color-text-subtle:    #7A6A54; /* AA-compliant on --bg-page (≥4.5:1) */
-    --color-text-on-accent: #FFFDF7;
-    --fg-primary:           #1F1A14;
-    --fg-secondary:         #4B3E32;
-    --fg-muted:             #6E604F;
+    --color-text:           #141413;
+    --color-text-2:         #3B3B39;
+    --color-text-muted:     #5C5C59;
+    --color-text-subtle:    #6E6E6A; /* AA-compliant on --bg-page (≥4.5:1) */
+    --color-text-on-accent: #FFFFFF;
+    --color-text-on-tooltip: #F9F9F8;
+    --fg-primary:           #141413;
+    --fg-secondary:         #3B3B39;
+    --fg-muted:             #5C5C59;
 
-    /* Accent (UI) */
-    --color-accent:  #3F3429;
-    --color-overlay: rgba(26, 23, 20, 0.40);
+    /* Accent (UI) — Claude clay */
+    --color-accent:  #C6613F;
+    --color-overlay: rgba(20, 20, 19, 0.40);
 
     /* Agent chips */
     --accent-blue:        #5AA8E2;
@@ -283,14 +292,19 @@
     --color-diff-del-text:  #991B1B;
 
     /* Syntax */
-    --color-syn-comment:  #6E604F;
+    --color-syn-comment:  #73726C;
     --color-syn-keyword:  #7C3AED;
     --color-syn-function: #026F9E;
     --color-syn-variable: #B91C1C;
     --color-syn-string:   #15803D;
     --color-syn-number:   #A16207;
     --color-syn-type:     #B45309;
-    --color-syn-operator: #4B3E32;
+    --color-syn-operator: #3D3D3A;
+
+    /* Inline code in prose — Claude's coral on a soft tint */
+    --color-code-inline:  #B9472A;
+    --bg-code-inline:     rgba(20, 20, 19, 0.04);
+    --border-code-inline: rgba(20, 20, 19, 0.08);
 
     /* Focus + depth (see dark-mode comment) */
     --focus-ring:   var(--accent-blue);
@@ -321,6 +335,8 @@
   body {
     background-color: var(--bg-page);
     color: var(--color-text);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   html {
     @apply font-sans;
@@ -805,6 +821,25 @@ html[data-mobile-shell][data-vp-anim] .settings-modal-shell {
   animation: thinking-dot 1400ms var(--ease-in-out) infinite;
 }
 
+/* Working spark — the asterisk grows and shrinks (see SparkSpinner). The
+ * resting glyph is the fullest one, which is what reduced motion shows. */
+@keyframes spark-glyph {
+  0%   { content: '·'; }
+  10%  { content: '✢'; }
+  20%  { content: '✳'; }
+  30%  { content: '✶'; }
+  40%  { content: '✻'; }
+  50%  { content: '✽'; }
+  60%  { content: '✻'; }
+  70%  { content: '✶'; }
+  80%  { content: '✳'; }
+  90%  { content: '✢'; }
+}
+.spark-spinner::before {
+  content: '✻';
+  animation: spark-glyph 1.2s steps(1, end) infinite;
+}
+
 /* Tool-call row — dispatched tool just joined the transcript. */
 @keyframes tool-row-enter {
   from { transform: translateY(8px); opacity: 0; }
@@ -914,13 +949,13 @@ html[data-app-hidden="true"] *::after {
 }
 .oa-prose li { margin-bottom: 0.25em; }
 .oa-prose code {
-  background: var(--bg-key);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xs);
-  padding: 0.15em 0.4em;
+  background: var(--bg-code-inline);
+  border: 1px solid var(--border-code-inline);
+  border-radius: var(--radius-sm);
+  padding: 0.1em 0.35em;
   font-size: 0.85em;
   font-family: var(--font-mono);
-  color: var(--color-syn-string);
+  color: var(--color-code-inline);
 }
 .oa-prose pre {
   overflow-x: auto;
@@ -949,7 +984,7 @@ html[data-app-hidden="true"] *::after {
   height: auto;
   max-width: 100%;
   margin-inline: auto;
-  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif !important;
+  font-family: var(--font-sans) !important;
 }
 
 .oa-mermaid-diagram .node rect,
@@ -961,7 +996,7 @@ html[data-app-hidden="true"] *::after {
 
 .oa-mermaid-diagram text,
 .oa-mermaid-diagram .label {
-  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif !important;
+  font-family: var(--font-sans) !important;
 }
 
 .oa-mermaid-lightbox-content {
@@ -1061,6 +1096,20 @@ html[data-app-hidden="true"] *::after {
   animation: drag-card-enter 200ms var(--ease-spring-soft) forwards;
 }
 .oa-prose strong { color: var(--color-text); font-weight: 600; }
+
+/* Assistant replies match the Claude desktop app: the UI sans at 16px,
+ * regular weight. Code (inline and fenced) keeps --font-mono. */
+.oa-assistant-text .oa-prose {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.6;
+}
+.oa-assistant-text .oa-prose h1,
+.oa-assistant-text .oa-prose h2,
+.oa-assistant-text .oa-prose h3 {
+  font-weight: 600;
+}
 .oa-prose em     { color: var(--color-text-2); font-style: italic; }
 
 /* ─────────────────────────────────────────────────────────────

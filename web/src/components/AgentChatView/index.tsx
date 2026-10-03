@@ -366,7 +366,9 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
   }, [sessionIdState, clearPlan, pushToast])
   const providersQ = useProvidersQuery()
   const hasConfiguredModelProvider = providersQ.data?.providers.some(
-    (provider) => provider.kind !== 'local' && provider.is_configured,
+    // Local daemons don't count as a configured provider, except Claude Code,
+    // which runs on the user's own Claude login.
+    (provider) => (provider.kind !== 'local' || provider.id === 'claude-code') && provider.is_configured,
   ) ?? true
 
   // Lead capabilities — used to drive composer affordances (slash menu).

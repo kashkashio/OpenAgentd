@@ -39,6 +39,8 @@ import type {
   SessionInteractionMode,
   MemberProfile,
   SubagentsResponse,
+  WorkspaceSettings,
+  WorkspaceSettingsUpdate,
 } from '../types'
 
 export async function postAgentChat(
@@ -184,6 +186,23 @@ export async function browseWorkspaces(path?: string | null): Promise<WorkspaceB
 export async function getCodingWorkspaceTree(): Promise<CodingWorkspaceTreeResponse> {
   const res = await fetch(`${apiBaseUrl()}/agent/workspace/tree`)
   if (!res.ok) await parseDetailOrThrow(res, 'getCodingWorkspaceTree')
+  return res.json()
+}
+
+export async function getWorkspaceSettings(workspace: string): Promise<WorkspaceSettings> {
+  const params = new URLSearchParams({ workspace })
+  const res = await fetch(`${apiBaseUrl()}/agent/workspace/settings?${params}`)
+  if (!res.ok) await parseDetailOrThrow(res, 'getWorkspaceSettings')
+  return res.json()
+}
+
+export async function putWorkspaceSettings(update: WorkspaceSettingsUpdate): Promise<WorkspaceSettings> {
+  const res = await fetch(`${apiBaseUrl()}/agent/workspace/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  })
+  if (!res.ok) await parseDetailOrThrow(res, 'putWorkspaceSettings')
   return res.json()
 }
 
