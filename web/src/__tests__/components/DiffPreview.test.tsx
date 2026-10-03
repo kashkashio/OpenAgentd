@@ -20,7 +20,7 @@ mock.module('lucide-react', () => ({
   Copy: Icon, Download: Icon, ExternalLink: Icon, File: Icon, FileText: Icon,
   Folder: Icon, FolderOpen: Icon, GitCompare: Icon, Loader2: Icon, Plus: Icon,
   Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon,
-  TerminalSquare: Icon, Undo2: Icon, X: Icon,
+  TerminalSquare: Icon, Eraser: Icon, Undo2: Icon, X: Icon,
 }))
 mock.module('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => false }))
 mock.module('framer-motion', () => ({
@@ -48,6 +48,17 @@ async function renderDiff(diff: string) {
 }
 
 describe('DiffPreview content parsing', () => {
+  it('renders long diffs in skippable blocks without per-row sticky gutters', async () => {
+    // Rows wrap, so nothing scrolls sideways; a sticky gutter on every row
+    // only made scrolling ~6x costlier in Chrome.
+    const lines = Array.from({ length: 450 }, (_, i) => `+line ${i}`)
+    const { container } = await renderDiff(['diff --git a/x b/x', '--- a/x', '+++ b/x', '@@ -0,0 +1,450 @@', ...lines].join('\n'))
+    const blocks = [...container.querySelectorAll('[data-line-block]')]
+    expect(blocks.map((b) => b.querySelectorAll('pre').length)).toEqual([200, 200, 50])
+    expect(container.querySelector('.sticky')).toBeNull()
+    expect(contentRows(container).at(-1)).toEqual(['450', 'line 449'])
+  })
+
   it('renders removed/added lines whose content starts with -- or ++', async () => {
     // Old file: ---, title: hello, ---, body, counter--;  (5 lines)
     // New file: title: hello, body2, counter++;           (3 lines)

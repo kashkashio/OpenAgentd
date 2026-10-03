@@ -624,6 +624,8 @@ export const FloatingInputComposer = memo(
             renderDragHandle={() => (
             <button
               type="button"
+              // Mouse-only: dragging has no keyboard form, so no Tab stop.
+              tabIndex={-1}
               aria-label="Drag input bar (double-click to reset position)"
               title="Drag to move · Double-click to reset"
               onPointerDown={(e) => dragControls.start(e)}

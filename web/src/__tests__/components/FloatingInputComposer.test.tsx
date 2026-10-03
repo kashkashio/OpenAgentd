@@ -283,6 +283,9 @@ describe('FloatingInputComposer', () => {
     const expandButton = screen.getByRole('button', { name: 'Expand input bar' })
     expect(document.activeElement).toBe(expandButton)
     expect(screen.getByLabelText('Message input').getAttribute('disabled')).not.toBeNull()
+    // Handed-back focus is not keyboard-steered: no ring until the user
+    // arrows or tabs on (the quiet flag clears on blur).
+    expect(expandButton.hasAttribute('data-quiet-focus')).toBe(true)
   })
 
   it('minimizes when Escape is pressed while the input is focused', async () => {

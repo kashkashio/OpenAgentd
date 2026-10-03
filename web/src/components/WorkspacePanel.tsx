@@ -11,6 +11,11 @@
  *
  * Tab state lives in ``useDockTabs`` and Git write actions in
  * ``useGitActions``; this component owns the queries and the layout.
+ *
+ * Once opened, the shell keeps the dock mounted: closing it (``open``
+ * false) tweens it shut and then parks it hidden and inert, so its tabs,
+ * the last active tab, preview pages and their unsent comments, and scroll
+ * positions are all there when it reopens. Queries pause while it is closed.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
@@ -31,11 +36,11 @@ import {
   workspaceDiffQueryOptions,
 } from '@/queries/workspace-git'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
-import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/ResizableAside'
+import { PanelResizeHandle, ResizableAside, settledWidthBesidePanels, type LiveWidth } from '@/components/ResizableAside'
 import { useClaimStrandedFocus } from '@/hooks/use-dock-focus'
+import { focusQuietly } from '@/lib/focus/quiet'
 import { useElementWidth } from '@/hooks/use-element-width'
 import { usePlatform } from '@/hooks/use-platform'
-import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
 import {
   DOCK_MIN_WIDTH,
   dockMaxWidth,
@@ -44,6 +49,7 @@ import {
 } from '@/lib/workbench-layout'
 import { useGitPanelStore, DEFAULT_WORKSPACE_STATE } from '@/stores/useGitPanelStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
+import { useUIStore } from '@/stores/useUIStore'
 import type { SessionPlan, TodoItem, WorkspaceFileInfo } from '@/api/types'
 import { type PreviewTarget, closePreview, isLocalBackend, lastPreviewUrl } from '@/api/preview'
 import { EASINGS } from '@/lib/motion'
@@ -67,6 +73,7 @@ import { PreviewTabView } from './Preview/PreviewTabView'
 import type { DesignFeedback } from '@/lib/design-feedback'
 import { SchedulerDockView } from './SchedulerPanel/SchedulerDockView'
 import { DockTabBar } from './WorkspacePanel/DockTabBar'
+import { DockLauncher } from './WorkspacePanel/DockLauncher'
 import { DockActionMenus, type CommitActionTarget } from './WorkspacePanel/DockActionMenus'
 import { CloseTerminalDialog } from './WorkspacePanel/CloseTerminalDialog'
 import { useGitActions } from './WorkspacePanel/useGitActions'
@@ -96,6 +103,8 @@ const EMPTY_TODOS: TodoItem[] = []
 const DEFAULT_PREVIEW_URL = 'http://localhost:5173'
 /** Stable empty ref: with no center element the width falls back to the viewport. */
 const NO_CENTER: React.RefObject<HTMLElement | null> = { current: null }
+/** A closed dock parks (hidden, inert) once its close tween (0.22 s) is done. */
+const PARK_AFTER_MS = 260
 
 function parseGraph(graph: string): ParsedGraphLine[] {
   if (!graph) return []
@@ -137,6 +146,7 @@ export function WorkspacePanel({
   onAddComment,
   onSendPreviewComments,
   chatWorkspace = false,
+  onRequestClose,
 }: {
   workspace: string
   open: boolean
@@ -182,6 +192,8 @@ export function WorkspacePanel({
    * home-sized repo nor offers whole-home discard/revert actions.
    */
   chatWorkspace?: boolean
+  /** Closes the dock: ⌘W on the empty launcher. */
+  onRequestClose?: () => void
 }) {
   const prefersReducedMotion = useReducedMotion()
   const { os } = usePlatform()
@@ -212,13 +224,19 @@ export function WorkspacePanel({
     openDiffTab,
     openCommitTab,
     openPreviewTab,
+    openGitTab,
     openTerminal,
+    moveTab,
     closeTab,
-    confirmCloseTabId,
+    closeOtherTabs,
+    closeTabsToRight,
+    confirmCloseOpen,
+    confirmCloseTitles,
     confirmCloseTab,
     cancelCloseTab,
   } = useDockTabs({
     workspace,
+    open,
     chatWorkspace,
     onFileSelect,
     terminalOpenKey,
@@ -231,6 +249,11 @@ export function WorkspacePanel({
     previewRequest,
     handledPreviewRequestKeyRef,
     onTabClosed: handleTabClosed,
+    focusTab: (id) => requestAnimationFrame(() => {
+      const button = tabButtonRefs.current.get(id)
+      if (button) focusQuietly(button)
+    }),
+    onCloseDock: onRequestClose,
   })
   const [mobileFileActions, setMobileFileActions] = useState<ChangedFileInfo | null>(null)
   const [mobileCommitActions, setMobileCommitActions] = useState<CommitActionTarget | null>(null)
@@ -240,11 +263,28 @@ export function WorkspacePanel({
   const commitsScrollRef = useRef<HTMLDivElement>(null)
   const pendingScrollShaRef = useRef<string | null>(null)
   const handledFileOpenKeyRef = useRef(-1)
+  // Closed and done animating: hidden and inert until it opens again. Not
+  // inert at once, so the shell can still see focus inside it and return it.
+  const [parked, setParked] = useState(false)
+  useEffect(() => {
+    if (open) {
+      setParked(false)
+      return
+    }
+    const timer = window.setTimeout(() => setParked(true), PARK_AFTER_MS)
+    return () => window.clearTimeout(timer)
+  }, [open])
+  // Whether the open or close tween (mounting counts as opening) is still
+  // running. Only then, and while closed, is the body pinned to the open
+  // width; any other width change moves the body with the dock's edge.
+  const [toggle, setToggle] = useState({ open, running: true })
+  if (toggle.open !== open) setToggle({ open, running: true })
+  const settleToggle = () => setToggle((current) => (current.running ? { ...current, running: false } : current))
 
   // ── Geometry ───────────────────────────────────────────────────────────────
   const dockRatio = useLayoutStore((s) => s.dockRatio)
   const dockMaximized = useLayoutStore((s) => s.dockMaximized)
-  const measuredCenter = useElementWidth(centerRef)
+  const measuredCenter = useElementWidth(centerRef, settledWidthBesidePanels)
   const center = centerWidth ?? measuredCenter
   const layout = resolveDockLayout({ centerWidth: center, ratio: dockRatio, maximized: dockMaximized })
   const overlay = !mobile && layout.mode === 'overlay'
@@ -255,25 +295,31 @@ export function WorkspacePanel({
     edge: 'left' as const,
     onCommit: (width: number) => useLayoutStore.getState().setDockRatio(ratioFromWidth(width, center)),
     onReset: () => useLayoutStore.getState().resetDockRatio(),
-    disabled: mobile || overlay,
+    disabled: mobile || overlay || !open,
     label: 'Resize review dock',
   }
   // Desktop always animates width (instantly while dragging or under reduced
-  // motion) so the aside is sized even when motion is off.
+  // motion) so the aside is sized even when motion is off. Closed, it tweens
+  // to nothing while the body keeps its open width (clipped, not reflowed).
   const dockMotion = ({ width, isResizing }: LiveWidth) => ({
-    animate: !mobile
-      ? { width: overlay ? layout.width : width }
-      : prefersReducedMotion
-        ? { opacity: 1 }
-        : mobileDragOffset !== null ? { opacity: 1, x: mobileDragOffset } : { opacity: 1, x: 0 },
+    animate: !open
+      ? (mobile ? { opacity: 0 } : { width: 0 })
+      : !mobile
+        ? { width: overlay ? layout.width : width }
+        : prefersReducedMotion
+          ? { opacity: 1 }
+          : mobileDragOffset !== null ? { opacity: 1, x: mobileDragOffset } : { opacity: 1, x: 0 },
     transition: mobile && mobileDragOffset !== null
       ? { duration: 0 }
       : { duration: isResizing || prefersReducedMotion ? 0.01 : 0.22, ease: EASINGS.inOut },
+    pinWidth: !mobile && (!open || toggle.running) ? (overlay ? layout.width : width) : undefined,
   })
   // The toggle is meaningless while a narrow window already forces overlay.
   const maximizeState = mobile || (overlay && !dockMaximized) ? null : dockMaximized
-  // Covering the chat makes it inert, which drops its focus onto <body>.
-  useClaimStrandedFocus(overlay, activeTabId, () => tabButtonRefs.current.get(activeTabId) ?? null)
+  // Covering the chat makes it inert, which drops its focus onto <body>:
+  // take it on the active tab, or the launcher's first row when empty.
+  useClaimStrandedFocus(open && overlay, activeTabId, () =>
+    tabButtonRefs.current.get(activeTabId) ?? document.querySelector<HTMLElement>('[data-dock-launcher] button'))
 
   // ── Server state ──────────────────────────────────────────────────────────
   const files = useQuery({
@@ -478,8 +524,6 @@ export function WorkspacePanel({
     },
   })
 
-  if (!open) return null
-
   const reviewView = (
     <div className="flex h-full min-h-0 flex-col">
       {diff.data?.is_git_repo && (
@@ -557,6 +601,8 @@ export function WorkspacePanel({
       exit={mobile ? { opacity: 0 } : { width: 0 }}
       resize={dockResize}
       getMotion={dockMotion}
+      onAnimationComplete={settleToggle}
+      pinContentWidth
       className={cn(
         'fixed bottom-0 right-0 z-40 min-h-0 w-full overflow-hidden border-l border-(--color-border) bg-(--bg-page) shadow-xl md:w-auto md:shadow-none',
         // Overlay covers the chat column (kept mounted underneath); side mode
@@ -565,10 +611,12 @@ export function WorkspacePanel({
           ? 'md:absolute md:inset-y-0 md:right-0 md:z-20'
           : 'md:relative md:inset-y-auto md:right-auto md:z-auto md:shrink-0',
         mobile ? 'mobile-safe-top max-w-none' : 'h-full',
+        !open && 'pointer-events-none',
+        parked && 'invisible',
       )}
     >
-      <div data-review-dock className="relative flex h-full min-h-0 w-full flex-col">
-        {!mobile && !overlay && <PanelResizeHandle edge="left" />}
+      <div data-review-dock data-dock-parked={parked || undefined} inert={parked} className="relative flex h-full min-h-0 w-full flex-col">
+        {!mobile && !overlay && open && <PanelResizeHandle edge="left" />}
         <DockTabBar
           tabs={visibleTabs}
           activeTabId={activeTabId}
@@ -582,6 +630,9 @@ export function WorkspacePanel({
           }}
           onActivate={setActiveTabId}
           onClose={closeTab}
+          onCloseOthers={closeOtherTabs}
+          onCloseToRight={closeTabsToRight}
+          onMove={moveTab}
           onNewTerminal={openTerminal}
           onNewPreview={previewsAvailable ? openNewPreview : undefined}
           onRefresh={handleRefresh}
@@ -600,7 +651,7 @@ export function WorkspacePanel({
                 onPreviewId={handlePreviewId}
                 onSendComments={onSendPreviewComments}
                 onOpenTarget={openPreviewTarget}
-                active={activeTab?.id === tab.id}
+                active={open && activeTab?.id === tab.id}
                 onRequestClose={closeTab}
               />
             </div>
@@ -619,7 +670,9 @@ export function WorkspacePanel({
           ) : activeTab?.type === 'commit' ? (
             <CommitTabView key={activeTab.id} workspace={workspace} commit={activeTab.commit} />
           ) : activeTab?.type === 'terminal' ? (
-            <TerminalSubPanel key={activeTab.termId} termId={activeTab.termId} workspace={workspace} />
+            // Unmounted while closed: the session lives in the terminal store,
+            // and a hidden terminal detaches so the idle reaper can close it.
+            open ? <TerminalSubPanel key={activeTab.termId} termId={activeTab.termId} workspace={workspace} /> : null
           ) : activeTab?.type === 'tasks' ? (
             <TasksTabView todos={todos} sessionId={sessionId} plan={plan} onClearPlan={onClearPlan} onOpenPlan={() => openTab(PLAN_TAB)} />
           ) : activeTab?.type === 'plan' ? (
@@ -628,19 +681,20 @@ export function WorkspacePanel({
             <SchedulerDockView contextWorkspace={chatWorkspace ? null : workspace} />
           ) : activeTab?.type === 'preview' ? (
             null
-          ) : chatWorkspace ? (
-            <div className="flex h-full items-center justify-center px-4">
-              <p className="max-w-56 text-center text-xs text-(--color-text-subtle)">
-                Open a file with{' '}
-                <span className="font-medium text-(--color-text-muted)">{shortcutLabel(APP_SHORTCUTS.quickOpen, os)}</span>{' '}
-                or start a terminal.
-              </p>
-            </div>
-          ) : null}
+          ) : (
+            <DockLauncher
+              os={os}
+              onOpenGit={chatWorkspace ? undefined : openGitTab}
+              onOpenTerminal={openTerminal}
+              onOpenPreview={previewsAvailable ? openNewPreview : undefined}
+              onOpenFile={mobile ? undefined : () => useUIStore.getState().openQuickOpen('')}
+            />
+          )}
         </div>
         <CloseTerminalDialog
-          open={confirmCloseTabId !== null}
-          title={visibleTabs.find((tab) => tab.id === confirmCloseTabId)?.title ?? 'This terminal'}
+          open={confirmCloseOpen}
+          title={confirmCloseTitles.length > 0 ? confirmCloseTitles.join(', ') : 'This terminal'}
+          count={confirmCloseTitles.length}
           onConfirm={confirmCloseTab}
           onCancel={cancelCloseTab}
         />

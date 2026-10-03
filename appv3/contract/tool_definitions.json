@@ -495,7 +495,7 @@
                   "type": "string"
                 },
                 "options": {
-                  "description": "List of 2 to 5 selectable choices. Omit for freeform text only.",
+                  "description": "List of 2 to 5 selectable choices. Omit for freeform text only. The user can always type their own answer, so never add a catch-all option.",
                   "items": {
                     "properties": {
                       "label": {
@@ -527,11 +527,6 @@
                 "multiple": {
                   "default": false,
                   "description": "Allow the user to select more than one choice.",
-                  "type": "boolean"
-                },
-                "custom": {
-                  "default": true,
-                  "description": "Adds a 'Type your own answer' option. Leave true unless the choices are exhaustive; never write your own catch-all option.",
                   "type": "boolean"
                 }
               },

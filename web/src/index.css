@@ -1,6 +1,5 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "katex/dist/katex.min.css";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
 /* Bundled Nerd Font icons fallback — mobile fix (see nerd-font-icons.css). */
@@ -384,21 +383,65 @@ html[data-mobile-shell] [contenteditable="true"]:focus {
   animation: blink_input_opacity_to_prevent_scrolling_when_focus 0.01s;
 }
 
-html[data-mobile-shell] body {
+/* App shells (mobile, and the desktop app via lib/desktop-shell.ts): UI
+ * chrome is not text, so dragging across it never highlights it. Content
+ * people copy stays selectable. */
+html[data-mobile-shell] body,
+html[data-shell="desktop"] body {
   -webkit-user-select: none;
   user-select: none;
 }
 
-html[data-mobile-shell] input,
-html[data-mobile-shell] textarea,
-html[data-mobile-shell] [contenteditable="true"],
-html[data-mobile-shell] .selectable-text,
-html[data-mobile-shell] .oa-prose,
-html[data-mobile-shell] .oa-prose *,
-html[data-mobile-shell] pre,
-html[data-mobile-shell] code {
+html:is([data-mobile-shell], [data-shell="desktop"]) :is(
+  input,
+  textarea,
+  [contenteditable="true"],
+  .selectable-text,
+  .oa-prose,
+  .oa-prose *,
+  pre,
+  code,
+  .xterm,
+  [data-select-container]
+) {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* Desktop app: the arrow cursor on controls (links keep the hand), no
+ * dragging links or images out of the window, and a muted look while
+ * another app has focus — native windows hide the focus ring and grey out
+ * selections then. */
+html[data-shell="desktop"] body {
+  cursor: default;
+}
+html[data-shell="desktop"] :is(button, [role="button"], [role="tab"], summary, label) {
+  cursor: default;
+}
+html[data-shell="desktop"] :is(img, a) {
+  -webkit-user-drag: none;
+}
+html[data-shell="desktop"][data-window-inactive] :focus-visible {
+  outline-color: transparent;
+}
+/* The ring shows only while the keyboard drives the app, whatever moved focus
+ * (lib/desktop-shell.ts). Focus itself stays put, so Tab and arrows continue
+ * from it. Text fields keep their focus styles: a clicked field is where
+ * typing goes. Unlayered, so it wins over Tailwind's focus-visible:ring-*. */
+html[data-shell="desktop"]:not([data-input-modality="keyboard"]) :focus-visible:not(input, textarea, select, [contenteditable="true"]) {
+  outline-color: transparent;
+  --tw-ring-color: transparent;
+  --tw-ring-offset-color: transparent;
+}
+html[data-shell="desktop"][data-window-inactive] ::selection {
+  background-color: var(--bg-key);
+}
+html[data-shell="desktop"][data-window-inactive] [aria-current]:not([aria-current="false"]) {
+  color: var(--color-text-muted);
+}
+
+::selection {
+  background-color: var(--accent-blue-soft);
 }
 
 /* Legibility floor — 11px minimum for tiny utility text on EVERY shell.
@@ -766,6 +809,16 @@ html[data-mobile-shell][data-vp-anim] .settings-modal-shell {
   overflow-anchor: none;
 }
 
+/* Long line lists (file viewer, diffs) render in blocks of lines. Offscreen
+ * blocks skip layout and paint: 8k rows lay out in ~10 ms instead of
+ * ~120 ms in Chrome. ``auto`` keeps each block's real size once rendered;
+ * the variable is only the first estimate. Find-in-page and copy still
+ * reach skipped content. */
+.oa-line-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--oa-line-block-height, 4000px);
+}
+
 /* From md up the timeline scrubber (AgentView/TimelineScrubber) is the
  * transcript's scrollbar; a native one would sit under the same edge. */
 @media (width >= 48rem) {
@@ -869,12 +922,13 @@ html[data-mobile-shell][data-vp-anim] .settings-modal-shell {
 }
 
 /* ─────────────────────────────────────────────────────────────
- * Font-weight transition — signature interaction.
+ * Font-weight on hover/press — signature interaction.
  * Apply to buttons, nav items, tabs, menu items. Not prose.
+ * Not transitioned: animating font-weight re-lays-out the text on every
+ * frame of the transition.
  * ───────────────────────────────────────────────────────────── */
 .interactive-weight {
   font-weight: 400;
-  transition: font-weight var(--motion-fast) var(--ease-in-out);
 }
 .interactive-weight:hover  { font-weight: 500; }
 .interactive-weight:active { font-weight: 600; }
@@ -968,49 +1022,6 @@ html[data-app-hidden="true"] *::after {
   padding: 0;
   font-size: 0.85em;
   color: var(--color-text);
-}
-
-.oa-prose .oa-mermaid-diagram {
-  max-width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 1rem 0.75rem;
-  display: flex;
-  justify-content: center;
-}
-
-.oa-prose .oa-mermaid-diagram svg {
-  display: block;
-  height: auto;
-  max-width: 100%;
-  margin-inline: auto;
-  font-family: var(--font-sans) !important;
-}
-
-.oa-mermaid-diagram .node rect,
-.oa-mermaid-diagram .node circle,
-.oa-mermaid-diagram .node polygon {
-  rx: var(--radius-xs);
-  ry: var(--radius-xs);
-}
-
-.oa-mermaid-diagram text,
-.oa-mermaid-diagram .label {
-  font-family: var(--font-sans) !important;
-}
-
-.oa-mermaid-lightbox-content {
-  touch-action: pan-x pan-y;
-  -webkit-overflow-scrolling: touch;
-}
-
-.oa-mermaid-lightbox-content svg {
-  max-width: 100% !important;
-  max-height: 100% !important;
-  width: auto !important;
-  height: auto !important;
-  display: block;
-  margin-inline: auto;
 }
 
 .oa-prose a {
@@ -1147,6 +1158,11 @@ html[data-app-hidden="true"] *::after {
   outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
 }
+/* Focus given by a click or a tab switch, not steered by keyboard; see
+ * focusQuietly in lib/focus/quiet.ts. Clears on blur. */
+[data-quiet-focus]:focus-visible {
+  outline: none;
+}
 :where(input, textarea):focus,
 :where(input, textarea):focus-visible {
   outline: none;
@@ -1173,18 +1189,17 @@ html[data-app-hidden="true"] *::after {
   }
 }
 
-/* Transcript find: highlight the matched substring only. */
-mark[data-transcript-find] {
-  background: var(--accent-orange-soft);
-  color: inherit;
-  border-radius: 2px;
-  padding: 0 0.08em;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+/* Transcript find: the matched substrings, and the one jumped to (CSS Custom
+ * Highlight API; see AgentView/transcript-find-highlight.ts). Highlights take
+ * no box styles, so the active match is told apart by an underline. */
+::highlight(transcript-find) {
+  background-color: var(--accent-orange-soft);
 }
-mark[data-transcript-find][data-transcript-find-active] {
-  background: color-mix(in srgb, var(--accent-orange) 42%, var(--accent-orange-soft));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-orange-text) 40%, transparent);
+::highlight(transcript-find-active) {
+  background-color: color-mix(in srgb, var(--accent-orange) 42%, var(--accent-orange-soft));
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-orange-text) 60%, transparent);
+  text-decoration-thickness: 2px;
 }
 
 /* Plan review: passages with a comment, and the one just jumped to

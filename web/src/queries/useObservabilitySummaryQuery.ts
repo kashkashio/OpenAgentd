@@ -5,7 +5,7 @@ import { queryKeys } from './keys'
 export function useObservabilitySummaryQuery(
   days: number,
   filters: ObservabilityFilters = {},
-  { refetchInterval }: { refetchInterval?: number } = {},
+  { refetchInterval, enabled = true }: { refetchInterval?: number; enabled?: boolean } = {},
 ) {
   const normalized = {
     workspace: filters.workspace ?? null,
@@ -18,6 +18,7 @@ export function useObservabilitySummaryQuery(
     // Span aggregates evolve slowly; refresh on manual navigation only.
     staleTime: 60_000,
     refetchInterval,
+    enabled,
     // Changing a filter keeps the previous numbers on screen until the new
     // window lands instead of flashing the loading skeleton.
     placeholderData: keepPreviousData,

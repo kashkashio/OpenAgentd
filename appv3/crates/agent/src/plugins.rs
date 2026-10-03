@@ -230,7 +230,7 @@ where
                 break;
             }
             let mut rebuilt = call.clone();
-            rebuilt.function.arguments = appv3_core::pyjson::dumps(&args);
+            rebuilt.function.arguments = args.to_string();
             call = rebuilt;
         }
         entered.push((i, args));

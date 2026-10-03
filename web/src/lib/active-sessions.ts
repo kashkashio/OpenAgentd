@@ -15,3 +15,11 @@ function topLevelSessions(data: InfiniteData<SessionPageResponse> | undefined): 
     (session) => !session.parent_session_id && Boolean(session.workspace),
   )
 }
+
+/**
+ * Whether any session, subagents included, is making model calls. A session
+ * waiting on the user reports `running` too, but spends nothing.
+ */
+export function sessionsSpending(data: InfiniteData<SessionPageResponse> | undefined): boolean {
+  return (data?.pages ?? []).some((page) => page.data.some((s) => s.running === true && s.needs_input !== true))
+}

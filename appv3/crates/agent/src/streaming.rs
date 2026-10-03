@@ -413,7 +413,9 @@ pub struct StreamArgs<'a> {
     pub interrupt: Option<&'a Event>,
     pub hard_cancel: Option<&'a Event>,
     pub system_prompt: &'a str,
-    pub messages: &'a [ChatMessage],
+    /// The request window, owned: the wire list is built around it without
+    /// another copy of the history.
+    pub messages: Vec<ChatMessage>,
     pub tool_defs: &'a [Value],
     pub provider: Arc<dyn LlmProvider>,
     pub label: &'a str,
@@ -426,6 +428,18 @@ async fn wait_opt(e: Option<&Event>) {
         Some(e) => e.wait().await,
         None => futures::future::pending::<()>().await,
     }
+}
+
+/// Cap outgoing images at `images::MAX_IMAGE_EDGE` for every provider (old
+/// history included). The turn and the summarizer both send through this, so
+/// their requests stay byte-identical and share the prompt cache.
+pub async fn fit_request_images(messages: Vec<ChatMessage>, label: &str) -> Vec<ChatMessage> {
+    let t = Instant::now();
+    let (messages, resized) = appv3_providers::images::fit_request(messages).await;
+    if resized > 0 {
+        tracing::info!("llm_request_images_resized model={label} count={resized} ms={}", t.elapsed().as_millis());
+    }
+    messages
 }
 
 /// `stream_and_assemble`.
@@ -443,9 +457,11 @@ pub async fn stream_and_assemble(a: StreamArgs<'_>) -> Result<(AssistantMessage,
     let mut first_output: Option<(Instant, Instant)> = None;
     let mut last_output: Option<Instant> = None;
 
-    let mut wire = vec![ChatMessage::system(a.system_prompt)];
-    wire.extend(a.messages.iter().cloned());
+    let mut wire = Vec::with_capacity(a.messages.len() + 1);
+    wire.push(ChatMessage::system(a.system_prompt));
+    wire.extend(a.messages);
     let wire = merge_consecutive_user_messages(wire);
+    let wire = fit_request_images(wire, a.label).await;
     let effective_interrupt = if a.provider.support_interrupt() { a.interrupt.cloned() } else { None };
     let tools = if a.tool_defs.is_empty() { None } else { Some(a.tool_defs) };
     let mut kwargs = Kwargs::new();
@@ -790,7 +806,6 @@ mod tests {
         });
         let ctx = ctx();
         let state = AgentState::new(vec![], String::new());
-        let messages = vec![ChatMessage::user("hi")];
         let (msg, _, timing) = stream_and_assemble(StreamArgs {
             ctx: &ctx,
             state: &state,
@@ -798,7 +813,7 @@ mod tests {
             interrupt: None,
             hard_cancel: None,
             system_prompt: "",
-            messages: &messages,
+            messages: vec![ChatMessage::user("hi")],
             tool_defs: &[],
             provider,
             label: "mock:mock",
@@ -823,5 +838,52 @@ mod tests {
         // Everything in one burst: no rate to speak of.
         assert_eq!(t(5).output_tokens_per_second(500), None);
         assert_eq!(StreamTiming::default().output_tokens_per_second(40), None);
+    }
+
+    /// Old history with an oversized image reaches the provider shrunk;
+    /// the agent's own copy of the history is left untouched.
+    #[tokio::test]
+    async fn requests_cap_history_images_for_every_provider() {
+        use appv3_providers::images::{dimensions_b64, fixtures};
+        use appv3_providers::ContentBlock;
+        let mock = Arc::new(MockProvider::new(vec![MockProvider::text("seen")]));
+        let provider: Arc<dyn LlmProvider> = mock.clone();
+        let big = ContentBlock::ImageData { data: fixtures::b64(&fixtures::png(2600, 1200)).into(), media_type: "image/png".into() };
+        let messages = vec![
+            ChatMessage::user("look"),
+            ChatMessage::Assistant(AssistantMessage { tool_calls: Some(vec![ToolCall::new("c1", "read", "{}")]), ..Default::default() }),
+            ChatMessage::Tool {
+                content: Some("[Image: a.png]".into()),
+                tool_call_id: "c1".into(),
+                name: Some("read".into()),
+                parts: Some(vec![big.clone()]),
+                meta: Default::default(),
+            },
+        ];
+        let ctx = ctx();
+        let state = AgentState::new(vec![], String::new());
+        let (msg, _, _) = stream_and_assemble(StreamArgs {
+            ctx: &ctx,
+            state: &state,
+            hooks: &[],
+            interrupt: None,
+            hard_cancel: None,
+            system_prompt: "sys",
+            messages: messages.clone(),
+            tool_defs: &[],
+            provider,
+            label: "mock:mock",
+            agent_name: "lead",
+            agent_id: "lead-id",
+        })
+        .await
+        .unwrap();
+        assert_eq!(msg.content.as_deref(), Some("seen"));
+        let calls = mock.calls.lock().unwrap();
+        let sent = calls[0].0.iter().find_map(|m| if let ChatMessage::Tool { parts: Some(p), .. } = m { Some(p.clone()) } else { None }).unwrap();
+        let ContentBlock::ImageData { data, .. } = &sent[0] else { panic!("image") };
+        assert_eq!(dimensions_b64(data), Some((2000, 923)));
+        let ChatMessage::Tool { parts: Some(p), .. } = &messages[2] else { panic!() };
+        assert_eq!(p[0], big);
     }
 }

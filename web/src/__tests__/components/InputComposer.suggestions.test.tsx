@@ -7,6 +7,7 @@
  *  2. On desktop: menus use `position: absolute` relative to the parent input wrapper.
  *  3. Coordinates adapt to the selected platform (fixed uses visual viewport, absolute uses parent-relative).
  */
+import { Profiler } from "react"
 import { describe, it, expect, afterEach, mock, beforeEach } from "bun:test"
 import { render, screen, cleanup, act } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
@@ -352,5 +353,60 @@ describe("InputComposerSuggestions — visualViewport resize", () => {
 
     Object.defineProperty(window, "visualViewport", { value: undefined, configurable: true })
     cleanupMobile()
+  })
+})
+
+// ── 5. scroll handling ─────────────────────────────────────────────────────
+
+describe("InputComposerSuggestions — scroll handling", () => {
+  let cleanupDesktop: () => void
+  beforeEach(() => {
+    cleanupDesktop = mockIsMobile(false)
+  })
+  afterEach(() => {
+    cleanupDesktop()
+  })
+
+  const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+
+  it("measures the input once per frame however many scroll events arrive", async () => {
+    await openMentionPicker()
+    await nextFrame()
+    const original = Element.prototype.getBoundingClientRect
+    let measures = 0
+    Element.prototype.getBoundingClientRect = function () {
+      measures++
+      return original.call(this)
+    }
+    try {
+      for (let i = 0; i < 10; i++) window.dispatchEvent(new Event("scroll"))
+      expect(measures).toBe(0)
+      await act(async () => { await nextFrame() })
+      expect(measures).toBe(1)
+    } finally {
+      Element.prototype.getBoundingClientRect = original
+    }
+  })
+
+  it("does not re-render when a scroll leaves the input where it was", async () => {
+    let commits = 0
+    const user = userEvent.setup()
+    render(
+      <Profiler id="composer" onRender={() => { commits++ }}>
+        <InputComposer onSubmit={() => {}} fileRefs={fixtures} />
+      </Profiler>,
+    )
+    await user.type(screen.getByLabelText("Message input"), "@")
+    await act(async () => { await nextFrame() })
+    // React may render once more before it starts bailing out of an
+    // identical state update, so warm up with one scroll first.
+    window.dispatchEvent(new Event("scroll"))
+    await act(async () => { await nextFrame() })
+    const before = commits
+    for (let i = 0; i < 3; i++) {
+      window.dispatchEvent(new Event("scroll"))
+      await act(async () => { await nextFrame() })
+    }
+    expect(commits).toBe(before)
   })
 })

@@ -1,14 +1,18 @@
 import { memo, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { ChevronDown, ChevronUp, Paperclip, Pencil } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { useHeldMessagesStore } from '@/stores/useHeldMessagesStore'
+import { useToastStore } from '@/stores/useToastStore'
 import type { MessageAttachment } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { designFeedbackPlainText } from '@/lib/design-feedback'
+import { confirmedIdSet } from '@/utils/blocks'
 
 const QUEUED_COLLAPSE_LINES = 10
 const QUEUED_COLLAPSE_CHARS = 700
+const NO_IDS: string[] = []
 
 function QueuedAttachmentList({ attachments }: { attachments: MessageAttachment[] }) {
   return (
@@ -81,8 +85,20 @@ function QueuedBubble({ content, attachments, label, onEdit }: {
   content: string
   attachments?: MessageAttachment[]
   label: string
-  onEdit: () => void
+  onEdit: () => void | Promise<void>
 }) {
+  // A steer's edit waits for the server's cancel; a second click meanwhile
+  // would cancel it twice.
+  const [busy, setBusy] = useState(false)
+  const edit = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await onEdit()
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="group flex justify-end">
       <div className="flex max-w-full flex-col items-end gap-1.5 md:max-w-[78%]">
@@ -92,7 +108,8 @@ function QueuedBubble({ content, attachments, label, onEdit }: {
             <TooltipTrigger
               render={
                 <button
-                  onClick={onEdit}
+                  onClick={() => { void edit() }}
+                  disabled={busy}
                   aria-label="Edit queued message"
                   className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-(--color-text-muted) opacity-100 transition-colors hover:bg-(--bg-key) hover:text-(--color-text) md:h-6 md:w-6 md:opacity-70 md:group-hover:opacity-100"
                 >
@@ -120,28 +137,35 @@ function restoreDraft(content: string, files?: File[]) {
 export const PendingMessageQueue = memo(function PendingMessageQueue() {
   const allMessages = useAgentStore((s) => s._pendingMessages)
   const sessionId = useAgentStore((s) => s.sessionId)
-  // `agentStreams` is replaced on every SSE flush. Subscribe to it only while
-  // something is queued; the empty-queue case (almost always) must not
-  // re-render — and re-flatten every block — per token on a phone WebView.
-  const agentStreams = useAgentStore((s) => (s._pendingMessages.length === 0 ? undefined : s.agentStreams))
+  // `agentStreams` is replaced on every SSE flush, so select only which
+  // queued ids a stream already shows: a token that changes nothing here must
+  // not re-render the queue (or re-scan the session) on a phone WebView. By
+  // id only: a queued message always has its server id, and matching text
+  // hid any steer the session had already sent once ("continue").
+  const shownIds = useAgentStore(
+    useShallow((s) => {
+      if (s._pendingMessages.length === 0) return NO_IDS
+      const streams = Object.values(s.agentStreams)
+      return s._pendingMessages
+        .filter((msg) => streams.some((st) => confirmedIdSet(st.blocks).has(msg.id) || st.currentBlocks.some((b) => b.id === msg.id)))
+        .map((msg) => msg.id)
+    }),
+  )
 
-  const messages = useMemo(() => {
-    if (allMessages.length === 0) return []
-    const allBlocks = agentStreams
-      ? Object.values(agentStreams).flatMap((s) => [...s.blocks, ...s.currentBlocks])
-      : []
-    const activeIds = new Set(allBlocks.map((b) => b.id))
-    const activeUserContents = new Set(
-      allBlocks.filter((b) => b.type === 'user').map((b) => b.content.trim()),
-    )
-    return allMessages.filter((msg) => {
-      if (msg.sessionId && sessionId && msg.sessionId !== sessionId) return false
-      if (activeIds.has(msg.id)) return false
-      if (activeUserContents.has((msg.content || '').trim())) return false
-      return true
-    })
-  }, [allMessages, sessionId, agentStreams])
+  const messages = useMemo(
+    () =>
+      allMessages.filter((msg) => {
+        if (msg.sessionId && sessionId && msg.sessionId !== sessionId) return false
+        return !shownIds.includes(msg.id)
+      }),
+    [allMessages, sessionId, shownIds],
+  )
   const removePendingMessage = useAgentStore((s) => s.removePendingMessage)
+  // A steer still queued after a failed turn (its files are on another
+  // device, so it was not handed back) has no running turn to read it.
+  const turnFailed = useAgentStore((s) => (
+    !s.isAgentWorking && Boolean(s.leadName) && s.agentStreams?.[s.leadName as string]?.status === 'error'
+  ))
   const allHeld = useHeldMessagesStore((s) => s.messages)
   const held = useMemo(() => allHeld.filter((msg) => msg.sessionId === sessionId), [allHeld, sessionId])
 
@@ -154,11 +178,19 @@ export const PendingMessageQueue = memo(function PendingMessageQueue() {
           key={msg.id}
           content={msg.content}
           attachments={msg.attachments}
-          // The backend hands it to the agent before its next model call.
-          label="Read before the next step"
-          onEdit={() => {
-            restoreDraft(msg.content, msg.files)
-            removePendingMessage(msg.id)
+          // The backend hands it to the agent before its next model call, or
+          // ahead of the next message once the turn has failed.
+          label={turnFailed ? 'Sends with your next message' : 'Read before the next step'}
+          onEdit={async () => {
+            const outcome = await removePendingMessage(msg.id)
+            if (outcome === 'cancelled') restoreDraft(msg.content, msg.files)
+            else if (outcome === 'sent') {
+              useToastStore.getState().push({
+                tone: 'info',
+                title: 'Already sent to the agent',
+                description: 'It reached the agent before it could be edited.',
+              })
+            }
           }}
         />
       ))}

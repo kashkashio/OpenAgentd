@@ -31,6 +31,8 @@ interface UseAgentCommandsArgs {
   /** Opens scheduled tasks (dock Schedule tab with a workspace, overlay otherwise). */
   toggleScheduler: () => void
   handleWorkspaceFiles: () => void
+  /** Project workspaces only: opens or shows the dock's Git tab. */
+  handleOpenGit?: () => void
   handleSidebarToggle: () => void
 
   // Session
@@ -54,6 +56,7 @@ export function useAgentCommands({
   toggleTasks,
   toggleScheduler,
   handleWorkspaceFiles,
+  handleOpenGit,
   handleSidebarToggle,
   handleNewSession,
   handleOpenTerminal,
@@ -83,7 +86,10 @@ export function useAgentCommands({
         }]
       : []),
     { id: 'find-transcript',  group: 'View',       label: 'Find in Transcript', description: 'Search user and assistant text in this session', shortcut: shortcutLabel(KEYS.findInTranscript, os), action: handleFindInTranscript },
-    { id: 'workspace-files',  group: 'View',       label: 'Open Changed & Files', description: 'Browse changed files and workspace files', shortcut: shortcutLabel(KEYS.workspaceFiles, os), action: handleWorkspaceFiles },
+    { id: 'workspace-files',  group: 'View',       label: 'Toggle Review Dock', description: 'Show or hide the dock with its open tabs', keywords: 'changed files dock panel', shortcut: shortcutLabel(KEYS.workspaceFiles, os), action: handleWorkspaceFiles },
+    ...(handleOpenGit
+      ? [{ id: 'open-git', group: 'View' as const, label: 'Open Git', description: 'Changed files and commit history in the review dock', keywords: 'changes diff history commits review', shortcut: shortcutLabel(KEYS.openGit, os), action: handleOpenGit }]
+      : []),
     ...(handleToggleDockMaximized
       ? [{ id: 'maximize-dock', group: 'View' as const, label: 'Maximize Review Dock', description: 'Give the review dock the full width for diffs, files, and terminals', shortcut: shortcutLabel(KEYS.maximizeDock, os), action: handleToggleDockMaximized }]
       : []),
@@ -121,5 +127,5 @@ export function useAgentCommands({
     ...(isTauri
       ? [{ id: 'reload-window', group: 'View', label: 'Reload Window', description: 'Reload the app UI (the server and running turns are unaffected)', action: () => window.location.reload() }]
       : []),
-  ], [os, isTauri, toggleAgentCapabilities, toggleTasks, toggleScheduler, handleFindInTranscript, handleWorkspaceFiles, handleToggleDockMaximized, handleOpenPlan, planAwaitingReview, handleOpenPreview, handleSidebarToggle, handleNewSession, handleOpenTerminal, openSettings, setTheme, readerMode, toggleReaderMode])
+  ], [os, isTauri, toggleAgentCapabilities, toggleTasks, toggleScheduler, handleFindInTranscript, handleWorkspaceFiles, handleOpenGit, handleToggleDockMaximized, handleOpenPlan, planAwaitingReview, handleOpenPreview, handleSidebarToggle, handleNewSession, handleOpenTerminal, openSettings, setTheme, readerMode, toggleReaderMode])
 }

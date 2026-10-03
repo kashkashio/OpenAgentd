@@ -1,139 +1,76 @@
-# Debug reference: Frontend (web UI)
+# Debug reference: web UI (`web/`)
 
-Use when the symptom is in the React app — rendering, state, hooks, API calls, or live UI behavior.
-
----
+Use for rendering, state, hooks, API calls, and live UI behavior. The same
+code runs in the browser and both Tauri shells.
 
 ## Evidence commands
 
 ```bash
 cd web
-
-bun run typecheck          # TypeScript errors across all source
-bun run lint               # ESLint (catches unused vars, hook rules, a11y)
-bun test --reporter=verbose  # full test suite
-bun test <path/to/test>    # focused test file
+bun run typecheck                                  # tsc -b: app + tests
+bun run lint                                       # oxlint --type-aware
+bun test --parallel src/__tests__/<path>.test.tsx  # focused
+bun run test                                       # full suite (parallel)
 ```
 
-For live UI issues (visual regression, interaction bugs, DOM/CSS state) use browser-skill (`bsk`) to drive the real UI — see the **Live UI verification** section below.
+## Live UI
 
----
+Run `make dev` (API :8000 + Vite :5173). Sessions open at
+`http://localhost:5173/<session-id>` (dashed UUID); other routes are `/coding`,
+`/telemetry`, and `/scheduler` (`src/router.ts`).
+
+- **Preview tool** (in-app): `preview` with `action: 'open'` on the Vite URL, then
+  `snapshot`, `click`, `fill`, `press`, `inspect`, and `logs` for console errors.
+  It acts only while the user has the Preview tab open; a hidden tab reports a
+  0×0 viewport, so layout values are not meaningful then.
+- **browser-skill (`bsk`)**, when available, drives the user's own browser and can
+  take screenshots: `bsk session start`, `bsk navigate`, `bsk observe`, `bsk click`,
+  `bsk evaluate`, `bsk console`.
+- Neither shows true iOS WKWebView rendering, frame rate, or soft-keyboard timing.
+
+Hard-won rules: the floating composer starts minimized on desktop (press
+**Expand input bar** first); fill controlled inputs through the tool, never by
+setting `.value` in script; scope selectors to `#main`, because the sidebar and
+chat both have scroll containers.
 
 ## File map
 
 ```
 web/src/
-  components/            UI components
-    ui/                  Zero-dep primitives (button, dialog, sheet, popover,
-                           dropdown, tooltip, switch, tabs — no shadcn/Base UI/CVA)
-      _use-deferred-unmount.ts  Exit-animation hook; must be called before any return null
-    AgentView/
-      UserBubble.tsx     User message bubble (mention highlighting, collapse, copy)
-    InboxBubble.tsx      Inter-agent inbox messages
-    InputBar.tsx         Composer (file attach, mentions, submit)
-    FloatingInputBar.tsx Floating variant
-    ToolCall/            Tool call display components
-    …
-  hooks/                 React hooks (session, streaming, settings, …)
-  stores/                Zustand stores (session, UI, pending messages, …)
-  queries/               TanStack Query factories (sessions, agents, messages)
-  api/                   Typed API client + generated types
-  utils/
-    markdown.tsx         MarkdownBlock renderer, smooth-streams while isStreaming
-  routes/                TanStack Router pages
-  __tests__/             Vitest + RTL tests — mirror the component path
+  components/
+    ui/                     primitives (button, dialog, popover, dropdown, tooltip, tabs, inline-title-input, …)
+    AgentChatView/          chat screen: header, overlays (useOverlayState), session bootstrap
+    AgentView/ AgentView.tsx   transcript; UserBubble.tsx renders mentions and design feedback cards
+    InputComposer*.ts(x)    composer: mentions, suggestions, attachments, delivery menu
+    FloatingInputComposer.tsx
+    WorkspacePanel/         review dock: tab bar, drag reorder (useTabDrag), Git, commits
+    Terminal/  Preview/     terminal tabs, Preview tab and design comments
+  stores/                   Zustand (useAgentStore/ with sse-reducer.ts, terminal, UI, file reveal, …)
+  queries/                  TanStack Query factories
+  api/                      typed client and wire types (api/types.ts)
+  lib/                      keyboard dispatcher, design-feedback, focus helpers, desktop-shell
+  utils/                    markdown renderer, file-refs (path:line links), code highlight
+  routes/ router.ts         TanStack Router
+  __tests__/                bun test + Testing Library, mirroring src/
 ```
 
----
+## Failure boundaries
 
-## Common failure boundaries
-
-| Boundary | What to inspect |
+| Boundary | Inspect |
 |---|---|
-| Render bug | Component file + its `__tests__/` counterpart |
-| State desync | Zustand store (`stores/`) + TanStack Query key factory |
-| API shape mismatch | `api/types.ts`, query/mutation in `queries/` |
-| Hook misfire | Custom hook in `hooks/` + React rules (StrictMode double-invoke) |
-| CSS / layout | Tailwind classes, `index.css` design tokens, dark-mode variants |
-| UI primitive bug | `components/ui/*.tsx`; check portal positioning, `useDeferredUnmount` hook order, `tw-animate-css` classes |
-| Streaming / SSE | `hooks/` streaming hook, `stores/` pending message queue |
-| Mention / file ref | `InputBar.mentions.ts`, `UserBubble.tsx` → `renderMentionSegments` |
+| Render bug | the component and its `__tests__/` counterpart |
+| State desync | the Zustand store, the TanStack Query key, `cache-invalidation-bridge.ts` |
+| Wire shape | `api/types.ts`, the query or mutation, and what the backend actually stored |
+| Streaming / SSE | `stores/useAgentStore/sse-reducer.ts`, `appv3/contract/sse_events.json` |
+| Mentions and file refs | `InputComposer.mentions.ts`, `UserBubble.tsx`, `utils/file-refs.ts`, `useOverlayState.ts` |
+| Keyboard and focus | `lib/keyboard/`, `hooks/use-dock-focus.ts`, `lib/desktop-shell.ts` |
+| Primitive bug | `components/ui/*.tsx`: portal positioning, `useDeferredUnmount` called before early returns |
+| CSS / layout | Tailwind classes, `index.css` tokens, dark-mode variants, `DESIGN.md` |
 
----
+## Platform differences
 
-## Tauri-aware patterns in the frontend
-
-Some behaviors differ between **web browser** and **Tauri webview**:
-
-- **Opening URLs externally** — in a browser use `window.open(url, '_blank')`; in Tauri use `@tauri-apps/plugin-opener` → `openUrl`. Detect with `window.__TAURI_INTERNALS__` or the `isTauri()` helper.
-- **File system access** — only available via Tauri commands, not the browser File API.
-- **Auth token injection** — desktop injects `X-Desktop-Token` via the Tauri sidecar handshake; web relies on cookie/session.
-
----
-
-## Verification
-
-```bash
-cd web
-bun run typecheck
-bun run lint
-bun test --reporter=verbose
-```
-
----
-
-## Live UI verification (browser-skill / bsk)
-
-Use when you need real rendered state: focus/keyboard behavior, layout, scroll position, component state transitions, console errors.
-
-- **CAN verify:** rendered DOM, computed CSS, live JS state, click/type/key interactions, console errors, screenshots.
-- **CANNOT verify:** true iOS WKWebView rendering, 60fps smoothness, real soft-keyboard timing (desktop Chromium only).
-
-### Preconditions
-
-```bash
-lsof -ti:5173 >/dev/null 2>&1 && echo up || echo down
-# if down:
-cd web && bun dev   # background; wait for :5173
-bsk doctor
-```
-
-### Core loop
-
-```bash
-bsk session start --json                                      # retain session_id <id>
-bsk navigate "http://localhost:5173/cockpit" --session <id>   # /cockpit = real chat UI
-bsk observe --session <id>                                    # discover @eN element refs
-bsk click @e3 --session <id>
-bsk fill @e3 --value "..." --session <id>
-bsk evaluate "<expression returning string>" --session <id>
-bsk screenshot --session <id> --out "$(pwd)/.openagentd/screenshots/<name>.png"
-bsk session stop <id>
-```
-
-### Hard-won rules
-
-- **Controlled React inputs:** use `click` then `fill` — do NOT set `textarea.value` via `evaluate`.
-- **Composer starts minimized on desktop.** Click `Expand input bar` first.
-- **`evaluate` must return a string/number.** Wrap objects with `JSON.stringify(...)`. Use an IIFE for multi-statement expressions.
-- **Scope selectors** — `.overflow-y-auto` exists in sidebar AND chat. Use `document.getElementById('main').querySelector(...)`.
-- **Screenshots need absolute paths.** Use `$(pwd)/...`.
-
-### Diagnostics and console
-
-Use `bsk console --session <id>` for console logs directly, or evaluate:
-
-```
-bsk console --session <id>
-```
-
-### Focus / keyboard / mobile spoofing
-
-```bash
-# Focus check after toggle:
-bsk evaluate "document.querySelector('textarea').getAttribute('aria-label') + '|active=' + (document.activeElement && document.activeElement.getAttribute('aria-label'))" --session <id>
-
-# Spoof mobile keyboard (viewport shrinks to 460px):
-bsk evaluate "document.documentElement.setAttribute('data-mobile-shell','ios'); document.documentElement.style.setProperty('--app-vh','460px'); ''" --session <id>
-bsk evaluate "const e=document.querySelector('.mobile-viewport'); e ? getComputedStyle(e).height : 'no .mobile-viewport'" --session <id>  # PASS: 460px
-```
+- Desktop-only and mobile-only behavior goes through the platform hooks
+  (`hooks/use-platform.ts`, `lib/desktop-shell.ts`); open external URLs with the
+  Tauri opener in the shells, `window.open` in the browser.
+- The desktop shell injects its token through the sidecar handshake; the browser
+  talks to the API directly (an access key when one is configured).

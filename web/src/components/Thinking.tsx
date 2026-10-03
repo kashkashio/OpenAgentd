@@ -25,7 +25,7 @@ export function Thinking({ content, isStreaming = false }: ThinkingProps) {
   const sections = splitSections(smoothedContent)
 
   return (
-    <div className="my-2 min-w-0 space-y-2 font-mono text-xs leading-relaxed text-(--color-text-2) [overflow-wrap:anywhere]">
+    <div className="selectable-text my-2 min-w-0 space-y-2 font-mono text-xs leading-relaxed text-(--color-text-2) [overflow-wrap:anywhere]">
       {sections.map((s, i) => (
         <div key={i} className="min-w-0">
           {s.header && (

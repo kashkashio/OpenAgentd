@@ -5,6 +5,7 @@ import App from './App.tsx'
 import { AppErrorBoundary } from './components/AppErrorBoundary'
 import { installDesktopAuth } from './api/auth'
 import { initBackgroundThrottle } from './lib/background-throttle'
+import { installDesktopShell } from './lib/desktop-shell'
 import { initTheme } from './lib/theme'
 
 // Install the desktop session token interceptor *before* any other module
@@ -12,6 +13,7 @@ import { initTheme } from './lib/theme'
 installDesktopAuth()
 initBackgroundThrottle()
 initTheme()
+installDesktopShell()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

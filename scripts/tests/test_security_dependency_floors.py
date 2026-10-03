@@ -21,17 +21,24 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 def test_web_lock_pins_patched_mcp_sdk_without_reintroducing_react_plugin_break() -> (
     None
 ):
-    """MCP SDK is patched while Vite React plugin remains on the compatible major."""
+    """Any MCP SDK v1 copy is patched; Vite React plugin stays on the compatible major.
+
+    The web app moved to ``@modelcontextprotocol/client``/``core`` v2 and no
+    longer depends on ``@modelcontextprotocol/sdk``. A direct dependency or a
+    transitive copy that comes back must still be at least 1.26.0.
+    """
     package_json = json.loads((ROOT / "web/package.json").read_text())
-    mcp_sdk_version = package_json["dependencies"]["@modelcontextprotocol/sdk"]
-    assert _version_tuple(mcp_sdk_version) >= _version_tuple("1.26.0")
+    direct = package_json["dependencies"].get("@modelcontextprotocol/sdk")
+    if direct is not None:
+        assert _version_tuple(direct.lstrip("^~")) >= _version_tuple("1.26.0")
     assert _version_tuple(
         package_json["devDependencies"]["@vitejs/plugin-react"]
     ) >= _version_tuple("6.0.3")
 
     lock_text = (ROOT / "web/bun.lock").read_text()
-    assert f'"@modelcontextprotocol/sdk": "{mcp_sdk_version}"' in lock_text
-    assert f'"@modelcontextprotocol/sdk@{mcp_sdk_version}"' in lock_text
+    locked = re.findall(r'"@modelcontextprotocol/sdk@([0-9][^"]*)"', lock_text)
+    for version in locked:
+        assert _version_tuple(version) >= _version_tuple("1.26.0"), version
 
 
 def test_desktop_lock_keeps_patched_tar_version() -> None:

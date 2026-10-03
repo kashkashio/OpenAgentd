@@ -170,11 +170,18 @@ pub async fn file_response(path: &Path, req_headers: &HeaderMap, o: FileOpts<'_>
         let (s, e) = ranges[0];
         h.insert(header::CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {}-{}/{size}", s, e - 1)).unwrap());
         h.insert(header::CONTENT_LENGTH, HeaderValue::from(e - s));
-        let data = match read_range(s, e).await {
-            Ok(d) => d,
+        // Stream the slice: browsers open media with `bytes=0-`, which
+        // would otherwise read the whole file into memory first.
+        let opened = async {
+            let mut f = tokio::fs::File::open(path).await?;
+            f.seek(std::io::SeekFrom::Start(s)).await?;
+            Ok::<_, std::io::Error>(f.take(e - s))
+        };
+        let slice = match opened.await {
+            Ok(f) => f,
             Err(err) => return crate::error::ApiError::internal(err).into_response(),
         };
-        let mut r = Response::new(Body::from(data));
+        let mut r = Response::new(Body::from_stream(tokio_util::io::ReaderStream::with_capacity(slice, 64 * 1024)));
         *r.status_mut() = StatusCode::PARTIAL_CONTENT;
         *r.headers_mut() = h;
         return r;
@@ -202,4 +209,66 @@ fn rand_byte() -> u8 {
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
     let c = uuid::Uuid::new_v4();
     c.as_bytes()[(n % 16) as usize]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    const OPTS: FileOpts<'static> = FileOpts { media_type: "video/mp4", filename: None, disposition: "inline", extra_headers: &[] };
+
+    fn fixture(len: usize) -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
+        let dir = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        let path = dir.path().join("clip.mp4");
+        std::fs::write(&path, &data).unwrap();
+        (dir, path, data)
+    }
+
+    async fn get(path: &Path, range: &str) -> Response {
+        let mut h = HeaderMap::new();
+        h.insert(header::RANGE, HeaderValue::from_str(range).unwrap());
+        file_response(path, &h, OPTS).await
+    }
+
+    async fn bytes(r: Response) -> Vec<u8> {
+        r.into_body().collect().await.unwrap().to_bytes().to_vec()
+    }
+
+    #[tokio::test]
+    async fn single_ranges_return_the_requested_slice() {
+        let (_d, path, data) = fixture(10_000);
+        for (range, s, e) in [("bytes=2-5", 2usize, 6usize), ("bytes=9000-", 9000, 10_000), ("bytes=-3", 9997, 10_000), ("bytes=0-99999", 0, 10_000)] {
+            let r = get(&path, range).await;
+            assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT, "{range}");
+            assert_eq!(r.headers()[header::CONTENT_RANGE], format!("bytes {}-{}/10000", s, e - 1), "{range}");
+            assert_eq!(r.headers()[header::CONTENT_LENGTH], (e - s).to_string(), "{range}");
+            assert_eq!(bytes(r).await, data[s..e], "{range}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_open_ended_range_is_streamed_not_read_into_memory() {
+        // `Range: bytes=0-` is how browsers open every <video>. A buffered
+        // body knows its exact size up front; a streamed one does not.
+        let (_d, path, data) = fixture(3 << 20);
+        let r = get(&path, "bytes=0-").await;
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(axum::body::HttpBody::size_hint(r.body()).exact(), None);
+        assert_eq!(bytes(r).await, data);
+    }
+
+    #[tokio::test]
+    async fn multi_ranges_and_bad_ranges_keep_their_responses() {
+        let (_d, path, data) = fixture(100);
+        let r = get(&path, "bytes=0-1,10-11").await;
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+        assert!(r.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("multipart/byteranges; boundary="));
+        let body = bytes(r).await;
+        assert!(body.windows(2).any(|w| w == &data[10..12]));
+        let r = get(&path, "bytes=500-").await;
+        assert_eq!(r.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(r.headers()[header::CONTENT_RANGE], "bytes */100");
+    }
 }

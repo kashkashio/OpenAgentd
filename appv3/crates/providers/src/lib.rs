@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod factory;
 pub mod google;
 pub mod grok;
+pub mod images;
 pub mod js_plugin;
 pub mod mock;
 pub mod oauth;

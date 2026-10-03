@@ -205,4 +205,89 @@ describe('applyCacheInvalidations — coding_workspace_paths', () => {
 
     expect(mockGetDiff).not.toHaveBeenCalled()
   })
+
+  it('keeps every path update when one batch carries several path events', async () => {
+    const client = new QueryClient()
+    client.setQueryData(queryKeys.coding.diff(WS), {
+      workspace: WS,
+      is_git_repo: true,
+      diff: 'diff --git a/foo b/foo\n+old-foo\n\ndiff --git a/bar b/bar\n+old-bar',
+      untracked: [],
+      truncated: false,
+    } satisfies WorkspaceGitDiffResponse)
+    mockGetDiff.mockImplementation((_ws: string, paths: string[]) =>
+      Promise.resolve({
+        workspace: WS,
+        is_git_repo: true,
+        diff: paths.map((p) => `diff --git a/${p} b/${p}\n+new-${p}`).join('\n'),
+        untracked: [],
+        truncated: false,
+      }),
+    )
+
+    applyCacheInvalidations(client, [
+      { kind: 'coding_workspace_paths', workspace: WS, paths: ['foo'] },
+      { kind: 'coding_workspace_paths', workspace: WS, paths: ['bar', 'foo'] },
+    ])
+    await flushMicrotasks()
+
+    expect(mockGetDiff).toHaveBeenCalledTimes(1)
+    expect(mockGetDiff).toHaveBeenCalledWith(WS, ['foo', 'bar'])
+    const after = client.getQueryData<WorkspaceGitDiffResponse>(queryKeys.coding.diff(WS))!
+    expect(after.diff).toContain('+new-foo')
+    expect(after.diff).toContain('+new-bar')
+    expect(after.diff).not.toContain('+old-')
+  })
+
+  it('invalidates each query key once per batch', async () => {
+    const client = new QueryClient()
+    const calls: { queryKey: readonly unknown[] }[] = []
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    client.invalidateQueries = ((args: any) => {
+      calls.push(args)
+      return Promise.resolve()
+    }) as any
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+
+    applyCacheInvalidations(client, [
+      { kind: 'coding_workspace_paths', workspace: WS, paths: ['a'] },
+      { kind: 'coding_workspace_paths', workspace: WS, paths: ['b'] },
+      { kind: 'coding_workspace_paths', workspace: WS, paths: ['c'] },
+      { kind: 'todos', sessionId: 's1' },
+      { kind: 'todos', sessionId: 's1' },
+    ])
+    await flushMicrotasks()
+
+    const keys = calls.map((c) => JSON.stringify(c.queryKey))
+    expect(keys.filter((k) => k === JSON.stringify(queryKeys.coding.files(WS)))).toHaveLength(1)
+    expect(keys.filter((k) => k === JSON.stringify(queryKeys.coding.status(WS)))).toHaveLength(1)
+    expect(keys.filter((k) => k === JSON.stringify(queryKeys.todos('s1')))).toHaveLength(1)
+  })
+
+  it('skips the scoped diff when the same batch refreshes the whole workspace', async () => {
+    const client = new QueryClient()
+    client.setQueryData(queryKeys.coding.diff(WS), {
+      workspace: WS,
+      is_git_repo: true,
+      diff: 'diff --git a/foo b/foo\n+x',
+      untracked: [],
+      truncated: false,
+    } satisfies WorkspaceGitDiffResponse)
+    const calls: { queryKey: readonly unknown[] }[] = []
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    client.invalidateQueries = ((args: any) => {
+      calls.push(args)
+      return Promise.resolve()
+    }) as any
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+
+    applyCacheInvalidations(client, [
+      { kind: 'coding_workspace_paths', workspace: WS, paths: ['foo'] },
+      { kind: 'coding_workspace', workspace: WS },
+    ])
+    await flushMicrotasks()
+
+    expect(mockGetDiff).not.toHaveBeenCalled()
+    expect(calls.map((c) => c.queryKey)).toContainEqual(queryKeys.coding.diff(WS))
+  })
 })

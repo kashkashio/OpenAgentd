@@ -194,7 +194,7 @@ pub fn extract_parts(content: Option<&Value>) -> Vec<ContentBlock> {
             Some("image") => {
                 let mime = mime_of(b);
                 match b.get("data").and_then(|d| d.as_str()).filter(|d| !d.is_empty()) {
-                    Some(data) => parts.push(ContentBlock::ImageData { data: data.to_string(), media_type: normalize_image_mime(mime.as_deref()) }),
+                    Some(data) => parts.push(ContentBlock::ImageData { data: data.into(), media_type: normalize_image_mime(mime.as_deref()) }),
                     None => parts.push(ContentBlock::text(format!("[image: {}]", mime.unwrap_or_else(|| "image/*".into())))),
                 }
             }
@@ -208,7 +208,7 @@ pub fn extract_parts(content: Option<&Value>) -> Vec<ContentBlock> {
                 }
                 match (blob, &mime) {
                     (Some(blob), Some(m)) if m.starts_with("image/") || !m.contains('/') => {
-                        parts.push(ContentBlock::ImageData { data: blob.to_string(), media_type: normalize_image_mime(Some(m)) })
+                        parts.push(ContentBlock::ImageData { data: blob.into(), media_type: normalize_image_mime(Some(m)) })
                     }
                     _ => match res.get("text").and_then(|t| t.as_str()).filter(|t| !t.is_empty()) {
                         Some(t) => parts.push(ContentBlock::text(t)),
@@ -289,6 +289,10 @@ pub struct McpTool {
     pub name: String,
     pub description: String,
     pub def: Value,
+    /// The model-facing definition. Sanitizing the input schema deep-clones it
+    /// several times; tool definitions are listed on every turn and agent
+    /// listing, and `def` never changes after connect, so build it once.
+    definition: Value,
     session: Weak<dyn SessionProvider>,
 }
 
@@ -301,7 +305,9 @@ impl McpTool {
             .filter(|d| !d.is_empty())
             .map(String::from)
             .unwrap_or_else(|| format!("Tool '{remote}' from MCP server '{server_name}'."));
-        McpTool { server_name: server_name.into(), name: format!("{server_name}_{remote}"), remote_name: remote, description, def, session }
+        let name = format!("{server_name}_{remote}");
+        let definition = json!({"type": "function", "function": {"name": name, "description": description, "parameters": sanitize_tool_schema(def.get("inputSchema"))}});
+        McpTool { server_name: server_name.into(), name, remote_name: remote, description, def, definition, session }
     }
 }
 
@@ -312,7 +318,7 @@ impl Tool for McpTool {
     }
 
     fn definition(&self) -> Value {
-        json!({"type": "function", "function": {"name": self.name, "description": self.description, "parameters": sanitize_tool_schema(self.def.get("inputSchema"))}})
+        self.definition.clone()
     }
 
     async fn run(&self, _ctx: &ToolContext, args: Value) -> ToolResult {
@@ -390,5 +396,27 @@ mod tests {
         let p = extract_parts(Some(&c));
         assert_eq!(p[1], ContentBlock::ImageData { data: "AAA".into(), media_type: "image/jpeg".into() });
         assert_eq!(p[2], ContentBlock::text("body"));
+    }
+
+    struct NoSession;
+    impl SessionProvider for NoSession {
+        fn client(&self) -> Option<Arc<McpClient>> {
+            None
+        }
+    }
+
+    #[test]
+    fn definition_names_the_tool_and_sanitizes_its_schema() {
+        let session: Arc<dyn SessionProvider> = Arc::new(NoSession);
+        let def = json!({"name": "search", "inputSchema": {"title": "T", "properties": {"q": {"title": "Q", "type": "string"}}}});
+        let tool = McpTool::new("docs", def, Arc::downgrade(&session));
+        assert_eq!(
+            tool.definition(),
+            json!({"type": "function", "function": {
+                "name": "docs_search",
+                "description": "Tool 'search' from MCP server 'docs'.",
+                "parameters": {"properties": {"q": {"type": "string"}}, "type": "object", "required": []},
+            }})
+        );
     }
 }

@@ -1,249 +1,141 @@
 ---
 name: oad/release
-description: OpenAgentd workflow for version bumps, release PRs, GitHub releases, and release notes.
+description: OpenAgentd release workflow — pick the version, bump every release file, ship the version PR, publish the CLI and desktop releases to one tag, and write user-facing release notes. Use when asked to cut, prepare, or publish a release.
 ---
 
-## Steps
+One version, one tag (`v<X.Y.Z>`), two publishing workflows. The
+`[workspace.package]` version in `appv3/Cargo.toml` is the single source of truth.
+Repository: `lthoangg/openagentd`.
 
-1. Version target:
-
-- Read the current version with `scripts/release_version.sh` (the `[workspace.package]` version in `appv3/Cargo.toml`).
-- Determine the bump from the actual diff content, not the branch name:
-  - **Feature or new capability**: bump minor, e.g. `1.0.0` -> `1.1.0`.
-  - **Bug fix, maintenance, docs, tests, or internal-only change**: bump patch, e.g. `1.0.0` -> `1.0.1`.
-  - **Patch-only releases stay patch-only**: continue incrementing the patch number, e.g. `1.0.5` -> `1.0.6`; do not bump minor just because there have been several patches.
-  - **Breaking change**: ask whether a major bump is intended.
-- Propose the calculated version and confirm with the user before applying it.
-- Branch prefix (`feat/`, `fix/`, `chore/`) is not signal — judge from diff content.
-
-2. Worktree check:
-
-- Stop if dirty.
+## 1. Pick the version
 
 ```bash
-git status --short
+scripts/release_version.sh                       # current version (e.g. 3.5.0)
+scripts/release_commits_since_last_tag.sh --stat # what ships
+git status --short                               # must be clean; stop if not
 ```
 
-3. Related GitHub issues:
+Judge from the diff, not branch names:
+- new capability → minor (`3.5.0` → `3.6.0`);
+- fixes, maintenance, docs, tests → patch (`3.5.0` → `3.5.1`); a run of patch releases stays patch;
+- breaking change → ask whether a major bump is intended.
 
-- Before confirming the release, search for issues related to the actual diff and intended release notes. Do not rely only on branch names or commit subjects.
+Propose the version and wait for the user to confirm.
+
+## 2. Issues and docs
 
 ```bash
-git branch --show-current
-git log --oneline --no-merges main..HEAD
-gh issue list --repo lthoangg/openagentd --state open --search "<keyword from diff or feature area>" --limit 20
-gh issue list --repo lthoangg/openagentd --state all --search "<keyword from diff or feature area> in:title,body" --limit 20
-gh issue view <issue-number> --repo lthoangg/openagentd --comments --json number,title,state,labels,body,comments
+gh issue list --repo lthoangg/openagentd --state open --search "<area from the diff>" --limit 20
 ```
 
-- Triage each related issue as **included/fixed**, **partially included**, **not included**, or **unrelated**.
-- If the release fully fixes or ships an issue, include `Fixes #<issue-number>` or `Closes #<issue-number>` in the release PR body so GitHub closes it on merge; use `Refs #<issue-number>` when the release is related but should not close it.
-- Tag included issues when useful for tracking. Prefer an existing milestone/label convention if present; otherwise create and apply a version label:
+- Triage related issues as fixed, partial, or unrelated. Fixed → `Fixes #<n>` in the
+  PR body; related but open → `Refs #<n>`. Comment on an issue when the link is not obvious.
+- User-visible changes need entries in `documents/docs/features.md` with this
+  version before the bump PR (see `oad/commit` for what belongs there). If none are
+  needed, say why in the PR body.
+
+## 3. Version PR
+
+Check CI on `main` first; do not bump on a red `main`:
 
 ```bash
-gh label create "included-in-v<version>" --repo lthoangg/openagentd --description "Included in v<version>" --color "0E8A16" || true
-gh issue edit <issue-number> --repo lthoangg/openagentd --add-label "included-in-v<version>"
+for wf in appv3.yml web.yml tauri.yml docs.yml; do gh run list --workflow=$wf --branch=main --limit=1; done
+gh run view <run-id> --log-failed   # when one failed
 ```
 
-- Add a short issue comment when the relationship is not obvious, especially for partial inclusion or when using `Refs` instead of `Fixes`:
+Then bump and verify:
 
 ```bash
-gh issue comment <issue-number> --repo lthoangg/openagentd --body "Included in the v<version> release PR: <pr-url>."
+scripts/bump_version.sh <version>   # or --from-file after editing appv3/Cargo.toml by hand
+make verify-version                 # versions and features.md metadata agree
 ```
 
-4. Documentation readiness:
-
-- Before confirming the release, inspect the canonical feature catalogue and README for user-visible changes.
-
-```bash
-git diff --name-only main..HEAD
-git diff --stat main..HEAD -- documents/docs/features.md README.md
-```
-
-- For user-visible features, behavior changes, install/update changes, or removed/deprecated functionality, update `documents/docs/features.md` first; it is the canonical feature catalogue.
-- Update `README.md` only when the product story or first-run setup changes.
-- Track future work, bugs, and roadmap changes in GitHub issues rather than repository roadmap or technical-debt documents.
-- Keep implementation, API, configuration, CLI, operation, UI details, and non-obvious rationale in source, tests, CLI help, and the UI; rely on git history for historical decisions.
-- If no documentation changes are needed, record the rationale in the release PR body (for example: `Docs: no user-facing behavior changed`).
-- Include required feature-catalogue or README updates in the feature branch before the version bump PR is created; do not leave release-blocking docs fixes until after publishing.
-
-5. Confirm release:
-
-> Ready to release **`<version>`**. Proceed? **(yes / no)**
-
-6. Version PR:
-
-- **Before bumping, verify CI is green on `main`.** Check both the `appv3` (Rust) and `Web` (lint + typecheck + tests) workflows on the latest commit:
+`bump_version.sh` updates `appv3/Cargo.toml` + lock, `web/package.json`, the desktop
+and mobile `tauri.conf.json` / `Cargo.toml` / `Cargo.lock`, and the `updated:` /
+`Latest release:` lines in `features.md`. Commit only those files:
 
 ```bash
-# Get the SHA of the commit you are about to release from
-git rev-parse HEAD
-
-# List the most recent runs of each CI workflow and confirm conclusion=success
-gh run list --workflow=appv3.yml --branch=main --limit=3
-gh run list --workflow=web.yml  --branch=main --limit=3
-
-# If either shows failure, inspect and fix before continuing:
-gh run view <run-id> --log-failed
-```
-
-- Do **not** proceed with the version bump if any required CI workflow is failing on `main`. Fix the failures first, push the fix to `main`, confirm CI goes green, then resume the release.
-- Reuse the existing feature branch when present; do not spin a fresh `release/` branch on top of it.
-- The `[workspace.package]` version in `appv3/Cargo.toml` is the **single source of truth** for release versioning.
-- Use the release helper to propagate that version to every release-facing file, refresh lockfiles, and update release docs metadata:
-
-```bash
-scripts/bump_version.sh <version>
-```
-
-- The helper updates and/or refreshes:
-  - `appv3/Cargo.toml`
-  - `appv3/Cargo.lock`
-  - `web/package.json`
-  - `desktop/src-tauri/tauri.conf.json`
-  - `desktop/src-tauri/Cargo.toml`
-  - `desktop/src-tauri/Cargo.lock`
-  - `mobile/src-tauri/tauri.conf.json`
-  - `mobile/src-tauri/Cargo.toml`
-  - `mobile/src-tauri/Cargo.lock`
-  - `documents/docs/features.md` (`updated:` and `Latest release:`)
-- **Why this matters:** the appv3 workspace version drives the tag name both release workflows use (`v<X.Y.Z>`) and the version the binary reports, while bundled artefacts and app metadata read from the Tauri/Cargo files, and CI also enforces `cargo check --locked` for desktop/mobile. The helper keeps those surfaces in sync instead of relying on manual multi-file edits.
-- Run the consistency check explicitly before committing if you want a standalone verification step:
-
-```bash
-scripts/check_version_consistency.sh
-```
-
-- Metadata-only title: `chore: bump version to <version>`.
-- User-facing change title: describe change, append range.
-- Example: `Fix frontend update restart (v0.3.3 -> v0.3.4)`.
-- PR body must be a bullet list summarizing the included user-facing changes, not a single generic sentence.
-
-```bash
-git add web/package.json \
-        desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml \
-        desktop/src-tauri/Cargo.lock \
-        mobile/src-tauri/tauri.conf.json mobile/src-tauri/Cargo.toml \
-        mobile/src-tauri/Cargo.lock \
-        appv3/Cargo.toml appv3/Cargo.lock \
-        documents/docs/features.md
-git commit -m "<release commit title>"
+git add appv3/Cargo.toml appv3/Cargo.lock web/package.json \
+  desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock \
+  mobile/src-tauri/tauri.conf.json mobile/src-tauri/Cargo.toml mobile/src-tauri/Cargo.lock \
+  documents/docs/features.md
+git commit -m "chore: bump version to <version>"
 git push -u origin <branch>
-gh pr create --title "<release PR title>" --body "<bullet-point release summary>" --base main
+gh pr create --base main --title "<title>" --body "<bullets>"
 ```
 
-- PR body shape:
+- Reuse the feature branch when there is one. Title: `chore: bump version to <version>`
+  for a metadata-only bump, otherwise the user-facing change with the range, e.g.
+  `Fix desktop update restart (v3.5.0 -> v3.5.1)`.
+- Body: one bullet per user-visible change, then the issue links, then
+  "Update backend, web, desktop, mobile, and lockfile versions to <version>."
+- Watch checks in this session (`gh pr checks <n> --watch`); version-check runs on
+  version files. Do not schedule background follow-ups.
+- Read review comments (`gh pr view <n> --comments`), fix valid ones on the branch,
+  answer false positives with a one-line reason, and re-check CI after each push.
+- Merge: `gh pr merge <n> --merge --delete-branch` (keep history; `--squash` only for a
+  single logical change). `--admin` bypasses branch protection: ask first.
 
-  ```markdown
-  Release PR for v<version>.
-
-  - Add or improve <user-visible outcome>.
-  - Fix <user-visible bug or behavior>.
-  - Update desktop, mobile, backend, web, and lockfile versions in lockstep to <version>.
-  ```
-
-- Watch CI in-session until it completes. Do **not** create scheduled reminders or background follow-up tasks; keep polling directly in the current release workflow:
-
-```bash
-gh pr checks <pr-number> --watch
-# or, if --watch is not suitable:
-gh pr checks <pr-number>
-```
-
-- Check PR review comments before merging:
-
-```bash
-gh pr view <pr-number> --comments --json comments,reviews
-gh api repos/lthoangg/openagentd/pulls/<pr-number>/comments \
-  --jq '.[] | "FILE: \(.path):\(.line // .original_line)\nAUTHOR: \(.user.login)\n---\n\(.body)\n==="'
-```
-
-- Triage each comment: apply valid ones as additional commits on the same branch, defer false-positives with a one-line rationale.
-- Re-poll CI after each push.
-- Merge PR:
-  - Default: `gh pr merge <pr-number> --merge --delete-branch --admin` to preserve the multi-commit history of the feature branch.
-  - Use `--squash` only when the branch is a single logical change (e.g. metadata-only bump).
-  - `--admin` is required when branch protection blocks solo-author PRs on `REVIEW_REQUIRED`; confirm with the user before using it.
-
-7. Merge and release notes:
-
-- After CI is green and comments are handled, merge the PR, then generate notes from `main`.
+## 4. Publish
 
 ```bash
 git checkout main && git pull --ff-only
-PREV_TAG=$(git describe --tags --abbrev=0 HEAD^)
-git log ${PREV_TAG}..HEAD --oneline --no-merges
+gh workflow run release.yml -f confirm=release        # creates v<version>, CLI archives (~5 min)
+gh run watch "$(gh run list --workflow=release.yml --limit=1 --json databaseId -q '.[0].databaseId')"
 ```
 
-- Skip commits unrelated to this branch's user-facing work (e.g. earlier docs-only commits that landed on `main` separately).
-- Tight, user-facing notes.
-- Prefer detailed bullets for `## What's changed`; one bullet per user-visible capability, fix, or behavior change.
-- Inspect each included commit's full message body, stats, and changed files before drafting bullets. Do not rely on commit subjects alone:
-
-  ```bash
-  git log ${PREV_TAG}..HEAD --format=fuller --no-merges
-  git show --stat --oneline <commit>...
-  git show --name-only --format=fuller <commit>...
-  ```
-
-- Group related commits into a single bullet when they ship one visible outcome, but split distinct outcomes even if they landed in the same area.
-- Skip version-bump commits.
-- Treat commit subjects as raw material.
-- Paraphrase; do not transcribe.
-- Lead with user-visible behavior change.
-- Avoid internals unless required to explain a fix.
-- Keep each bullet concise; include enough detail that users can tell what changed without reading the changelog.
-
-Sections:
-
-- `## Breaking Changes`: only if migration required. Include only the required migration steps.
-- `## What's changed`: bullet list of user-noticeable changes, grouped by outcome.
-- Installation and upgrade guidance belongs in the README, not the release notes. Link to the README only when readers need it to act on a breaking change.
-- End with `**Full changelog:** https://github.com/lthoangg/openagentd/compare/<prev>...<next>`.
-- Avoid `## Tests` section.
-- Avoid internal file paths.
-- Avoid marketing language.
-- Avoid restating section headings.
-
-8. Trigger CLI release:
-
-Both workflows publish into the **same** `v<X.Y.Z>` tag (introduced in
-1.0.9 — older releases used a separate `v<X.Y.Z>-desktop` tag). Whichever
-workflow runs first creates the release; the other appends artefacts via
-`gh release upload --clobber`. Run `release.yml` first so the canonical
-auto-generated notes and native CLI binaries attach to the tag first.
-
-```bash
-# CLI release (~3–5 minutes for native cross-platform build)
-gh workflow run release.yml --field confirm=release
-gh run list --workflow=release.yml --limit=3
-# Watch this workflow in-session until status=completed conclusion=success before continuing.
-```
-
-9. GitHub release notes:
-
-- After the CLI workflow creates the release and **before** starting the desktop workflow, draft concise, user-facing notes. Focus on `## What's changed`, adding `## Breaking Changes` only when migration is required. Keep installation and upgrade instructions in the README.
-- Write the drafted release notes to an OS temp path (for example `/tmp/release-notes-v<version>.md`), not to a file under the repository workspace. This keeps ad-hoc release artefacts out of the repo tree.
-- Replace the auto-generated notes from that `/tmp` file, then verify:
+Write the notes (step 5) and apply them before the desktop build:
 
 ```bash
 gh release edit v<version> --repo lthoangg/openagentd --notes-file /tmp/release-notes-v<version>.md
-gh release view v<version> --repo lthoangg/openagentd | sed -n '/## What.s changed/,/Full changelog/p'
+gh workflow run release-desktop.yml -f confirm=release-desktop -f channel=stable   # ~25 min
 ```
 
-10. Trigger desktop release:
+- `release-desktop.yml` also takes `platform` (`all`, `windows`, `macos`, `linux`) and
+  `run_id` (republish artifacts of an earlier run). It bundles the CLI archive
+  `release.yml` published, so run it second.
+- It uploads the installers and `latest.json` to the same tag and mirrors
+  `latest.json` to the rolling `latest-desktop` release the updater reads.
+- Homebrew formula and cask publish automatically after each workflow completes.
+- If the push-triggered `tauri.yml` fails after the bump, the usual cause is a
+  stale desktop or mobile `Cargo.lock`: fix it on `main` before rerunning.
+
+Build and upload the iOS sideload IPA locally while `release-desktop.yml` runs.
+CI does not build iOS; this step needs a Mac with Xcode and the signing team from
+`mobile/src-tauri/tauri.conf.json`:
 
 ```bash
-# Desktop release (~20–25 minutes for the matrix build)
-gh workflow run release-desktop.yml --field confirm=release-desktop --field channel=stable
-gh run list --workflow=release-desktop.yml --limit=3
-# Watch this workflow in-session until status=completed conclusion=success.
+git fetch --tags && git checkout v<version>   # HEAD must be the tagged commit
+DRY_RUN=1 make -C mobile ios-release      # optional preview: checks + mobile/dist/source.json
+make -C mobile ios-release                # build, package, upload IPA + .sha256 and source.json
+git checkout main
 ```
 
-- After the desktop workflow finishes, verify the release body still contains the published notes. Reapply the same `/tmp/release-notes-v<version>.md` file only if the workflow changed it.
-- If the push-triggered `tauri.yml` workflow fails right after the version-bump commit, inspect it before retrying the release workflows. The common failure mode is stale `desktop/src-tauri/Cargo.lock` / `mobile/src-tauri/Cargo.lock`; fix those on `main`, push, and re-run the release only after `tauri.yml` is green.
-- Final verification — confirm the release body contains no `## Install` or `## Upgrade` sections:
+- `ios-release` uploads `OpenAgentd_<version>_iOS.ipa` and its `.sha256` to
+  `v<version>`. It also refreshes `source.json` on the rolling `latest-ios`
+  pre-release that SideStore reads; the feed's What's New text is the release body.
+  Apply the notes first.
+- The script refuses a dirty tree, a HEAD other than the tag, or a missing
+  release. Re-running is safe (`--clobber`; the feed replaces the same version).
+- If the iOS build cannot run, say so in the release report; the rest of the
+  release does not depend on it.
+
+Afterwards, confirm the notes survived and the IPA is attached
+(`gh release view v<version> --repo lthoangg/openagentd`), and that
+`gh release view latest-ios --repo lthoangg/openagentd` lists `source.json`.
+
+## 5. Release notes
 
 ```bash
-gh release view v<version> --repo lthoangg/openagentd | grep -E '^## (Install|Upgrade)' && exit 1 || true
+PREV_TAG=$(git describe --tags --abbrev=0 HEAD^)
+git log ${PREV_TAG}..HEAD --no-merges --format=fuller
 ```
+
+- Read each commit's body and changed files, not just subjects; skip version bumps
+  and commits unrelated to this release.
+- `## What's changed`: one bullet per user-visible outcome, grouping commits that ship
+  one outcome. Lead with the behavior change; paraphrase, no internals or file paths.
+- `## Breaking Changes` only when users must migrate, with just the steps.
+- No install, upgrade, or test sections (installation lives in the README), no marketing language.
+- End with `**Full changelog:** https://github.com/lthoangg/openagentd/compare/<prev>...v<version>`.
+- Write the file under `/tmp`, never in the repository.

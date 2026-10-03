@@ -10,7 +10,7 @@
  * footer carries no help button. Hidden below ``md``; mobile surfaces these
  * in the sidebar drawer footer instead.
  */
-import { memo } from 'react'
+import { memo, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import {
   GitBranch,
   Settings,
@@ -26,14 +26,52 @@ import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { openTelemetry } from '@/stores/useTelemetryStore'
 import { useObservabilitySummaryQuery } from '@/queries/useObservabilitySummaryQuery'
+import { useActiveSessionsQuery } from '@/queries/useSessionsQuery'
+import { sessionsSpending } from '@/lib/active-sessions'
 import { formatSpend } from '@/utils/telemetryFormat'
 import { queryKeys } from '@/queries/keys'
 import { getCodingWorkspaceStatus } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { useWorkspaceSettingsQuery } from '@/queries/useWorkspaceSettingsQuery'
 
-// The summary endpoint only refreshes on demand; poll so spend follows turns.
+// The summary endpoint only refreshes on demand. Spend moves only while a
+// model call runs, so poll each minute then; idle, a slow poll still lets the
+// 24 h window roll old spend out.
 const SPEND_REFRESH_MS = 60_000
+const SPEND_IDLE_REFRESH_MS = 15 * 60_000
+// Tailwind `md`, the breakpoint the footer's `hidden md:flex` uses.
+const FOOTER_SHOWN_QUERY = '(min-width: 768px)'
+
+/** True while the footer is displayed: below `md` it is mounted but hidden. */
+function useFooterShown(): boolean {
+  const mql = useMemo(() => (typeof window === 'undefined' ? null : window.matchMedia(FOOTER_SHOWN_QUERY)), [])
+  return useSyncExternalStore(
+    (onChange) => {
+      mql?.addEventListener('change', onChange)
+      return () => mql?.removeEventListener('change', onChange)
+    },
+    () => mql?.matches ?? true,
+    () => true,
+  )
+}
+
+/** Last-24 h spend, refreshed on turn activity, never while hidden. */
+function useFooterSpend(): number | undefined {
+  const shown = useFooterShown()
+  const spending = sessionsSpending(useActiveSessionsQuery().data)
+  const query = useObservabilitySummaryQuery(1, {}, {
+    enabled: shown,
+    refetchInterval: spending ? SPEND_REFRESH_MS : SPEND_IDLE_REFRESH_MS,
+  })
+  // The last turn's cost lands after the final poll; fetch it once it ends.
+  const wasSpending = useRef(spending)
+  const { refetch } = query
+  useEffect(() => {
+    if (wasSpending.current && !spending && shown) void refetch()
+    wasSpending.current = spending
+  }, [spending, shown, refetch])
+  return query.data?.totals.estimated_cost_usd
+}
 
 export interface AppFooterProps {
   workspace?: string | null
@@ -106,7 +144,7 @@ export const AppFooter = memo(function AppFooter({
     || null
   const modelSourceLabel = fromWorkspace ? 'Workspace model' : sessionModel && modelOverridden ? 'Session model' : 'Agent default model'
   const sessionSettingsShortcut = shortcutLabel(APP_SHORTCUTS.sessionSettings, os)
-  const spend = useObservabilitySummaryQuery(1, {}, { refetchInterval: SPEND_REFRESH_MS }).data?.totals.estimated_cost_usd
+  const spend = useFooterSpend()
   const spendLabel = spend === undefined ? null : formatSpend(spend)
 
   const isProject = Boolean(workspace) && !chatWorkspace

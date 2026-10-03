@@ -21,16 +21,24 @@
  * toward the trigger.
  *
  * Accessibility: trigger gets aria-describedby pointing at the content.
+ *
+ * Timing follows native tooltips: hover opens after ``OPEN_DELAY_MS``; for
+ * ``WARM_MS`` after one closes the next opens at once, so sweeping along a
+ * toolbar reads each label without waiting again. A press, a key or a
+ * scroll closes it. Focus opens it only for keyboard focus
+ * (``:focus-visible``), never after a click. Touch shows none.
  */
 import {
   createContext,
   useContext,
+  useEffect,
   useId,
   useState,
   useRef,
   useLayoutEffect,
   cloneElement,
   isValidElement,
+  type FocusEvent,
   type ReactNode,
   type ReactElement,
   type ComponentPropsWithRef,
@@ -41,12 +49,40 @@ import { cn } from '@/lib/utils'
 import { useDeferredUnmount } from '@/components/ui/_use-deferred-unmount'
 import { useIsMobile } from '@/hooks/use-mobile'
 
+export const OPEN_DELAY_MS = 500
+export const WARM_MS = 300
+
+// Shared by every tooltip: when the last one closed, and whether one is open.
+let lastClosedAt = Number.NEGATIVE_INFINITY
+let openCount = 0
+
+export function _resetTooltipTimingForTests(): void {
+  lastClosedAt = Number.NEGATIVE_INFINITY
+  openCount = 0
+}
+
+function isWarm(): boolean {
+  return openCount > 0 || performance.now() - lastClosedAt < WARM_MS
+}
+
+function isKeyboardFocus(el: Element): boolean {
+  try {
+    return el.matches(':focus-visible')
+  } catch {
+    return false
+  }
+}
+
 // ─── Context ────────────────────────────────────────────────────────────────
 
 interface TooltipCtx {
   id: string
   open: boolean
-  setOpen: (v: boolean) => void
+  /** Hover: after the delay, or at once while warm. */
+  hover: () => void
+  /** Keyboard focus: at once. */
+  show: () => void
+  hide: () => void
   anchorRef: RefObject<HTMLSpanElement | null>
   isMobile: boolean
 }
@@ -71,8 +107,60 @@ function Tooltip({ children, className }: { children: ReactNode; className?: str
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const anchorRef = useRef<HTMLSpanElement>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const openRef = useRef(false)
+
+  const clearTimer = () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current)
+    timerRef.current = null
+  }
+  const show = () => {
+    clearTimer()
+    if (openRef.current) return
+    openRef.current = true
+    openCount += 1
+    setOpen(true)
+  }
+  const hide = () => {
+    clearTimer()
+    if (!openRef.current) return
+    openRef.current = false
+    openCount -= 1
+    lastClosedAt = performance.now()
+    setOpen(false)
+  }
+  const hover = () => {
+    if (openRef.current || timerRef.current !== null) return
+    if (isWarm()) show()
+    else timerRef.current = setTimeout(show, OPEN_DELAY_MS)
+  }
+  const hideRef = useRef(hide)
+  hideRef.current = hide
+
+  // A press, a key or a scroll anywhere ends the hint, as native ones do.
+  useEffect(() => {
+    if (!open) return
+    const close = () => hideRef.current()
+    window.addEventListener('pointerdown', close, true)
+    window.addEventListener('keydown', close, true)
+    window.addEventListener('scroll', close, { capture: true, passive: true })
+    return () => {
+      window.removeEventListener('pointerdown', close, true)
+      window.removeEventListener('keydown', close, true)
+      window.removeEventListener('scroll', close, { capture: true })
+    }
+  }, [open])
+  useEffect(() => () => {
+    clearTimeout(timerRef.current ?? undefined)
+    if (openRef.current) {
+      openRef.current = false
+      openCount -= 1
+      lastClosedAt = performance.now()
+    }
+  }, [])
+
   return (
-    <TooltipContext.Provider value={{ id, open, setOpen, anchorRef, isMobile }}>
+    <TooltipContext.Provider value={{ id, open, hover, show, hide, anchorRef, isMobile }}>
       {/* `min-w-0` is a no-op unless this span is itself a flex/grid item —
        * when it is (e.g. a truncated session title inside a flex row), it lets
        * the wrapper shrink instead of forcing the row wider than its parent.
@@ -93,14 +181,16 @@ interface TooltipTriggerProps extends ComponentPropsWithRef<'span'> {
 }
 
 function TooltipTrigger({ render: renderProp, children, className, ...props }: TooltipTriggerProps) {
-  const { id, setOpen, isMobile } = useTooltip()
+  const { id, hover, show, hide, isMobile } = useTooltip()
   const handlers = isMobile
     ? { 'aria-describedby': id }
     : {
-        onMouseEnter: () => setOpen(true),
-        onMouseLeave: () => setOpen(false),
-        onFocus: () => setOpen(true),
-        onBlur: () => setOpen(false),
+        onMouseEnter: hover,
+        onMouseLeave: hide,
+        onFocus: (event: FocusEvent<HTMLElement>) => {
+          if (isKeyboardFocus(event.target)) show()
+        },
+        onBlur: hide,
         'aria-describedby': id,
       }
 

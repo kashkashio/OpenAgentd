@@ -203,8 +203,14 @@ pub fn build_title_generation_hook(default_provider: Arc<dyn LlmProvider>, pool:
             }
         }
     }
-    let wait = if cfg.wait_timeout_seconds > 0.0 { cfg.wait_timeout_seconds } else { 3.0 };
-    Some(TitleGenerationHook { provider, pool, wait_timeout: wait, task: Mutex::new(None) })
+    Some(TitleGenerationHook { provider, pool, wait_timeout: title_wait_seconds(&cfg), task: Mutex::new(None) })
+}
+
+/// How long the end of the first turn waits for its title. `0` (or anything
+/// not positive) turns the wait off: the title then arrives on its own as a
+/// `title_update`. An unset value is already the 3 s default from settings.
+fn title_wait_seconds(cfg: &appv3_core::runtime_settings::TitleGenerationSettings) -> f64 {
+    cfg.wait_timeout_seconds.max(0.0)
 }
 
 #[async_trait]
@@ -250,6 +256,17 @@ impl Hook for TitleGenerationHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_wait_timeout_turns_the_wait_off() {
+        let with = |secs: f64| title_wait_seconds(&appv3_core::runtime_settings::TitleGenerationSettings { wait_timeout_seconds: secs, ..Default::default() });
+        assert_eq!(with(0.0), 0.0);
+        assert_eq!(with(-2.0), 0.0);
+        assert_eq!(with(f64::NAN), 0.0);
+        assert_eq!(with(1.5), 1.5);
+        // An unset value keeps the 3 s default.
+        assert_eq!(title_wait_seconds(&Default::default()), 3.0);
+    }
 
     #[test]
     fn clean_and_skip() {

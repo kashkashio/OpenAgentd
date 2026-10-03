@@ -51,13 +51,21 @@ worktrees are not part of the tracked instruction hierarchy.
 
 ## Setup and development
 
+Prerequisites: Bun (CI uses 1.4.0), stable Rust/cargo, `python3` (maintainer
+scripts only), and `lsof` + `nc` for `make dev`. Native shells also need
+`cargo tauri` (tauri-cli 2) and the platform's Tauri system dependencies.
+
 From the repository root:
 
 ```bash
 bun install --cwd web --frozen-lockfile
-make run       # v3 API only on :8000 (needs cargo)
+make run       # v3 API only on :8000
 make dev       # v3 API + Vite on :5173
 ```
+
+Source checkouts run with `APP_ENV=development`, so the database, config,
+logs, and telemetry live under the ignored `.openagentd/dev/` tree, never in
+the user's installed app state.
 
 Build outputs have distinct targets:
 
@@ -75,8 +83,11 @@ Use the native subtree Makefiles for desktop/mobile packages
   focused on transport validation and response shaping. Durable behavior
   belongs in the owning runtime crate (`appv3/crates/agent/`, `tools/`,
   `providers/`, `db/`) or, for v2, `app/services/` and `app/agent/`.
-- v3 must keep v2's wire format and on-disk formats (DB schema, YAML, snapshot
-  repos). Record every deliberate deviation in `appv3/REPORT.md`.
+- v2 format parity is not a goal. v3 may change its wire and on-disk
+  formats (JSON spacing, field order, Python-style renderings) when the web
+  client changes in the same commit, but it must keep reading data that v2
+  installs wrote (DB schema and rows, YAML configs and frontmatter, snapshot
+  repos). Record every wire or on-disk change in `appv3/REPORT.md`.
 - In the UI, TanStack Query owns server state and Zustand owns client/stream
   state. Keep backend wire handling in `web/src/api/`, queries in
   `web/src/queries/`, and route registration in `web/src/router.ts`.
@@ -116,8 +127,8 @@ Choose every target covering the paths changed:
 
 ```bash
 make verify-v3       # v3 Rust: cargo fmt check, clippy -D warnings, tests
-make verify-scripts  # pytest for scripts, installers, and workflow contracts (uv)
-make verify-web      # ESLint, app/test TypeScript, Bun tests
+make verify-scripts  # pytest for scripts, installers, and workflow contracts (local .venv)
+make verify-web      # oxlint, app/test TypeScript (tsc -b), Bun tests
 make verify-docs     # Markdown links/frontmatter/Make references
 make verify-version  # synchronized release versions and catalogue metadata
 make verify-desktop  # locked desktop cargo check/test/clippy
@@ -132,6 +143,16 @@ Always run Bun tests with `--parallel` (`bun test --cwd web --parallel` or `cd w
 Cross-surface API or event changes require both backend and web checks; SSE
 event types must also match `appv3/contract/sse_events.json`. Run
 `make help` for maintained health and build targets.
+CI additionally runs `bun run build` for `web/`, which enforces the bundle
+budget and chunk-cycle checks. Pre-commit hooks run file hygiene plus `oxlint`
+and `tsc` for `web/src`.
+
+## Agent workflows
+
+Repository workflows live in `.openagentd/skills/oad/`: `oad/testing`
+(test-first and per-surface commands), `oad/debug` (including logs and
+telemetry), `oad/review`, `oad/commit` (including the documentation pass),
+and `oad/release`.
 
 ## Documentation
 

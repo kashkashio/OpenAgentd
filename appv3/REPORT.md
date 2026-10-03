@@ -191,7 +191,52 @@ explicitly.
   the `claude` CLI (`crates/agent/src/claude_code.rs`) instead of the agent
   loop. No DB column, SSE event or existing YAML format changed; v2 ignores
   the new file and would reject `claude-code:*` models.
-
+- **Performance changes to the wire format** (v3 only; v2 parity is no
+  longer a goal):
+  - *History pages* (`GET /api/agent/{sid}/history`,
+    `api/src/routes/agent/chat.rs`). Member rows and the session-wide
+    `estimated_cost_usd` / `completion_tokens` totals come only on the
+    newest page and on `since` deltas. Older (`before`) pages return
+    `members: []` and omit the lead's totals. v2 paged each member with
+    the lead's `(seq, id)` cursor, but `seq` is per session, so every
+    older page re-sent each member's newest rows, which the web client
+    then prepended twice. Member pages run concurrently, and the totals
+    for the lead and all members come from one grouped scan. Covered by
+    `history_paging_flow` in `api/tests/http_api.rs`.
+  - *JSON bytes* (`api/src/util.rs`, `db/src/codec.rs`). Responses and the
+    DB's JSON columns (`extra`, `tool_calls`, tool-call `arguments`) are
+    compact `serde_json`, with non-ASCII written as UTF-8. v2 used
+    Python's `json.dumps` style (`", "`/`": "` separators, `\uXXXX`
+    escapes), about 6× the bytes for non-ASCII text in rows and provider
+    requests. Rows written in the old style still parse. History messages
+    are serialized straight from the row (`db::api::MessageView`), so an
+    old row's `tool_calls`/`extra` keep their stored spacing and escapes;
+    JSON clients read both the same.
+  - *History and session-list cursors.* `before` is `seq[|id]` (history)
+    or `<created_at>|<uuid>` (sessions), and `since` is a uuid7 message
+    id: the forms the server hands out. v2's bare-timestamp cursors now
+    get 422. Covered by `history_paging_flow` and
+    `session_pages_follow_their_cursor` (`db/tests/queries.rs`).
+- **`ask_user` free text is unconditional.** The model-facing schema has no
+  `custom` flag, and a `custom` arg from an older schema is ignored. The
+  question payload still carries `custom: true`, because clients on an
+  earlier web build only offer free text when it is set. The answer route
+  takes one typed answer per question even for rows stored with
+  `custom: false` (`tools/ask_user.rs`, `api/src/routes/agent/questions.rs`).
+- **Queued messages ("steers") keep send order and their context.** Both
+  change where rows sit in `session_messages`; old rows need no migration.
+  - A new message promotes any rows still `kind='queued'` (left over from a
+    failed turn) to the tail *before* it is saved, so they keep their place.
+    Previously the new message was saved first and the older steers were
+    promoted after it.
+  - On promotion, a steer's attached rows (`extra.attachment_for_message_id`,
+    its @-mention context saved at queue time) move right after it and are
+    pinned, as an idle send's mention note is. Previously they stayed at the
+    queue-time position, which could fall between a tool call and its
+    result, and the steer was injected without them. Queued rows from older DBs
+    get the same treatment. `queued_turn_start` still lists only the
+    steers (`db::is_attached_row`). Covered by
+    `agent/tests/queued_messages.rs`.
 - **Desktop sidecar:** `desktop/src-tauri/src/sidecar.rs` launches
   `bin/openagentd server serve …`, the same subcommand as v2.
   `make -C desktop sidecar` builds it (`dist` profile) and
@@ -256,6 +301,16 @@ explicitly.
     appends the same transition note. v2 copies the lead's mode only when
     the member is spawned, so a member spawned in Code mode keeps edit
     access after the lead enters Plan mode, where `delegate` is allowed.
+  - *Terminals running a command* (`terminal/src/lib.rs`,
+    `api/src/routes/terminal.rs`). `TerminalSession::busy` is true while
+    the PTY's foreground process group is not the shell's own, that is,
+    while a command runs. The idle reaper skips busy sessions, so a quiet
+    dev server or build is not killed after 30 minutes. The terminal
+    WebSocket sends a new `{"type": "busy", "busy": bool}` frame when this
+    changes (checked every 500 ms). The web client then skips its own idle
+    close and asks before the tab's close button closes the terminal.
+    Windows has no foreground process group, so it never sends the frame.
+    v2 has neither.
 - **Version:** the workspace `Cargo.toml` version is the release version
   (from 3.0.0 on; `scripts/bump_version.sh` sets it and
   `scripts/check_version_consistency.sh` holds every other release-facing
@@ -372,7 +427,10 @@ explicitly.
   is detected at compile time; malformed server payloads (non-object
   `params`, non-list `diagnostics`) are tolerated where v2's read loop would
   die; the `lsp` navigation tool is ported but, exactly like v2, is not in
-  any runtime registry.
+  any runtime registry. Python runs one type checker, not every installed
+  one: the first of ty, pyright and pylsp that starts, with ruff (lint)
+  beside it (`start_servers` in `tools/src/lsp/manager.rs`). v2 starts all
+  of them, so ty and pyright both reported the same type errors.
 - **OTEL:** full port without the opentelemetry crates
   (`crates/core/src/otel.rs`). It covers task-local span context, the JSONL
   span/metric writers and their export filter, retention, and
@@ -428,6 +486,20 @@ explicitly.
   - The `sqlite_master` row order of indexes that Alembic batch copies
     recreate can differ. v2 recreates them in Python set (object-id) order,
     so its own order is not stable either. The index set is the same.
+  - After the replay, v3 adds `ix_session_messages_usage` on
+    `session_messages (session_id, kind, json_extract(extra,
+    '$.usage.cost.estimated_usd'), json_extract(extra, '$.usage.output'))`
+    (`migrations::V3_INDEXES`, `CREATE INDEX IF NOT EXISTS` on every open).
+    It is outside the Alembic chain: the stamp stays at `00000022`, so a v2
+    build still opens the file and only sees an extra index. History loads
+    sum usage from it instead of parsing every row's `extra` (249 → 19 ms on
+    a 16,000-row session), and the per-model-call queued-message probe seeks
+    on `(session_id, kind)` instead of scanning the session (1.8 ms → 15 µs).
+  - On an open that changes no schema, `PRAGMA optimize` and the WAL
+    checkpoint run in the background instead of before the server binds, so
+    a WAL left by a crash no longer delays the handshake (213 MB WAL:
+    381 → 71 ms to handshake). Opens that create or upgrade still run them
+    inline, and shutdown runs them as before.
 - **YAML dumping:** `crates/core/src/pyyaml/dump.rs` ports PyYAML's
   SafeRepresenter, Serializer and Emitter. Every YAML file v3 writes is
   byte-identical to v2's `yaml.safe_dump(..., sort_keys=False)`, including
@@ -889,8 +961,11 @@ The app CSP gains `frame-src 'self' http://127.0.0.1:*`. The lead's
 page: the inspector long-polls `/__openagentd/agent` on the preview origin
 for commands (snapshot, click, fill, press, scroll, navigate, wait, inspect)
 and posts results back there, so commands fail fast when no Preview tab has
-the page open. Its definition lives in `crates/agent/src/tools/preview.rs`,
-not in the v2 tool contract. Design feedback travels inside the user message
-as a `<design-feedback>` block that the web UI renders as a card; the wire
-format is unchanged.
+the page open. `action: "chain"` runs up to 20 such commands from `steps`
+in order in one call, stopping at the first failure. A virtual cursor in
+the inspector's overlay glides to each acted-on element and labels the
+action. Its definition lives in `crates/agent/src/tools/preview.rs`, not in
+the v2 tool contract; `GET /agents` lists it for coding workspaces. Design
+feedback travels inside the user message as a `<design-feedback>` block
+that the web UI renders as a card; the wire format is unchanged.
 Not done: `wss://` relays, LAN or mobile access, and headless capture.

@@ -1,29 +1,33 @@
-import { describe, it, expect } from "bun:test";
-import { render } from "@testing-library/react";
+import { describe, it, expect, afterEach } from "bun:test";
+import { render, cleanup, waitFor } from "@testing-library/react";
 import { MarkdownBlock } from "@/utils/markdown";
 
+afterEach(cleanup);
+
+// KaTeX loads on first use (see markdown-math.lazy.test.tsx), so rendered
+// math is awaited.
 describe("MarkdownBlock math rendering", () => {
   describe("inline math", () => {
-    it("renders $\\rightarrow$ as inline KaTeX math", () => {
+    it("renders $\\rightarrow$ as inline KaTeX math", async () => {
       const { container } = render(<MarkdownBlock content="Arrow: $\\rightarrow$" />);
       const math = container.querySelector(".oa-math-inline");
       expect(math).not.toBeNull();
-      expect(math?.querySelector(".katex")).not.toBeNull();
+      await waitFor(() => expect(math?.querySelector(".katex")).not.toBeNull());
       expect(math?.textContent).toContain("→");
     });
 
-    it("renders formula $x^2 + y^2 = z^2$ as inline KaTeX math", () => {
+    it("renders formula $x^2 + y^2 = z^2$ as inline KaTeX math", async () => {
       const { container } = render(<MarkdownBlock content="Equation $x^2 + y^2 = z^2$ holds." />);
       const math = container.querySelector(".oa-math-inline");
       expect(math).not.toBeNull();
-      expect(math?.querySelector(".katex")).not.toBeNull();
+      await waitFor(() => expect(math?.querySelector(".katex")).not.toBeNull());
     });
 
-    it("renders \\(a + b\\) as inline KaTeX math", () => {
+    it("renders \\(a + b\\) as inline KaTeX math", async () => {
       const { container } = render(<MarkdownBlock content="Sum: \\(a + b\\)" />);
       const math = container.querySelector(".oa-math-inline");
       expect(math).not.toBeNull();
-      expect(math?.querySelector(".katex")).not.toBeNull();
+      await waitFor(() => expect(math?.querySelector(".katex")).not.toBeNull());
     });
 
     it("renders multiple inline math expressions in one sentence", () => {
@@ -81,43 +85,43 @@ describe("MarkdownBlock math rendering", () => {
   });
 
   describe("display and block math", () => {
-    it("renders single-line $$...$$ as block display math", () => {
+    it("renders single-line $$...$$ as block display math", async () => {
       const { container } = render(<MarkdownBlock content="$$E = mc^2$$" />);
       const block = container.querySelector(".oa-math-block");
       expect(block).not.toBeNull();
-      expect(block?.querySelector(".katex-display")).not.toBeNull();
+      await waitFor(() => expect(block?.querySelector(".katex-display")).not.toBeNull());
     });
 
-    it("renders multi-line $$...$$ as block display math", () => {
+    it("renders multi-line $$...$$ as block display math", async () => {
       const content = ["$$", "\\int_0^1 x^2 dx = \\frac{1}{3}", "$$"].join("\n");
       const { container } = render(<MarkdownBlock content={content} />);
       const block = container.querySelector(".oa-math-block");
       expect(block).not.toBeNull();
-      expect(block?.querySelector(".katex-display")).not.toBeNull();
+      await waitFor(() => expect(block?.querySelector(".katex-display")).not.toBeNull());
     });
 
-    it("renders multi-line \\[...\\] as block display math", () => {
+    it("renders multi-line \\[...\\] as block display math", async () => {
       const content = ["\\[", "\\int_0^1 x^2 dx = \\frac{1}{3}", "\\]"].join("\n");
       const { container } = render(<MarkdownBlock content={content} />);
       const block = container.querySelector(".oa-math-block");
       expect(block).not.toBeNull();
-      expect(block?.querySelector(".katex-display")).not.toBeNull();
+      await waitFor(() => expect(block?.querySelector(".katex-display")).not.toBeNull());
     });
 
-    it("renders ```math fenced code blocks as block display math", () => {
+    it("renders ```math fenced code blocks as block display math", async () => {
       const content = ["```math", "\\sum_{i=1}^n i = \\frac{n(n+1)}{2}", "```"].join("\n");
       const { container } = render(<MarkdownBlock content={content} />);
       const block = container.querySelector(".oa-math-block");
       expect(block).not.toBeNull();
-      expect(block?.querySelector(".katex-display")).not.toBeNull();
+      await waitFor(() => expect(block?.querySelector(".katex-display")).not.toBeNull());
     });
 
-    it("renders ```katex fenced code blocks as block display math", () => {
+    it("renders ```katex fenced code blocks as block display math", async () => {
       const content = ["```katex", "\\sum_{i=1}^n i = \\frac{n(n+1)}{2}", "```"].join("\n");
       const { container } = render(<MarkdownBlock content={content} />);
       const block = container.querySelector(".oa-math-block");
       expect(block).not.toBeNull();
-      expect(block?.querySelector(".katex-display")).not.toBeNull();
+      await waitFor(() => expect(block?.querySelector(".katex-display")).not.toBeNull());
     });
   });
 

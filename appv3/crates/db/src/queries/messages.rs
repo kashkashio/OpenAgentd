@@ -1,8 +1,8 @@
 //! `session_messages` — ports `chat_service.py`, `chat_service_revert.py`
 //! and `chat_service_queue.py`. Ordering is always `(seq, id)`.
 
-use crate::codec::{db_id, json_db, new_id, now_db, parse_dt, py_isoformat};
-use crate::models::{kind, ChatSession, SessionMessage, SEQ_STEP};
+use crate::codec::{db_id, json_col, json_db, new_id, now_db, parse_dt, py_isoformat};
+use crate::models::{kind, ChatSession, SessionMessage, ToolPairRow, SEQ_STEP};
 use crate::pool::DbPool;
 use crate::queries::sessions::{bump_history_revision, get_session};
 use anyhow::Result;
@@ -41,8 +41,8 @@ impl NewMessage {
     }
 }
 
-pub async fn next_seq(pool: &DbPool, session_id: &str) -> Result<i64> {
-    let max: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ?").bind(db_id(session_id)).fetch_one(pool).await?;
+pub async fn next_seq<'e, E: sqlx::SqliteExecutor<'e>>(ex: E, session_id: &str) -> Result<i64> {
+    let max: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ?").bind(db_id(session_id)).fetch_one(ex).await?;
     Ok(max.unwrap_or(0) + SEQ_STEP)
 }
 
@@ -56,14 +56,23 @@ pub fn seq_between(prev: i64, next: i64) -> i64 {
     }
 }
 
-pub async fn get_message(pool: &DbPool, id: &str) -> Result<Option<SessionMessage>> {
-    Ok(sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE id = ?").bind(db_id(id)).fetch_optional(pool).await?)
+pub async fn get_message<'e, E: sqlx::SqliteExecutor<'e>>(ex: E, id: &str) -> Result<Option<SessionMessage>> {
+    Ok(sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE id = ?").bind(db_id(id)).fetch_optional(ex).await?)
 }
 
-/// v2 `save_message`: derives `kind`/`pinned`, allocates `seq`, bumps the
-/// structural revision for summaries.
-pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> Result<SessionMessage> {
-    let sid = db_id(session_id);
+/// The values `save_message` inserts, derived like v2.
+struct InsertRow {
+    id: String,
+    sid: String,
+    msg: NewMessage,
+    tool_calls: String,
+    extra: String,
+    created: String,
+    kind: String,
+    pinned: bool,
+}
+
+fn insert_row(session_id: &str, mut msg: NewMessage) -> InsertRow {
     let extra_hidden = msg.extra.as_ref().and_then(|e| e.get("hidden_from_user")).map(|v| !v.is_null() && v != &Value::Bool(false)).unwrap_or(false);
     let row_kind = msg.kind.clone().unwrap_or_else(|| {
         if msg.is_summary {
@@ -77,42 +86,66 @@ pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> R
     let pinned = msg
         .pinned
         .unwrap_or_else(|| row_kind == kind::NOTE && msg.extra.as_ref().and_then(|e| e.get("hidden_from_summary")).map(|v| v.as_bool().unwrap_or(!v.is_null())).unwrap_or(false));
-    let id = new_id();
-    let extra = msg.extra.filter(|e| !e.is_empty()).map(Value::Object);
-    let tool_calls = msg.tool_calls.filter(|t| !t.is_null());
+    let extra = msg.extra.take().filter(|e| !e.is_empty()).map(Value::Object);
+    let tool_calls = msg.tool_calls.take().filter(|t| !t.is_null());
     let created = msg.created_at.as_deref().and_then(crate::codec::db_dt).unwrap_or_else(now_db);
-    // `seq` is allocated inside the INSERT: SQLite takes the write lock for
-    // the whole statement, so concurrent saves (a queued message while the
-    // agent writes its reply) cannot read the same MAX(seq).
-    sqlx::query(
-        r#"INSERT INTO session_messages
+    InsertRow { id: new_id(), sid: db_id(session_id), tool_calls: json_db(tool_calls.as_ref()), extra: json_db(extra.as_ref()), created, kind: row_kind, pinned, msg }
+}
+
+// `seq` is allocated inside the INSERT: SQLite takes the write lock for the
+// whole statement, so concurrent saves (a queued message while the agent
+// writes its reply) cannot read the same MAX(seq).
+const INSERT_MESSAGE: &str = r#"INSERT INTO session_messages
            (id, session_id, role, content, reasoning_content, tool_calls,
             tool_call_id, name, extra, created_at, seq, kind, pinned)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                    COALESCE(?, (SELECT COALESCE(MAX(seq), 0) + ? FROM session_messages WHERE session_id = ?)),
-                   ?, ?)"#,
-    )
-    .bind(&id)
-    .bind(&sid)
-    .bind(&msg.role)
-    .bind(&msg.content)
-    .bind(&msg.reasoning_content)
-    .bind(json_db(tool_calls.as_ref()))
-    .bind(&msg.tool_call_id)
-    .bind(&msg.name)
-    .bind(json_db(extra.as_ref()))
-    .bind(&created)
-    .bind(msg.seq)
-    .bind(SEQ_STEP)
-    .bind(&sid)
-    .bind(&row_kind)
-    .bind(pinned)
-    .execute(pool)
-    .await?;
-    if row_kind == kind::SUMMARY {
-        bump_history_revision(pool, &sid, true).await?;
+                   ?, ?)"#;
+
+fn bind_insert<'q, O>(
+    q: sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>>,
+    r: &'q InsertRow,
+) -> sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>> {
+    q.bind(&r.id)
+        .bind(&r.sid)
+        .bind(&r.msg.role)
+        .bind(&r.msg.content)
+        .bind(&r.msg.reasoning_content)
+        .bind(&r.tool_calls)
+        .bind(&r.msg.tool_call_id)
+        .bind(&r.msg.name)
+        .bind(&r.extra)
+        .bind(&r.created)
+        .bind(r.msg.seq)
+        .bind(SEQ_STEP)
+        .bind(&r.sid)
+        .bind(&r.kind)
+        .bind(r.pinned)
+}
+
+/// v2 `save_message`: derives `kind`/`pinned`, allocates `seq`, bumps the
+/// structural revision for summaries.
+pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> Result<SessionMessage> {
+    let r = insert_row(session_id, msg);
+    let sql = format!("{INSERT_MESSAGE} RETURNING *");
+    let row = bind_insert(sqlx::query_as::<_, SessionMessage>(&sql), &r).fetch_one(pool).await?;
+    if r.kind == kind::SUMMARY {
+        bump_history_revision(pool, &r.sid, true).await?;
     }
-    Ok(get_message(pool, &id).await?.expect("row just inserted"))
+    Ok(row)
+}
+
+/// [`save_message`] returning only the new row's id, on one connection (so a
+/// batch can share a transaction). The stored row, whole tool results and
+/// image parts included, is not read back.
+pub async fn save_message_id(conn: &mut sqlx::SqliteConnection, session_id: &str, msg: NewMessage) -> Result<String> {
+    let r = insert_row(session_id, msg);
+    let sql = format!("{INSERT_MESSAGE} RETURNING id");
+    let (id,): (String,) = bind_insert(sqlx::query_as(&sql), &r).fetch_one(&mut *conn).await?;
+    if r.kind == kind::SUMMARY {
+        bump_history_revision(&mut *conn, &r.sid, true).await?;
+    }
+    Ok(id)
 }
 
 /// Update a row's content/extra in place (placeholder rewrites, usage).
@@ -162,40 +195,92 @@ pub async fn get_active_summary(pool: &DbPool, session_id: &str, boundary: Optio
 /// Derived LLM window (v2 `_llm_window_rows`): pinned rows + active summary +
 /// chat/note rows at/after it, before the undo boundary, `(seq, id)` order.
 pub async fn llm_window_rows(pool: &DbPool, session_id: &str, exclude_queued: bool) -> Result<Vec<SessionMessage>> {
-    let sid = db_id(session_id);
-    // v2 tolerates a missing session row (no revert boundary then).
-    let boundary = match get_session(pool, &sid).await? {
-        Some(session) => revert_boundary(pool, &session).await?,
-        None => None,
-    };
-    let summary = get_active_summary(pool, &sid, boundary.as_ref()).await?;
+    let w = LlmWindow::load(pool, session_id, exclude_queued).await?;
+    Ok(w.bind(sqlx::query_as::<_, SessionMessage>(&w.sql("*", ""))).fetch_all(pool).await?)
+}
 
-    let mut sql = String::from("SELECT * FROM session_messages WHERE session_id = ? AND kind != 'reverted'");
-    if exclude_queued {
-        sql.push_str(" AND kind != 'queued'");
+/// Assistant and tool rows of the LLM window, tool-pairing columns only.
+pub async fn llm_window_tool_pairs(pool: &DbPool, session_id: &str) -> Result<Vec<ToolPairRow>> {
+    let w = LlmWindow::load(pool, session_id, false).await?;
+    let sql = w.sql("session_id, role, tool_calls, tool_call_id, created_at, seq", " AND (role = 'tool' OR (role = 'assistant' AND tool_calls IS NOT NULL))");
+    Ok(w.bind(sqlx::query_as::<_, ToolPairRow>(&sql)).fetch_all(pool).await?)
+}
+
+/// Which rows the model sees: after the active summary, before the revert
+/// boundary. Shared so every reader agrees on the window.
+struct LlmWindow {
+    sid: String,
+    exclude_queued: bool,
+    summary: Option<SessionMessage>,
+    boundary: Option<SessionMessage>,
+}
+
+impl LlmWindow {
+    async fn load(pool: &DbPool, session_id: &str, exclude_queued: bool) -> Result<Self> {
+        let sid = db_id(session_id);
+        // v2 tolerates a missing session row (no revert boundary then).
+        let boundary = match get_session(pool, &sid).await? {
+            Some(session) => revert_boundary(pool, &session).await?,
+            None => None,
+        };
+        let summary = get_active_summary(pool, &sid, boundary.as_ref()).await?;
+        Ok(Self { sid, exclude_queued, summary, boundary })
     }
-    if summary.is_some() {
-        sql.push_str(" AND (pinned = 1 OR (seq, id) >= (?, ?)) AND (kind != 'summary' OR id = ?)");
-    } else {
-        sql.push_str(" AND kind != 'summary'");
+
+    fn sql(&self, columns: &str, extra_filter: &str) -> String {
+        let mut sql = format!("SELECT {columns} FROM session_messages WHERE session_id = ? AND kind != 'reverted'");
+        if self.exclude_queued {
+            sql.push_str(" AND kind != 'queued'");
+        }
+        if self.summary.is_some() {
+            sql.push_str(" AND (pinned = 1 OR (seq, id) >= (?, ?)) AND (kind != 'summary' OR id = ?)");
+        } else {
+            sql.push_str(" AND kind != 'summary'");
+        }
+        if self.boundary.is_some() {
+            sql.push_str(" AND (seq, id) < (?, ?)");
+        }
+        sql.push_str(extra_filter);
+        sql.push_str(" ORDER BY seq ASC, id ASC");
+        sql
     }
-    if boundary.is_some() {
-        sql.push_str(" AND (seq, id) < (?, ?)");
+
+    fn bind<'q, O>(
+        &'q self,
+        mut q: sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>> {
+        q = q.bind(&self.sid);
+        if let Some(s) = &self.summary {
+            q = q.bind(s.seq).bind(&s.id).bind(&s.id);
+        }
+        if let Some(b) = &self.boundary {
+            q = q.bind(b.seq).bind(&b.id);
+        }
+        q
     }
-    sql.push_str(" ORDER BY seq ASC, id ASC");
-    let mut q = sqlx::query_as::<_, SessionMessage>(&sql).bind(&sid);
-    if let Some(s) = &summary {
-        q = q.bind(s.seq).bind(&s.id).bind(&s.id);
-    }
-    if let Some(b) = &boundary {
-        q = q.bind(b.seq).bind(&b.id);
-    }
-    Ok(q.fetch_all(pool).await?)
 }
 
 // ── History (user-visible transcript) ────────────────────────────────────────
 
 const USER_VISIBLE: &str = "kind NOT IN ('note', 'reverted')";
+
+/// Usage totals over `session_id IN (<marks>)`, read from the indexed
+/// `json_extract` values of `ix_session_messages_usage`.
+fn usage_totals_sql(marks: &str) -> String {
+    format!(
+        "SELECT session_id, \
+                CAST(COALESCE(SUM(json_extract(extra, '$.usage.cost.estimated_usd')), 0) AS REAL), \
+                CAST(COALESCE(SUM(json_extract(extra, '$.usage.output')), 0) AS REAL) \
+         FROM session_messages WHERE session_id IN ({marks}) AND {USER_VISIBLE} GROUP BY session_id"
+    )
+}
+
+/// Probed before every model call; answered from an index, not by scanning
+/// the session.
+const HAS_QUEUED_SQL: &str = "SELECT EXISTS (SELECT 1 FROM session_messages WHERE session_id = ? AND role = 'user' AND kind = 'queued')";
+
+/// Queued rows in transcript order (listing and promotion).
+const QUEUED_ROWS_SQL: &str = "SELECT * FROM session_messages WHERE session_id = ? AND kind = 'queued' ORDER BY seq ASC, id ASC";
 
 /// Newest-first page, returned chronological. `(rows, has_more, boundary)`.
 pub async fn history_page(pool: &DbPool, session_id: &str, before: Option<(i64, Option<String>)>) -> Result<(Vec<SessionMessage>, bool, Option<SessionMessage>)> {
@@ -236,52 +321,31 @@ pub async fn history_since(pool: &DbPool, session_id: &str, since_id: &str, limi
     Ok((rows, truncated))
 }
 
-/// Translate a legacy `(created_at, id)` history cursor into `(seq, id)`.
-pub async fn resolve_legacy_history_cursor(pool: &DbPool, session_id: &str, before: &str, before_id: Option<&str>) -> Result<Option<(i64, String)>> {
-    let sid = db_id(session_id);
-    if let Some(bid) = before_id {
-        if let Some(row) = get_message(pool, bid).await? {
-            if row.session_id == sid {
-                return Ok(Some((row.seq, row.id)));
-            }
-        }
-    }
-    let Some(dt) = parse_dt(before) else { return Ok(None) };
-    Ok(sqlx::query_as::<_, (i64, String)>(
-        "SELECT seq, id FROM session_messages WHERE session_id = ? AND created_at >= ? \
-         ORDER BY seq ASC, id ASC LIMIT 1",
-    )
-    .bind(&sid)
-    .bind(crate::codec::dt_db(&dt))
-    .fetch_optional(pool)
-    .await?)
-}
-
-/// Legacy timestamp delta watermark → uuid7 cursor (v2 `resolve_legacy_delta_cursor`).
-pub async fn resolve_legacy_delta_cursor(pool: &DbPool, root_id: &str, since: &str) -> Result<String> {
-    let Some(dt) = parse_dt(since) else { return Ok("0".repeat(32)) };
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM session_messages WHERE session_id IN \
-         (SELECT id FROM chat_sessions WHERE id = ? OR parent_session_id = ?) \
-         AND created_at <= ? ORDER BY created_at DESC, id DESC LIMIT 1",
-    )
-    .bind(db_id(root_id))
-    .bind(db_id(root_id))
-    .bind(crate::codec::dt_db(&dt))
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.unwrap_or_else(|| "0".repeat(32)))
-}
-
 /// `(estimated_cost_usd, completion_tokens)` over user-visible rows.
 pub async fn session_usage_totals(pool: &DbPool, session_id: &str) -> Result<(f64, i64)> {
-    let sql = format!(
-        "SELECT CAST(COALESCE(SUM(json_extract(extra, '$.usage.cost.estimated_usd')), 0) AS REAL), \
-                CAST(COALESCE(SUM(json_extract(extra, '$.usage.output')), 0) AS REAL) \
-         FROM session_messages WHERE session_id = ? AND {USER_VISIBLE}"
-    );
-    let (cost, out): (f64, f64) = sqlx::query_as(&sql).bind(db_id(session_id)).fetch_one(pool).await?;
-    Ok((appv3_core::pymath::py_round(cost, 8), out as i64))
+    Ok(session_usage_totals_many(pool, &[session_id]).await?.remove(session_id).unwrap_or((0.0, 0)))
+}
+
+/// [`session_usage_totals`] for several sessions in one scan, keyed by the
+/// caller's id. A session with no rows maps to `(0.0, 0)`.
+pub async fn session_usage_totals_many(pool: &DbPool, session_ids: &[&str]) -> Result<std::collections::HashMap<String, (f64, i64)>> {
+    let mut out: std::collections::HashMap<String, (f64, i64)> = session_ids.iter().map(|id| (id.to_string(), (0.0, 0))).collect();
+    if session_ids.is_empty() {
+        return Ok(out);
+    }
+    let by_db: std::collections::HashMap<String, &str> = session_ids.iter().map(|id| (db_id(id), *id)).collect();
+    let marks = vec!["?"; by_db.len()].join(", ");
+    let sql = usage_totals_sql(&marks);
+    let mut q = sqlx::query_as::<_, (String, f64, f64)>(&sql);
+    for id in by_db.keys() {
+        q = q.bind(id);
+    }
+    for (sid, cost, completion) in q.fetch_all(pool).await? {
+        if let Some(caller) = by_db.get(&sid) {
+            out.insert(caller.to_string(), (appv3_core::pymath::py_round(cost, 8), completion as i64));
+        }
+    }
+    Ok(out)
 }
 
 /// Newest row cursor `(seq, id)` of a session.
@@ -432,13 +496,24 @@ pub async fn save_queued_user_message(pool: &DbPool, session_id: &str, content: 
 
 /// True when the session has any queued user rows awaiting promotion.
 pub async fn has_queued_user_messages(pool: &DbPool, session_id: &str) -> Result<bool> {
-    let n: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM session_messages WHERE session_id = ? AND role = 'user' AND kind = 'queued'").bind(db_id(session_id)).fetch_one(pool).await?;
-    Ok(n > 0)
+    Ok(sqlx::query_scalar(HAS_QUEUED_SQL).bind(db_id(session_id)).fetch_one(pool).await?)
+}
+
+/// Whether `row` belongs to another message (its @-mention context or an
+/// attachment's text, `extra.attachment_for_message_id`) rather than being
+/// one the user wrote.
+pub fn is_attached_row(row: &SessionMessage) -> bool {
+    row.extra_json().is_some_and(|e| e.get("attachment_for_message_id").is_some_and(|v| !v.is_null()))
 }
 
 /// Promote all queued rows to `chat` at the tail (v2 `_promote_queued`).
 /// `snapshot` is stored on each promoted row's `extra`.
+///
+/// The rows attached to each one (its @-mention context, saved separately at
+/// queue time) move right after it and are pinned, as an immediate send's
+/// mention note is. Left where they were saved, the context sat before its
+/// steer, and an injection mid-turn delivered the steer without it. Returns
+/// every moved row in transcript order; [`is_attached_row`] tells them apart.
 pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snapshot: Option<&str>) -> Result<Vec<SessionMessage>> {
     let sid = db_id(session_id);
     let queued = sqlx::query_as::<_, SessionMessage>(
@@ -456,8 +531,10 @@ pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snaps
     // the updates cannot interleave with a concurrent `save_message`.
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let max: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ?").bind(&sid).fetch_one(&mut *tx).await?;
-    let base = max.unwrap_or(0) + SEQ_STEP;
-    for (i, row) in queued.iter().enumerate() {
+    let mut next_seq = max.unwrap_or(0) + SEQ_STEP;
+    let mut moved: i64 = 0;
+    let mut out = Vec::with_capacity(queued.len());
+    for row in &queued {
         let mut extra = match row.extra_json() {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
@@ -468,23 +545,44 @@ pub async fn release_queued_user_messages(pool: &DbPool, session_id: &str, snaps
             extra.insert("snapshot".into(), Value::String(s.into()));
         }
         let extra_v = if extra.is_empty() { None } else { Some(Value::Object(extra)) };
-        let created = released + chrono::Duration::microseconds(i as i64);
-        sqlx::query("UPDATE session_messages SET kind = 'chat', seq = ?, created_at = ?, extra = ? WHERE id = ?")
-            .bind(base + i as i64 * SEQ_STEP)
-            .bind(crate::codec::dt_db(&created))
+        // A row cancelled since the read above updates nothing and is skipped.
+        let Some(promoted) = sqlx::query_as::<_, SessionMessage>("UPDATE session_messages SET kind = 'chat', seq = ?, created_at = ?, extra = ? WHERE id = ? RETURNING *")
+            .bind(next_seq)
+            .bind(crate::codec::dt_db(&(released + chrono::Duration::microseconds(moved))))
             .bind(json_db(extra_v.as_ref()))
             .bind(&row.id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    tx.commit().await?;
-    bump_history_revision(pool, &sid, true).await?;
-    let mut out = Vec::with_capacity(queued.len());
-    for row in &queued {
-        if let Some(r) = get_message(pool, &row.id).await? {
-            out.push(r);
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            continue;
+        };
+        next_seq += SEQ_STEP;
+        moved += 1;
+        out.push(promoted);
+        let attached: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM session_messages WHERE session_id = ? \
+             AND json_extract(extra, '$.attachment_for_message_id') IN (?, ?) ORDER BY seq ASC, id ASC",
+        )
+        .bind(&sid)
+        .bind(crate::codec::api_uuid(&row.id))
+        .bind(&row.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for id in attached {
+            let row = sqlx::query_as::<_, SessionMessage>("UPDATE session_messages SET seq = ?, created_at = ?, pinned = 1 WHERE id = ? RETURNING *")
+                .bind(next_seq)
+                .bind(crate::codec::dt_db(&(released + chrono::Duration::microseconds(moved))))
+                .bind(&id)
+                .fetch_one(&mut *tx)
+                .await?;
+            next_seq += SEQ_STEP;
+            moved += 1;
+            out.push(row);
         }
     }
+    // Same transaction: readers never see promoted rows under the old revision.
+    bump_history_revision(&mut *tx, &sid, true).await?;
+    tx.commit().await?;
     Ok(out)
 }
 
@@ -522,26 +620,25 @@ pub async fn cancel_queued_user_message(pool: &DbPool, session_id: &str, message
 
 /// Queued rows of a session (for the UI queue display / activation).
 pub async fn list_queued_messages(pool: &DbPool, session_id: &str) -> Result<Vec<SessionMessage>> {
-    Ok(sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE session_id = ? AND kind = 'queued' ORDER BY seq ASC, id ASC")
-        .bind(db_id(session_id))
-        .fetch_all(pool)
-        .await?)
+    Ok(sqlx::query_as::<_, SessionMessage>(QUEUED_ROWS_SQL).bind(db_id(session_id)).fetch_all(pool).await?)
 }
 
-/// v2 `_mark_last_assistant_interrupted`: newest assistant row by
-/// `created_at` gets `extra.interrupted = true`.
+/// The newest assistant row by `(seq, id)` gets `extra.interrupted = true`.
+/// `seq` is transcript order and walks the `(session_id, seq, id)` index;
+/// `created_at` sorted the whole session and can step back with the clock.
 pub async fn mark_last_assistant_interrupted(pool: &DbPool, session_id: &str) -> Result<()> {
-    let row = sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE session_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1")
-        .bind(db_id(session_id))
-        .fetch_optional(pool)
-        .await?;
-    if let Some(row) = row {
-        let mut extra = match row.extra_json() {
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, extra FROM session_messages WHERE session_id = ? AND role = 'assistant' ORDER BY seq DESC, id DESC LIMIT 1")
+            .bind(db_id(session_id))
+            .fetch_optional(pool)
+            .await?;
+    if let Some((id, extra)) = row {
+        let mut extra = match json_col(extra.as_deref()) {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
         };
         extra.insert("interrupted".into(), Value::Bool(true));
-        sqlx::query("UPDATE session_messages SET extra = ? WHERE id = ?").bind(json_db(Some(&Value::Object(extra)))).bind(&row.id).execute(pool).await?;
+        sqlx::query("UPDATE session_messages SET extra = ? WHERE id = ?").bind(json_db(Some(&Value::Object(extra)))).bind(&id).execute(pool).await?;
     }
     Ok(())
 }
@@ -582,4 +679,52 @@ pub async fn find_tool_message(pool: &DbPool, session_id: &str, tool_call_id: &s
         .bind(tool_call_id)
         .fetch_optional(pool)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn plan(pool: &DbPool, sql: &str, binds: usize) -> String {
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut q = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain);
+        for _ in 0..binds {
+            q = q.bind("s");
+        }
+        q.fetch_all(pool).await.unwrap().into_iter().map(|r| r.3).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Tool results and image parts live in `extra`; summing usage from the
+    /// table parsed every one of them on each history load.
+    #[tokio::test]
+    async fn usage_totals_use_the_usage_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::create_pool(dir.path().join("t.db")).await.unwrap();
+        for marks in ["?", "?, ?"] {
+            let p = plan(&pool, &usage_totals_sql(marks), marks.matches('?').count()).await;
+            assert!(p.contains("INDEX ix_session_messages_usage"), "{p}");
+        }
+    }
+
+    /// Scanning the session for queued rows cost O(session) per model call.
+    #[tokio::test]
+    async fn queued_queries_use_the_queued_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::create_pool(dir.path().join("t.db")).await.unwrap();
+        // The probe may seek either index on `kind`; both skip the session.
+        let p = plan(&pool, HAS_QUEUED_SQL, 1).await;
+        assert!(p.contains("ix_session_messages_queued") || p.contains("kind=?"), "{p}");
+        let p = plan(&pool, QUEUED_ROWS_SQL, 1).await;
+        assert!(p.contains("ix_session_messages_queued") && !p.contains("TEMP B-TREE"), "{p}");
+    }
+
+    /// v3's extra indexes must not take the history page off `(seq, id)`.
+    #[tokio::test]
+    async fn history_page_keeps_the_seq_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::create_pool(dir.path().join("t.db")).await.unwrap();
+        let sql = format!("SELECT * FROM session_messages WHERE session_id = ? AND {USER_VISIBLE} ORDER BY seq DESC, id DESC LIMIT ?");
+        let p = plan(&pool, &sql, 2).await;
+        assert!(p.contains("ix_session_messages_session_seq_id") && !p.contains("TEMP B-TREE"), "{p}");
+    }
 }

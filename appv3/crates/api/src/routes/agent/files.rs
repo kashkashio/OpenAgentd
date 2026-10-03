@@ -17,8 +17,9 @@ use axum::routing::{get, post};
 use axum::Router;
 use bytes::Bytes;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 const MAX_FILES_LISTED: usize = 5_000;
@@ -30,6 +31,7 @@ const MAX_UNTRACKED_DIFF_BYTES: u64 = 256 * 1024;
 /// add`/`commit` collides with them, and a killed call strands the lock.
 /// `git diff` ignores `--no-optional-locks`, hence `diff.autoRefreshIndex`.
 const READ_ONLY_GIT: [&str; 3] = ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false"];
+static SHA_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap());
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -129,12 +131,18 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_listed_paths(base: &Path) -> Option<Vec<String>> {
-    let top = git_stdout(base, &["rev-parse", "--show-toplevel"])?;
+    // Three independent git spawns (~10 ms each): run them side by side.
+    let (top, tracked, untracked) = std::thread::scope(|s| {
+        let tracked = s.spawn(|| git_stdout(base, &["ls-files", "-z", "--cached"]));
+        let untracked = s.spawn(|| git_stdout(base, &["ls-files", "-z", "--others", "--exclude-standard"]));
+        let top = git_stdout(base, &["rev-parse", "--show-toplevel"]);
+        (top, tracked.join().ok().flatten(), untracked.join().ok().flatten())
+    });
+    let top = top?;
     if resolve(Path::new(top.trim())) != resolve(base) {
         return None;
     }
-    let tracked = git_stdout(base, &["ls-files", "-z", "--cached"])?;
-    let untracked = git_stdout(base, &["ls-files", "-z", "--others", "--exclude-standard"])?;
+    let (tracked, untracked) = (tracked?, untracked?);
     let mut paths: BTreeSet<String> = tracked.split('\0').filter(|r| !r.is_empty()).map(String::from).collect();
     for rel in untracked.split('\0').filter(|r| !r.is_empty()) {
         let parts: Vec<&str> = rel.trim_end_matches('/').split('/').collect();
@@ -458,7 +466,10 @@ async fn git_diff(q: Qs) -> ApiResult<Response> {
         scoped.push(n);
     }
     let diff_paths: Vec<String> = if scoped.is_empty() { vec![".".into()] } else { scoped.clone() };
-    let has_head = git(&resolved, &["rev-parse", "--verify", "HEAD"]).await.is_some();
+    // Listing untracked files doesn't depend on the diff, so it runs with the
+    // HEAD probe; a truncated diff just drops the list.
+    let (head, listed) = tokio::join!(git(&resolved, &["rev-parse", "--verify", "HEAD"]), git(&resolved, &["ls-files", "--others", "--exclude-standard"]));
+    let has_head = head.is_some();
     let mut args: Vec<&str> = if has_head { vec!["diff", "HEAD"] } else { vec!["diff"] };
     args.push("--");
     args.extend(diff_paths.iter().map(String::as_str));
@@ -470,7 +481,7 @@ async fn git_diff(q: Qs) -> ApiResult<Response> {
     let mut untracked: Vec<String> = vec![];
     let mut full = tracked;
     if !tracked_trunc {
-        untracked = git(&resolved, &["ls-files", "--others", "--exclude-standard"]).await.map(|o| o.lines().map(String::from).collect()).unwrap_or_default();
+        untracked = listed.map(|o| o.lines().map(String::from).collect()).unwrap_or_default();
         if !scoped.is_empty() {
             untracked.retain(|u| scoped.contains(u));
         }
@@ -555,10 +566,13 @@ async fn workspace_status(q: Qs) -> ApiResult<Response> {
     if !root.join(".git").exists() {
         return Ok(not_git());
     }
-    let Some(status_out) = git(&resolved, &["status", "--porcelain=v2", "--branch"]).await else { return Ok(not_git()) };
+    // This runs after every agent tool call, and each git spawn costs ~10 ms,
+    // so independent calls run side by side.
+    let (status_out, log) = tokio::join!(git(&resolved, &["status", "--porcelain=v2", "--branch"]), git(&resolved, &["log", "-1", "--format=%h%x00%s%x00%ct"]));
+    let Some(status_out) = status_out else { return Ok(not_git()) };
     let mut p = parse_porcelain_v2(&status_out);
     let mut head = Value::Null;
-    if let Some(log) = git(&resolved, &["log", "-1", "--format=%h%x00%s%x00%ct"]).await.filter(|l| !l.is_empty()) {
+    if let Some(log) = log.filter(|l| !l.is_empty()) {
         let parts: Vec<&str> = log.trim_end_matches('\n').split('\0').collect();
         if parts.len() == 3 {
             if let Ok(ts) = parts[2].trim().parse::<i64>() {
@@ -568,7 +582,19 @@ async fn workspace_status(q: Qs) -> ApiResult<Response> {
     }
     if p.upstream.is_none() || p.ahead.is_none() || p.behind.is_none() {
         let mut upstream_ref: Option<String> = Some("@{u}".into());
-        let div = git(&resolved, &["rev-list", "--left-right", "--count", "HEAD...@{u}"]).await;
+        // Fallback refs in priority order, probed alongside `@{u}`.
+        let mut candidates: Vec<String> = vec![];
+        if let Some(b) = &p.branch {
+            candidates.push(format!("origin/{b}"));
+        }
+        candidates.extend(["origin/HEAD", "origin/main", "origin/master", "main", "master"].map(String::from));
+        let mut seen = HashSet::new();
+        candidates.retain(|c| p.branch.as_deref() != Some(c.as_str()) && seen.insert(c.clone()));
+        let cwd = resolved.as_str();
+        let (div, exists) = tokio::join!(
+            git(cwd, &["rev-list", "--left-right", "--count", "HEAD...@{u}"]),
+            futures::future::join_all(candidates.iter().map(|c| async move { git(cwd, &["rev-parse", "--verify", c]).await }))
+        );
         if let Some(d) = &div {
             if let Some((a, b)) = parse_counts(d) {
                 p.ahead = Some(a);
@@ -576,25 +602,13 @@ async fn workspace_status(q: Qs) -> ApiResult<Response> {
             }
         }
         if div.is_none() {
-            let mut candidates: Vec<String> = vec![];
-            if let Some(b) = &p.branch {
-                candidates.push(format!("origin/{b}"));
-            }
-            candidates.extend(["origin/HEAD", "origin/main", "origin/master", "main", "master"].map(String::from));
             upstream_ref = None;
-            for c in candidates {
-                if p.branch.as_deref() == Some(c.as_str()) {
-                    continue;
-                }
-                if git(&resolved, &["rev-parse", "--verify", &c]).await.is_some() {
-                    if let Some(cc) = git(&resolved, &["rev-list", "--left-right", "--count", &format!("HEAD...{c}")]).await {
-                        if let Some((a, b)) = parse_counts(&cc) {
-                            p.ahead = Some(a);
-                            p.behind = Some(b);
-                            upstream_ref = Some(c);
-                            break;
-                        }
-                    }
+            for (c, _) in candidates.into_iter().zip(exists).filter(|(_, e)| e.is_some()) {
+                if let Some((a, b)) = git(&resolved, &["rev-list", "--left-right", "--count", &format!("HEAD...{c}")]).await.as_deref().and_then(parse_counts) {
+                    p.ahead = Some(a);
+                    p.behind = Some(b);
+                    upstream_ref = Some(c);
+                    break;
                 }
             }
         }
@@ -626,12 +640,11 @@ async fn git_history(q: Qs) -> ApiResult<Response> {
     let cursor = q.opt("cursor");
     let all = q.bool("all", false)?;
     let resolved = validated(&workspace)?;
-    let off_re = regex::Regex::new(r"^all:([0-9]{1,9})$").unwrap();
-    let off = cursor.as_deref().and_then(|c| off_re.captures(c)).map(|c| c[1].parse::<i64>().unwrap_or(0));
+    static OFF_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^all:([0-9]{1,9})$").unwrap());
+    let off = cursor.as_deref().and_then(|c| OFF_RE.captures(c)).map(|c| c[1].parse::<i64>().unwrap_or(0));
     let offset = off.unwrap_or(0);
-    let sha_re = regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap();
     if let Some(c) = cursor.as_deref().filter(|c| !c.is_empty()) {
-        if !(sha_re.is_match(c) || all && off.is_some()) {
+        if !(SHA_RE.is_match(c) || all && off.is_some()) {
             return Err(ApiError::unprocessable("Invalid cursor SHA format."));
         }
     }
@@ -649,10 +662,22 @@ async fn git_history(q: Qs) -> ApiResult<Response> {
     if all {
         log_args.extend(["--exclude=refs/stash".into(), "--all".into()]);
     }
+    let mut g: Vec<String> = ["log", "--graph", "--oneline", "--decorate", "--color=never", "-n"].map(String::from).to_vec();
+    g.push(limit.to_string());
+    if off.is_some() {
+        g.push(format!("--skip={offset}"));
+    } else if let Some(c) = &cur {
+        g.extend([c.clone(), "--skip=1".into()]);
+    }
+    if all {
+        g.extend(["--exclude=refs/stash".into(), "--all".into()]);
+    }
     let la: Vec<&str> = log_args.iter().map(String::as_str).collect();
+    let ga: Vec<&str> = g.iter().map(String::as_str).collect();
+    let (log, graph) = tokio::join!(git(&resolved, &la), git(&resolved, &ga));
     let mut commits: Vec<Value> = vec![];
     let mut shas: Vec<String> = vec![];
-    if let Some(out) = git(&resolved, &la).await.filter(|o| !o.is_empty()) {
+    if let Some(out) = log.filter(|o| !o.is_empty()) {
         for rec in out.split('\x1e') {
             let rec = rec.trim_matches('\n');
             if rec.is_empty() {
@@ -674,18 +699,7 @@ async fn git_history(q: Qs) -> ApiResult<Response> {
         next = if all { json!(format!("all:{}", offset + limit)) } else { json!(shas[(limit - 1) as usize]) };
         commits.truncate(limit as usize);
     }
-    let mut g: Vec<String> = ["log", "--graph", "--oneline", "--decorate", "--color=never", "-n"].map(String::from).to_vec();
-    g.push(limit.to_string());
-    if off.is_some() {
-        g.push(format!("--skip={offset}"));
-    } else if let Some(c) = &cur {
-        g.extend([c.clone(), "--skip=1".into()]);
-    }
-    if all {
-        g.extend(["--exclude=refs/stash".into(), "--all".into()]);
-    }
-    let ga: Vec<&str> = g.iter().map(String::as_str).collect();
-    let graph = git(&resolved, &ga).await.unwrap_or_default();
+    let graph = graph.unwrap_or_default();
     Ok(json(json!({"workspace": resolved, "is_git_repo": true, "commits": commits, "next_cursor": next, "graph": graph})))
 }
 
@@ -749,7 +763,7 @@ async fn commit_diff(q: Qs) -> ApiResult<Response> {
     let workspace = q.req("workspace")?;
     let sha = q.req("sha")?;
     let resolved = validated(&workspace)?;
-    if !regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap().is_match(&sha) {
+    if !SHA_RE.is_match(&sha) {
         return Err(ApiError::unprocessable("Invalid commit SHA format."));
     }
     if !Path::new(&resolved).join(".git").exists() {
@@ -787,7 +801,7 @@ async fn git_revert(raw: Bytes) -> ApiResult<Response> {
     if workspace.is_empty() || sha.is_empty() {
         return Err(ApiError::bad_request("workspace and sha are required."));
     }
-    if !regex::Regex::new(r"^[a-fA-F0-9]{4,64}$").unwrap().is_match(sha) {
+    if !SHA_RE.is_match(sha) {
         return Err(ApiError::unprocessable("Invalid commit SHA format."));
     }
     let resolved = validated(workspace)?;
@@ -862,5 +876,154 @@ mod tests {
         let (_, stderr, code, _) = bounded_git_diff(d.path().to_str().unwrap(), &["diff", "HEAD", "--", "."], 1024).await.unwrap();
         assert_eq!(code, 0, "{stderr}");
         assert!(std::fs::read(&index).unwrap() == before, "`git diff` refreshed .git/index, so it held index.lock");
+    }
+
+    fn repo_on_main() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        git_ok(d.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(d.path().join("a.txt"), "a\n").unwrap();
+        git_ok(d.path(), &["add", "a.txt"]);
+        git_ok(d.path(), &["commit", "-qm", "init"]);
+        d
+    }
+
+    fn commit(dir: &Path, file: &str) {
+        std::fs::write(dir.join(file), file).unwrap();
+        git_ok(dir, &["add", file]);
+        git_ok(dir, &["commit", "-qm", file]);
+    }
+
+    fn ws_query(dir: &Path, extra: &str) -> Qs {
+        Qs::parse(&format!("workspace={}{extra}", form_urlencoded::byte_serialize(dir.to_str().unwrap().as_bytes()).collect::<String>()))
+    }
+
+    async fn body_of(r: Response) -> Value {
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    async fn status_of(dir: &Path) -> Value {
+        body_of(workspace_status(ws_query(dir, "")).await.unwrap()).await
+    }
+
+    fn upstream_fields(v: &Value) -> (Value, Value, Value) {
+        (v["upstream"].clone(), v["commits_ahead"].clone(), v["commits_behind"].clone())
+    }
+
+    #[tokio::test]
+    async fn status_on_main_without_remote_has_no_upstream() {
+        let d = repo_on_main();
+        std::fs::write(d.path().join("a.txt"), "changed\n").unwrap();
+        std::fs::write(d.path().join("new.txt"), "n").unwrap();
+        let v = status_of(d.path()).await;
+        assert_eq!(v["branch"], "main");
+        assert_eq!(v["dirty"], json!({"staged": 0, "unstaged": 1, "untracked": 1}));
+        assert_eq!(v["head"]["subject"], "init");
+        assert_eq!(upstream_fields(&v), (Value::Null, Value::Null, Value::Null));
+    }
+
+    #[tokio::test]
+    async fn status_without_remote_compares_a_branch_with_local_main() {
+        let d = repo_on_main();
+        git_ok(d.path(), &["checkout", "-qb", "feature"]);
+        commit(d.path(), "b.txt");
+        commit(d.path(), "c.txt");
+        assert_eq!(upstream_fields(&status_of(d.path()).await), (json!("main"), json!(2), json!(0)));
+    }
+
+    #[tokio::test]
+    async fn status_uses_the_tracking_upstream() {
+        let origin = repo_on_main();
+        let d = tempfile::tempdir().unwrap();
+        git_ok(d.path(), &["clone", "-q", origin.path().to_str().unwrap(), "."]);
+        commit(d.path(), "b.txt");
+        commit(origin.path(), "o.txt");
+        git_ok(d.path(), &["fetch", "-q"]);
+        assert_eq!(upstream_fields(&status_of(d.path()).await), (json!("origin/main"), json!(1), json!(1)));
+    }
+
+    #[tokio::test]
+    async fn status_prefers_origin_branch_when_nothing_is_tracked() {
+        let origin = repo_on_main();
+        git_ok(origin.path(), &["checkout", "-qb", "feature"]);
+        commit(origin.path(), "f.txt");
+        git_ok(origin.path(), &["checkout", "-q", "main"]);
+        let d = tempfile::tempdir().unwrap();
+        git_ok(d.path(), &["clone", "-q", origin.path().to_str().unwrap(), "."]);
+        // Local `feature` with no tracking config, one commit past origin/feature.
+        git_ok(d.path(), &["checkout", "-q", "--no-track", "-b", "feature", "origin/feature"]);
+        commit(d.path(), "g.txt");
+        assert_eq!(upstream_fields(&status_of(d.path()).await), (json!("origin/feature"), json!(1), json!(0)));
+    }
+
+    #[tokio::test]
+    async fn history_pages_commits_with_a_graph() {
+        let d = repo_on_main();
+        commit(d.path(), "b.txt");
+        commit(d.path(), "c.txt");
+        let v = body_of(git_history(ws_query(d.path(), "&limit=2")).await.unwrap()).await;
+        let subjects: Vec<&str> = v["commits"].as_array().unwrap().iter().map(|c| c["subject"].as_str().unwrap()).collect();
+        assert_eq!(subjects, ["c.txt", "b.txt"]);
+        assert_eq!(v["commits"][0]["refs"], "HEAD -> main");
+        assert_eq!(v["next_cursor"], v["commits"][1]["sha"]);
+        let graph = v["graph"].as_str().unwrap();
+        assert_eq!(graph.lines().count(), 2);
+        assert!(graph.starts_with("* ") && graph.contains("c.txt"), "{graph}");
+        let cursor = v["next_cursor"].as_str().unwrap().to_string();
+        let next = body_of(git_history(ws_query(d.path(), &format!("&limit=2&cursor={cursor}"))).await.unwrap()).await;
+        assert_eq!(next["commits"].as_array().unwrap().len(), 1);
+        assert_eq!(next["commits"][0]["subject"], "init");
+        assert_eq!(next["next_cursor"], Value::Null);
+        assert!(next["graph"].as_str().unwrap().contains("init"));
+        let all = body_of(git_history(ws_query(d.path(), "&limit=1&all=true")).await.unwrap()).await;
+        assert_eq!(all["next_cursor"], "all:1");
+    }
+
+    #[tokio::test]
+    async fn diff_covers_tracked_and_untracked_changes() {
+        let d = repo_on_main();
+        std::fs::write(d.path().join("a.txt"), "changed\n").unwrap();
+        std::fs::write(d.path().join("new.txt"), "n\n").unwrap();
+        let v = body_of(git_diff(ws_query(d.path(), "")).await.unwrap()).await;
+        let diff = v["diff"].as_str().unwrap();
+        assert!(diff.contains("+changed") && diff.contains("new.txt"), "{diff}");
+        assert_eq!(v["untracked"], json!(["new.txt"]));
+        assert_eq!(v["truncated"], false);
+        let scoped = body_of(git_diff(ws_query(d.path(), "&paths=new.txt")).await.unwrap()).await;
+        assert_eq!(scoped["untracked"], json!(["new.txt"]));
+        assert!(!scoped["diff"].as_str().unwrap().contains("+changed"));
+    }
+
+    #[tokio::test]
+    async fn diff_works_before_the_first_commit() {
+        let d = tempfile::tempdir().unwrap();
+        git_ok(d.path(), &["init", "-q"]);
+        std::fs::write(d.path().join("a.txt"), "a\n").unwrap();
+        git_ok(d.path(), &["add", "a.txt"]);
+        std::fs::write(d.path().join("b.txt"), "b\n").unwrap();
+        let v = body_of(git_diff(ws_query(d.path(), "")).await.unwrap()).await;
+        assert_eq!(v["is_git_repo"], true);
+        assert_eq!(v["untracked"], json!(["b.txt"]));
+        assert!(v["diff"].as_str().unwrap().contains("b.txt"));
+    }
+
+    fn listed(root: &Path) -> Vec<String> {
+        list_files(root).0.iter().map(|f| f["path"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn list_files_merges_tracked_and_untracked_in_git_order() {
+        let d = repo_on_main();
+        std::fs::create_dir_all(d.path().join("src/deep")).unwrap();
+        std::fs::create_dir_all(d.path().join("node_modules/x")).unwrap();
+        std::fs::write(d.path().join("src/deep/t.rs"), "t").unwrap();
+        commit(d.path(), "src/deep/t.rs");
+        std::fs::write(d.path().join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(d.path().join("b.txt"), "b").unwrap();
+        std::fs::write(d.path().join("skip.log"), "l").unwrap();
+        std::fs::write(d.path().join("node_modules/x/i.js"), "i").unwrap();
+        assert_eq!(listed(d.path()), [".gitignore", "a.txt", "b.txt", "src/deep/t.rs"]);
+        // A subdirectory is not the repo top level: walked, not git-listed.
+        std::fs::write(d.path().join("src/u.rs"), "u").unwrap();
+        assert_eq!(listed(&d.path().join("src")), ["u.rs", "deep/t.rs"]);
     }
 }

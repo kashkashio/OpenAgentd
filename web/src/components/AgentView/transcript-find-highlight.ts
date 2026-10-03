@@ -1,36 +1,66 @@
-const MARK_ATTR = 'data-transcript-find'
-const ACTIVE_ATTR = 'data-transcript-find-active'
+import { highlightApi } from '@/utils/css-highlights'
 
-export function clearTranscriptFindHighlight(root: ParentNode): void {
-  const marks = [...root.querySelectorAll(`mark[${MARK_ATTR}]`)]
-  for (const mark of marks) {
-    const parent = mark.parentNode
-    if (!parent) continue
-    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark)
-    parent.removeChild(mark)
-    if (parent instanceof HTMLElement || parent instanceof DocumentFragment) {
-      parent.normalize()
-    }
+/** CSS Custom Highlight names; styled in `index.css`. */
+export const TRANSCRIPT_FIND_HIGHLIGHT = 'transcript-find'
+export const TRANSCRIPT_FIND_ACTIVE_HIGHLIGHT = 'transcript-find-active'
+
+/**
+ * Paint every match of ``rawQuery`` in the find blocks under ``root`` and
+ * return the active one's range (for scrolling), or ``null`` without a match.
+ *
+ * The matches are painted as CSS highlights and the DOM is left exactly as
+ * React rendered it. Wrapping them in ``<mark>``s used to replace text nodes
+ * React owns, so a reply streaming in with find open was written to detached
+ * nodes and stopped updating, and clearing the marks re-normalized the text
+ * again. Ranges go stale when that text changes, so callers repaint on DOM
+ * changes. Where the browser has no highlight API, nothing is painted but the
+ * active range is still returned.
+ */
+export function paintTranscriptFind(root: ParentNode, rawQuery: string, activeIndex: number): Range | null {
+  const ranges = findRanges(root, rawQuery)
+  if (ranges.length === 0) {
+    clearTranscriptFind()
+    return null
   }
+  const active = ranges[((activeIndex % ranges.length) + ranges.length) % ranges.length]
+  const api = highlightApi()
+  if (api) {
+    api.registry.set(TRANSCRIPT_FIND_HIGHLIGHT, api.create(ranges.filter((range) => range !== active)))
+    api.registry.set(TRANSCRIPT_FIND_ACTIVE_HIGHLIGHT, api.create([active]))
+  }
+  return active
 }
 
-export function applyTranscriptFindHighlight(
-  root: HTMLElement,
-  rawQuery: string,
-  activeIndex: number,
-): HTMLElement | null {
-  clearTranscriptFindHighlight(root)
+export function clearTranscriptFind(): void {
+  const api = highlightApi()
+  api?.registry.delete(TRANSCRIPT_FIND_HIGHLIGHT)
+  api?.registry.delete(TRANSCRIPT_FIND_ACTIVE_HIGHLIGHT)
+}
+
+/** Every case-insensitive occurrence, in document order, within single text nodes. */
+function findRanges(root: ParentNode, rawQuery: string): Range[] {
   const query = rawQuery.trim()
-  if (!query) return null
+  if (!query) return []
   const needle = query.toLowerCase()
-  const marks: HTMLElement[] = []
+  const ranges: Range[] = []
   for (const block of root.querySelectorAll('[data-find-block]')) {
-    highlightInNode(block, needle, marks)
+    const textNodes: Text[] = []
+    collectTextNodes(block, textNodes)
+    for (const textNode of textNodes) {
+      const lower = (textNode.nodeValue ?? '').toLowerCase()
+      let from = 0
+      while (from <= lower.length - needle.length) {
+        const start = lower.indexOf(needle, from)
+        if (start < 0) break
+        const range = document.createRange()
+        range.setStart(textNode, start)
+        range.setEnd(textNode, start + needle.length)
+        ranges.push(range)
+        from = start + needle.length
+      }
+    }
   }
-  if (marks.length === 0) return null
-  const active = marks[((activeIndex % marks.length) + marks.length) % marks.length]
-  active.setAttribute(ACTIVE_ATTR, '')
-  return active
+  return ranges
 }
 
 function collectTextNodes(root: Node, out: Text[]): void {
@@ -42,50 +72,4 @@ function collectTextNodes(root: Node, out: Text[]): void {
   const el = root as Element
   if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') return
   for (const child of Array.from(root.childNodes)) collectTextNodes(child, out)
-}
-
-function highlightInNode(root: Node, needle: string, marks: HTMLElement[]): void {
-  const textNodes: Text[] = []
-  collectTextNodes(root, textNodes)
-  for (const textNode of textNodes) {
-    const value = textNode.nodeValue ?? ''
-    const lower = value.toLowerCase()
-    const ranges: Array<{ start: number; end: number }> = []
-    let from = 0
-    while (from <= lower.length - needle.length) {
-      const start = lower.indexOf(needle, from)
-      if (start < 0) break
-      ranges.push({ start, end: start + needle.length })
-      from = start + needle.length
-    }
-    if (ranges.length === 0) continue
-    wrapRanges(textNode, ranges, marks)
-  }
-}
-
-function wrapRanges(
-  textNode: Text,
-  ranges: Array<{ start: number; end: number }>,
-  marks: HTMLElement[],
-): void {
-  const value = textNode.nodeValue ?? ''
-  const parent = textNode.parentNode
-  if (!parent) return
-  const frag = document.createDocumentFragment()
-  let cursor = 0
-  for (const range of ranges) {
-    if (range.start > cursor) {
-      frag.appendChild(document.createTextNode(value.slice(cursor, range.start)))
-    }
-    const mark = document.createElement('mark')
-    mark.setAttribute(MARK_ATTR, '')
-    mark.textContent = value.slice(range.start, range.end)
-    frag.appendChild(mark)
-    marks.push(mark)
-    cursor = range.end
-  }
-  if (cursor < value.length) {
-    frag.appendChild(document.createTextNode(value.slice(cursor)))
-  }
-  parent.replaceChild(frag, textNode)
 }

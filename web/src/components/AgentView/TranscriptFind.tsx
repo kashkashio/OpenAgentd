@@ -41,6 +41,9 @@ export function TranscriptFind({
       <input
         ref={inputRef}
         type="search"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
         onKeyDown={(event) => {

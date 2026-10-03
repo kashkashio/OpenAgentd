@@ -123,6 +123,16 @@ function parseJsonStrings(val: unknown): unknown {
   return val
 }
 
+/** The args as the details view shows them: JSON-encoded strings unwrapped, pretty-printed. */
+function formatArgsDetails(formattedArgs: string | null | undefined): string {
+  if (!formattedArgs) return ''
+  const parsed = tryParseJSON(formattedArgs)
+  if (parsed !== null && typeof parsed === 'object') {
+    return JSON.stringify(parseJsonStrings(parsed), null, 2)
+  }
+  return formattedArgs
+}
+
 const MAX_LIVE_LINES = 100
 
 let liveClockInterval: number | null = null
@@ -200,6 +210,11 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
   const liveOutputRef = useRef<HTMLPreElement>(null)
   const isAttachedRef = useRef(true)
   const [now, setNow] = useState(() => Date.now())
+  // The enter animation marks a tool that just joined a live transcript, so
+  // it is decided once, at mount: a row that mounts finished is history (a
+  // reopen, a revealed turn, an older page, a reconnect replay), and
+  // animating those started hundreds of compositor animations at once.
+  const [animatesIn] = useState(() => !done)
 
   // Determine status: start (name only) → running (args) → success/failed (result)
   const isPending = args === undefined || args === null
@@ -219,15 +234,6 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
   // lifetime of a running tool call just to redraw the duration label.
   const { header, headerTitle, formattedArgs, language, suppressResult } =
     useMemo(() => getToolDisplay(name, args, done), [name, args, done])
-  const displayedArgs = useMemo(() => {
-    if (!formattedArgs) return ''
-    const parsed = tryParseJSON(formattedArgs)
-    if (parsed !== null && typeof parsed === 'object') {
-      const cleaned = parseJsonStrings(parsed)
-      return JSON.stringify(cleaned, null, 2)
-    }
-    return formattedArgs
-  }, [formattedArgs])
   const toolOperation = useMemo(() => {
     if (name !== 'lsp' || !args) return undefined
     const parsed = tryParseJSON(args)
@@ -285,7 +291,7 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
     e.stopPropagation()
     const text = isShellTerminal
       ? `${formattedArgs}${shellOutput ? `\n${shellOutput}` : ''}`
-      : displayedArgs || args || ''
+      : formatArgsDetails(formattedArgs) || args || ''
     try {
       await navigator.clipboard.writeText(text)
       setCopiedArgs(true)
@@ -330,6 +336,9 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
 
   const hasDetails = Boolean(formattedArgs || shownLiveOutput || shownResult || hasReadResult)
   const expanded = manualExpanded ?? Boolean(shownLiveOutput)
+  // Only an open row shows these, and reopening a long run mounts hundreds of
+  // collapsed rows at once: the parse + pretty-print waits for the expand.
+  const displayedArgs = useMemo(() => (expanded ? formatArgsDetails(formattedArgs) : ''), [expanded, formattedArgs])
   const displayName = name || 'tool'
   const toolLabel = formatToolLabel(displayName)
   const title = headerTitle ? `${toolLabel}: ${headerTitle}` : toolLabel
@@ -356,7 +365,7 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
   }
 
   return (
-    <div className="tool-row-enter my-2">
+    <div className={animatesIn ? 'tool-row-enter my-2' : 'my-2'}>
       {/* Header row — separate from the details container so collapsed tools stay lightweight. */}
       <button
         type="button"

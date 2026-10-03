@@ -1,0 +1,323 @@
+//! Query behaviour against a fresh database, plus reading databases that the
+//! v2 (Python) backend wrote (data compat, kept until a migration retires it).
+//!
+//! `fresh_db_*` tests always run. `real_v2_db_*` run against a copy of a real
+//! v2 database when `OAD_V2_DB` points at one (never the original file).
+
+use appv3_db::codec::{api_uuid, db_id};
+use appv3_db::migrations::{SchemaState, ALEMBIC_HEAD};
+use appv3_db::queries::*;
+use appv3_db::{api, create_pool};
+
+async fn fresh() -> (tempfile::TempDir, appv3_db::DbPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = create_pool(dir.path().join("oad.db")).await.unwrap();
+    (dir, pool)
+}
+
+/// v3's own indexes go on without a revision: a v2 build must still find
+/// the file at the head it knows.
+#[tokio::test]
+async fn v2_head_database_gains_v3_indexes_without_a_new_revision() {
+    use sqlx::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v2.db");
+    {
+        let mut conn = sqlx::SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", path.display())).await.unwrap();
+        appv3_db::migrations::upgrade(&mut conn).await.unwrap();
+    }
+    let pool = create_pool(&path).await.unwrap();
+    let index: Option<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'ix_session_messages_usage'").fetch_optional(&pool).await.unwrap();
+    assert_eq!(index.as_deref(), Some("ix_session_messages_usage"));
+    let head: String = sqlx::query_scalar("SELECT version_num FROM alembic_version").fetch_one(&pool).await.unwrap();
+    assert_eq!(head, ALEMBIC_HEAD);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_saves_get_distinct_positions() {
+    // A queued user message and the agent's reply can be written at the
+    // same time; each row must still get its own `seq`.
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let handles: Vec<_> = (0..40)
+        .map(|i| {
+            let (pool, sid) = (pool.clone(), s.id.clone());
+            tokio::spawn(async move { save_message(&pool, &sid, NewMessage::user(format!("m{i}"))).await.unwrap().seq })
+        })
+        .collect();
+    let mut seqs = vec![];
+    for h in handles {
+        seqs.push(h.await.unwrap());
+    }
+    seqs.sort();
+    let n = seqs.len();
+    seqs.dedup();
+    assert_eq!(seqs.len(), n, "duplicate seq values");
+}
+
+/// Transcript order is `seq`; `created_at` can step back with the clock.
+#[tokio::test]
+async fn interrupt_marks_the_last_assistant_row_by_position() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let earlier = save_message(&pool, &s.id, NewMessage::assistant(Some("first".into()))).await.unwrap();
+    let last = save_message(&pool, &s.id, NewMessage::assistant(Some("second".into()))).await.unwrap();
+    sqlx::query("UPDATE session_messages SET created_at = '2000-01-01 00:00:00.000000' WHERE id = ?").bind(&last.id).execute(&pool).await.unwrap();
+    mark_last_assistant_interrupted(&pool, &s.id).await.unwrap();
+    let interrupted = |id: String| {
+        let pool = pool.clone();
+        async move { get_message(&pool, &id).await.unwrap().unwrap().extra_json().and_then(|e| e.get("interrupted").cloned()) }
+    };
+    assert_eq!(interrupted(last.id.clone()).await, Some(serde_json::json!(true)));
+    assert_eq!(interrupted(earlier.id.clone()).await, None);
+}
+
+/// The checkpointer saves through `save_message_id`; the stored row must be
+/// the one `save_message` writes.
+#[tokio::test]
+async fn save_message_id_stores_what_save_message_stores() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let note = || {
+        let mut m = NewMessage::user("ctx");
+        m.extra = Some(serde_json::json!({"hidden_from_user": true, "hidden_from_summary": true}).as_object().unwrap().clone());
+        m
+    };
+    let by_row = save_message(&pool, &s.id, note()).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let id = save_message_id(&mut conn, &s.id, note()).await.unwrap();
+    drop(conn);
+    let by_id = get_message(&pool, &id).await.unwrap().unwrap();
+    assert_eq!((by_id.kind.as_str(), by_id.pinned, by_id.extra.clone()), (by_row.kind.as_str(), by_row.pinned, by_row.extra.clone()));
+    assert_eq!(by_id.seq, by_row.seq + appv3_db::SEQ_STEP);
+
+    let before = get_session(&pool, &s.id).await.unwrap().unwrap().history_structure_revision;
+    let mut conn = pool.acquire().await.unwrap();
+    save_message_id(&mut conn, &s.id, NewMessage { is_summary: true, ..NewMessage::user("summary") }).await.unwrap();
+    drop(conn);
+    assert_eq!(get_session(&pool, &s.id).await.unwrap().unwrap().history_structure_revision, before + 1);
+}
+
+#[tokio::test]
+async fn save_message_returns_the_stored_row() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let mut extra = serde_json::Map::new();
+    extra.insert("usage".into(), serde_json::json!({"input": 12, "note": "héllo"}));
+    let msg = NewMessage {
+        reasoning_content: Some("thinking…".into()),
+        tool_calls: Some(serde_json::json!([{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}])),
+        extra: Some(extra),
+        ..NewMessage::assistant(Some("naïve ✓".into()))
+    };
+    let saved = save_message(&pool, &s.id, msg).await.unwrap();
+    let stored = get_message(&pool, &saved.id).await.unwrap().unwrap();
+    assert_eq!(serde_json::to_value(&saved).unwrap(), serde_json::to_value(&stored).unwrap());
+    assert_eq!(saved.session_id, stored.session_id);
+    assert_eq!(saved.content.as_deref(), Some("naïve ✓"));
+}
+
+#[tokio::test]
+async fn sessions_by_ids_accepts_both_id_forms_and_skips_missing() {
+    let (_d, pool) = fresh().await;
+    let a = create_session(&pool, NewSession { workspace: "/w".into(), title: Some("Fix login".into()), ..Default::default() }).await.unwrap();
+    let b = create_session(&pool, NewSession { workspace: "/w".into(), ..Default::default() }).await.unwrap();
+    let ids = vec![api_uuid(&a.id), db_id(&b.id), "0190a1b2-0000-7000-8000-000000000000".to_string()];
+    let mut rows = get_sessions_by_ids(&pool, &ids).await.unwrap();
+    rows.sort_by(|x, y| x.id.cmp(&y.id));
+    let mut expected = vec![a.id.clone(), b.id.clone()];
+    expected.sort();
+    assert_eq!(rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), expected);
+    assert!(get_sessions_by_ids(&pool, &[]).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn session_pages_follow_their_cursor() {
+    let (_d, pool) = fresh().await;
+    let mut ids = vec![];
+    for i in 0..3 {
+        ids.push(create_session(&pool, NewSession { workspace: "/tmp/ws".into(), title: Some(format!("s{i}")), ..Default::default() }).await.unwrap().id);
+    }
+    let (first, cursor, more) = list_sessions_page(&pool, None, 2, &[], None).await.unwrap();
+    assert!(more);
+    assert_eq!(first.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), [ids[2].clone(), ids[1].clone()]);
+    let cursor = cursor.expect("next cursor");
+    let (rest, _, more) = list_sessions_page(&pool, Some(&cursor), 2, &[], None).await.unwrap();
+    assert!(!more);
+    assert_eq!(rest.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), [ids[0].clone()]);
+    // Only the `<created_at>|<uuid>` form the server hands out is accepted.
+    let bare = cursor.split('|').next().unwrap();
+    assert!(list_sessions_page(&pool, Some(bare), 2, &[], None).await.is_err());
+}
+
+#[tokio::test]
+async fn released_queued_messages_move_to_the_tail() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let queued = save_message(&pool, &s.id, NewMessage { kind: Some("queued".into()), ..NewMessage::user("later") }).await.unwrap();
+    let reply = save_message(&pool, &s.id, NewMessage::user("meanwhile")).await.unwrap();
+    let revision = |pool: appv3_db::DbPool, id: String| async move { get_session(&pool, &id).await.unwrap().unwrap().history_structure_revision };
+    let before = revision(pool.clone(), s.id.clone()).await;
+    let released = release_queued_user_messages(&pool, &s.id, Some("abc")).await.unwrap();
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0].id, queued.id);
+    assert_eq!(released[0].kind, "chat");
+    assert!(released[0].seq > reply.seq, "{} <= {}", released[0].seq, reply.seq);
+    // The returned row is the stored one.
+    assert_eq!(released[0].snapshot().as_deref(), Some("abc"));
+    let stored = get_message(&pool, &queued.id).await.unwrap().unwrap();
+    assert_eq!((stored.seq, &stored.created_at, &stored.extra), (released[0].seq, &released[0].created_at, &released[0].extra));
+    assert!(revision(pool.clone(), s.id.clone()).await > before);
+}
+
+#[tokio::test]
+async fn fresh_db_is_stamped_at_alembic_head() {
+    let (_d, pool) = fresh().await;
+    let v: String = sqlx::query_scalar("SELECT version_num FROM alembic_version").fetch_one(&pool).await.unwrap();
+    assert_eq!(v, ALEMBIC_HEAD);
+    // Re-opening detects it as current rather than recreating.
+    assert_eq!(appv3_db::migrations::run_migrations(&pool).await.unwrap(), SchemaState::Current);
+}
+
+#[tokio::test]
+async fn fresh_db_writes_v2_encoding() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), agent_name: Some("code".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(s.id.len(), 32, "uuid must be stored as 32-char hex");
+    assert!(!s.id.contains('-'));
+    assert_eq!(s.created_at.len(), 26, "datetime must be 'YYYY-MM-DD HH:MM:SS.ffffff'");
+    assert_eq!(&s.created_at[10..11], " ");
+    let m = save_message(&pool, &s.id, NewMessage::user("hi")).await.unwrap();
+    assert_eq!(m.id.len(), 32);
+    assert_eq!(m.seq, appv3_db::SEQ_STEP);
+    // Lookup works with the hyphenated API spelling.
+    let hy = api_uuid(&s.id);
+    assert!(get_session(&pool, &hy).await.unwrap().is_some());
+    let resp = api::session_response(&s, &Default::default());
+    assert_eq!(resp["id"], hy);
+    assert!(resp["created_at"].as_str().unwrap().ends_with('Z'));
+    assert!(resp.get("revert").is_none(), "JSON null revert must be omitted");
+}
+
+#[tokio::test]
+async fn undo_boundary_then_cleanup_matches_v2_semantics() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/w".into(), ..Default::default() }).await.unwrap();
+    let u1 = save_message(&pool, &s.id, NewMessage::user("one")).await.unwrap();
+    save_message(&pool, &s.id, NewMessage::assistant(Some("a1".into()))).await.unwrap();
+    let u2 = save_message(&pool, &s.id, NewMessage::user("two")).await.unwrap();
+    save_message(&pool, &s.id, NewMessage::assistant(Some("a2".into()))).await.unwrap();
+
+    let target = find_undo_target(&pool, &s).await.unwrap().unwrap();
+    assert_eq!(target.id, u2.id);
+    let s = update_session(&pool, &s.id, SessionUpdate { revert: Some(Some(revert_state(&target, None))), ..Default::default() }).await.unwrap().unwrap();
+    // Boundary hides u2+a2 from the LLM window without mutating rows.
+    let win = llm_window_rows(&pool, &s.id, true).await.unwrap();
+    assert_eq!(win.len(), 2);
+    // Undo again walks back to u1.
+    assert_eq!(find_undo_target(&pool, &s).await.unwrap().unwrap().id, u1.id);
+    // Sending a new message materialises the undo.
+    assert_eq!(cleanup_reverted_tail(&pool, &s.id).await.unwrap(), 2);
+    let s = get_session(&pool, &s.id).await.unwrap().unwrap();
+    assert!(s.revert_json().is_none());
+    let (page, _, _) = history_page(&pool, &s.id, None).await.unwrap();
+    assert_eq!(page.len(), 2);
+}
+
+#[tokio::test]
+async fn queued_messages_promote_to_tail() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/w".into(), ..Default::default() }).await.unwrap();
+    save_message(&pool, &s.id, NewMessage::user("first")).await.unwrap();
+    let q = save_queued_user_message(&pool, &s.id, "later", None).await.unwrap();
+    assert_eq!(q.kind, "queued");
+    assert!(llm_window_rows(&pool, &s.id, true).await.unwrap().iter().all(|r| r.kind != "queued"));
+    save_message(&pool, &s.id, NewMessage::assistant(Some("reply".into()))).await.unwrap();
+    let released = release_queued_user_messages(&pool, &s.id, Some("snap1")).await.unwrap();
+    assert_eq!(released.len(), 1);
+    let win = llm_window_rows(&pool, &s.id, true).await.unwrap();
+    assert_eq!(win.last().unwrap().content.as_deref(), Some("later"));
+    assert_eq!(win.last().unwrap().snapshot().as_deref(), Some("snap1"));
+}
+
+#[tokio::test]
+async fn pending_question_round_trip() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/w".into(), ..Default::default() }).await.unwrap();
+    let qs = vec![serde_json::json!({"question": "Proceed?", "header": "Go", "options": []})];
+    let q = create_pending_question(&pool, &s.id, "call_1", &qs).await.unwrap();
+    assert!(sessions_awaiting_input(&pool).await.unwrap().contains(&s.id));
+    let answers = serde_json::json!([["Yes"]]);
+    let r = resolve_pending_question(&pool, &q.id, "answered", Some(&answers)).await.unwrap();
+    assert!(r.is_some());
+    // Second resolution loses the race.
+    assert!(resolve_pending_question(&pool, &q.id, "answered", Some(&answers)).await.unwrap().is_none());
+    let win = llm_window_rows(&pool, &s.id, true).await.unwrap();
+    assert_eq!(win.last().unwrap().content.as_deref(), Some("User has answered your questions: \"Proceed?\"=\"Yes\". Continue with the user's answers in mind."));
+}
+
+#[tokio::test]
+async fn plan_review_question_names_its_tool_and_takes_the_answer_text() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/w".into(), ..Default::default() }).await.unwrap();
+    let payload = serde_json::json!({"kind": "plan_review", "plan_revision": 3, "questions": [{"question": "Review plan revision 3.", "header": "Plan review", "options": []}]});
+    let q = create_pending_question_with(&pool, &s.id, "call_p", "submit_plan", &payload).await.unwrap();
+    assert_eq!(q.kind().as_deref(), Some("plan_review"));
+    assert_eq!(q.plan_revision(), Some(3));
+    let placeholder = llm_window_rows(&pool, &s.id, true).await.unwrap();
+    assert_eq!(placeholder.last().unwrap().name.as_deref(), Some("submit_plan"));
+
+    let resp = api::pending_question_response(&q);
+    assert_eq!(resp["kind"], "plan_review");
+    assert_eq!(resp["plan_revision"], 3);
+    let plain = create_session(&pool, NewSession { workspace: "/w".into(), ..Default::default() }).await.unwrap();
+    let asked = create_pending_question(&pool, &plain.id, "call_q", &[serde_json::json!({"question": "Q?", "header": "H", "options": []})]).await.unwrap();
+    assert!(api::pending_question_response(&asked).get("kind").is_none(), "ask_user rows keep the v2 shape");
+
+    let answers = serde_json::json!([["Approve"]]);
+    resolve_pending_question_with(&pool, &q.id, "answered", Some(&answers), Some("The user approved plan revision 3.")).await.unwrap().unwrap();
+    let win = llm_window_rows(&pool, &s.id, true).await.unwrap();
+    assert_eq!(win.last().unwrap().content.as_deref(), Some("The user approved plan revision 3."));
+}
+
+#[tokio::test]
+async fn refuses_unstamped_foreign_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", path.display())).await.unwrap();
+        sqlx::query("CREATE TABLE chat_sessions (id TEXT)").execute(&pool).await.unwrap();
+    }
+    let err = create_pool(&path).await.unwrap_err().to_string();
+    assert!(err.contains("alembic_version"), "{err}");
+}
+
+#[tokio::test]
+async fn real_v2_db_reads_existing_history() {
+    let Ok(src) = std::env::var("OAD_V2_DB") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("copy.db");
+    std::fs::copy(&src, &copy).unwrap();
+    let pool = create_pool(&copy).await.unwrap();
+
+    let (page, _cursor, _more) = list_sessions_page(&pool, None, 5, &[], None).await.unwrap();
+    assert!(!page.is_empty(), "expected sessions in the v2 database");
+    for s in &page {
+        let hy = api_uuid(&s.id);
+        let found = get_session(&pool, &hy).await.unwrap().expect("lookup by hyphenated id");
+        assert_eq!(found.id, db_id(&hy));
+        let (rows, _, _) = history_page(&pool, &hy, None).await.unwrap();
+        for r in &rows {
+            let m = api::message_response(r);
+            assert_eq!(m["session_id"], hy);
+        }
+        let _ = session_usage_totals(&pool, &hy).await.unwrap();
+        let _ = llm_window_rows(&pool, &hy, true).await.unwrap();
+    }
+    // Writes from v3 into the v2 file use the v2 encoding.
+    let first = &page[0];
+    let m = save_message(&pool, &api_uuid(&first.id), NewMessage::user("v3 write")).await.unwrap();
+    assert_eq!(m.session_id, first.id);
+    assert_eq!(m.id.len(), 32);
+}

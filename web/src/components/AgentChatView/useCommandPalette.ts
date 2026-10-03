@@ -34,6 +34,8 @@ export interface UseCommandPaletteArgs {
 
   handleNewSession: () => void
   handleWorkspaceFiles: () => void
+  /** Project workspaces only: opens or shows the dock's Git tab. */
+  handleOpenGit?: () => void
   handleSidebarToggle: () => void
   handleToggleAgentCapabilities: () => void
   /** Desktop + workspace: the dock's Tasks tab; otherwise the popover. */
@@ -70,6 +72,7 @@ export function useCommandPalette({
   workspacePanelOpen,
   handleNewSession,
   handleWorkspaceFiles,
+  handleOpenGit,
   handleSidebarToggle,
   handleToggleAgentCapabilities,
   handleToggleTasks,
@@ -105,6 +108,7 @@ export function useCommandPalette({
     toggleTasks: handleToggleTasks,
     toggleScheduler: handleToggleScheduler,
     handleWorkspaceFiles,
+    handleOpenGit,
     handleSidebarToggle,
     handleNewSession,
     handleOpenTerminal,
@@ -165,6 +169,7 @@ export function useCommandPalette({
       window.dispatchEvent(new CustomEvent('focus-chat-input'))
     }),
     appShortcut('terminal', () => { handleOpenTerminal() }),
+    appShortcut('openGit', () => { handleOpenGit?.() }, { enabled: handleOpenGit !== undefined }),
   ])
 
   return {

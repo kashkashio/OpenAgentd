@@ -202,15 +202,18 @@ async fn fetch_catalog(token: &str, base: &str) -> Catalog {
 /// `copilot_model_catalog()` (short-lived cache).
 pub async fn model_catalog() -> Arc<Catalog> {
     let Some((token, base)) = resolve_github_token() else { return Arc::new(Catalog::new()) };
-    let key = (crate::plugin::sha256_hex(&token), base.clone());
-    if let Some((t, c)) = catalog_cache().lock().unwrap().get(&key) {
-        if t.elapsed() < CATALOG_TTL {
-            return c.clone();
-        }
+    if let Some(c) = fresh_cached_catalog(&token, &base) {
+        return c;
     }
     let cat = Arc::new(fetch_catalog(&token, &base).await);
-    catalog_cache().lock().unwrap().insert(key, (Instant::now(), cat.clone()));
+    catalog_cache().lock().unwrap().insert((crate::plugin::sha256_hex(&token), base), (Instant::now(), cat.clone()));
     cat
+}
+
+/// The cached `/models` catalog for this token, if younger than the TTL.
+fn fresh_cached_catalog(token: &str, base: &str) -> Option<Arc<Catalog>> {
+    let key = (crate::plugin::sha256_hex(token), base.to_string());
+    catalog_cache().lock().unwrap().get(&key).filter(|(t, _)| t.elapsed() < CATALOG_TTL).map(|(_, c)| c.clone())
 }
 
 fn endpoint_for_model(cat: &Catalog, model: &str) -> &'static str {
@@ -243,7 +246,8 @@ pub fn build(model: &str, model_kwargs: Kwargs) -> ProviderResult<Arc<dyn LlmPro
     let Some((token, base)) = resolve_github_token() else {
         return Err(ProviderError::Invalid("GitHub token not found.  Run:\n  openagentd auth copilot\nOr set COPILOT_GITHUB_TOKEN env var.".into()));
     };
-    let cat = block_on_thread(model_catalog());
+    // Only a cache miss needs the network (and the async helper).
+    let cat = fresh_cached_catalog(&token, &base).unwrap_or_else(|| block_on_thread(model_catalog()));
     Ok(Arc::new(provider_for(model, &token, &base, model_kwargs, &cat)))
 }
 

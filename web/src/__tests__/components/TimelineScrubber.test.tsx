@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef } from 'react'
 
 import { TimelineScrubber } from '@/components/AgentView/TimelineScrubber'
@@ -135,6 +135,46 @@ describe('TimelineScrubber', () => {
     fireEvent.scroll(scroller(container))
 
     expect(container.querySelector<HTMLElement>('[data-scrubber-thumb]')!.style.top).toContain('25%')
+  })
+
+  // A streaming answer grows the transcript every frame. Re-measuring every
+  // mark (a layout read per prompt, plus a re-render) each time is the cost.
+  it('re-measures marks at most once per window while the transcript grows', () => {
+    let now = 1_000
+    const realNow = performance.now
+    const realSetTimeout = globalThis.setTimeout
+    const timers: Array<() => void> = []
+    performance.now = () => now
+    globalThis.setTimeout = ((callback: () => void) => {
+      timers.push(callback)
+      return timers.length as unknown as ReturnType<typeof setTimeout>
+    }) as unknown as typeof setTimeout
+    try {
+      const { container } = render(<Harness />)
+      let promptReads = 0
+      const measure = HTMLElement.prototype.getBoundingClientRect
+      HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+        if (this.dataset.promptId) promptReads += 1
+        return measure.call(this)
+      }
+
+      for (let i = 1; i <= 10; i++) {
+        scrollHeight = 1_000 + i * 10
+        now += 16
+        fireEvent.scroll(scroller(container))
+      }
+      expect(promptReads).toBe(0)
+      // The thumb still follows every change.
+      expect(container.querySelector<HTMLElement>('[data-scrubber-thumb]')!.style.height).toContain('22.73%')
+
+      now += 200
+      act(() => { timers.splice(0).forEach((run) => run()) })
+      expect(promptReads).toBe(2)
+      expect(marks(container)[1]).toBe('prompt@calc(min(27.27%, 100% - 0.25rem))')
+    } finally {
+      performance.now = realNow
+      globalThis.setTimeout = realSetTimeout
+    }
   })
 
   it('drags the thumb with the grab point kept under the pointer', () => {

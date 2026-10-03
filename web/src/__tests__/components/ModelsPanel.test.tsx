@@ -134,3 +134,22 @@ describe('ModelsPanel — stale visible models', () => {
     expect(save).toHaveBeenCalledWith(['gpt-4o', 'gpt-5'])
   })
 })
+
+describe('ModelsPanel — long model lists', () => {
+  afterEach(cleanup)
+  const rows = () => screen.queryAllByRole('button', { name: /in model pickers$/ }).length
+
+  it('shows the first 50 models and the rest on request', () => {
+    renderPanel({ models: Array.from({ length: 120 }, (_, i) => `model-${i}`) })
+    expect(rows()).toBe(50)
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 120 models' }))
+    expect(rows()).toBe(120)
+    expect(screen.queryByRole('button', { name: /^Show all/ })).toBeNull()
+  })
+
+  it('shows a short list whole', () => {
+    renderPanel({ models: Array.from({ length: 50 }, (_, i) => `model-${i}`) })
+    expect(rows()).toBe(50)
+    expect(screen.queryByRole('button', { name: /^Show all/ })).toBeNull()
+  })
+})

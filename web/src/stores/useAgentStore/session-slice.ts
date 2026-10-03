@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand'
 import { agentStatus, sessionHistory, sessionHistorySince, updateSessionInteractionMode } from '@/api/client'
 import { applyOrphanToolResults, isPromptMessage, parseAgentBlocks, sumUsageFromMessages } from '@/utils/messages'
 import type { OrphanToolResult } from '@/utils/messages'
+import { readBlocks } from '@/utils/blocks'
 import { createDefaultAgentStream } from './defaults'
 import { applyRevertBoundary, revokeBlobUrlsFromBlocks } from './helpers'
 import { toPendingQuestion } from './sse-reducer'
@@ -51,7 +52,9 @@ function prependOlderPage(draft: AgentStore, history: SessionHistoryResponse, re
     // tool result whose call row is in this older page.
     const orphans = { ...(stream._orphanToolResults ?? {}) }
     const older = applyOrphanToolResults(parseAgentBlocks(messagesBeforeTime(messages, revertTime), orphans), orphans)
-    stream.blocks = [...older, ...stream.blocks]
+    // Spread the plain array, not the draft: spreading a draft drafts every
+    // loaded block. Nothing in this recipe writes to those blocks afterwards.
+    stream.blocks = [...older, ...readBlocks(stream.blocks)]
     stream._orphanToolResults = orphans
   }
   const lead = draft.leadName ? draft.agentStreams[draft.leadName] : undefined
@@ -405,6 +408,7 @@ export function resetSessionState(
   state._reconnectAttempts = 0
   state._sessionGeneration = (state._sessionGeneration ?? 0) + 1
   state.cacheInvalidations = []
+  state._runningPatchedFor = null
   state.hasMore = false
   state.nextCursor = null
   state._leadRevertTime = null
@@ -455,6 +459,7 @@ export type SessionSlice = Pick<
   | '_sessionSettingsVersion'
   | 'sessionFastMode'
   | '_sessionGeneration'
+  | '_runningPatchedFor'
   | 'hasMore'
   | 'nextCursor'
   | '_leadRevertTime'
@@ -681,17 +686,19 @@ async function loadSessionImpl(
       const confirmedUser = history.lead.messages.filter(
         (m) => m.role === 'user' && m.kind !== 'queued' && m.extra?.queue_status !== 'queued',
       )
+      // Queued messages always carry their server id, so they are matched by
+      // id alone: matching text dropped any queued "yes" or "continue" the
+      // session had already sent once.
       const confirmedUserIds = new Set(confirmedUser.map((m) => m.id))
-      const confirmedUserContents = new Set(confirmedUser.map((m) => (m.content || '').trim()))
 
       const queued = queuedMessagesFromHistory(sessionId, history.lead.messages).filter(
-        (msg) => !confirmedUserIds.has(msg.id) && !confirmedUserContents.has(msg.content.trim()),
+        (msg) => !confirmedUserIds.has(msg.id),
       )
       const queuedIds = new Set(queued.map((msg) => msg.id))
       draft._pendingMessages = [
         ...draft._pendingMessages.filter((msg) => {
           if (msg.sessionId !== sessionId) return true
-          if (confirmedUserIds.has(msg.id) || confirmedUserContents.has((msg.content || '').trim())) return false
+          if (confirmedUserIds.has(msg.id)) return false
           return queuedIds.has(msg.id) || (msg.submittedAt !== undefined && msg.submittedAt >= fetchStartedAt)
         }),
         ...queued.filter((msg) => !draft._pendingMessages.some((existing) => existing.id === msg.id)),
@@ -814,6 +821,7 @@ export const createSessionSlice: StateCreator<
   _sessionSettingsVersion: 0,
   sessionFastMode: false,
   _sessionGeneration: 0,
+  _runningPatchedFor: null,
   hasMore: false,
   nextCursor: null,
   _leadRevertTime: null,
@@ -1078,9 +1086,12 @@ export const createSessionSlice: StateCreator<
         const stream = draft.agentStreams[name]
         if (!stream) return
         const unsynced = new Set(stream._unsyncedBlockIds ?? [])
+        // Read the plain array: filtering or spreading the draft would draft
+        // every confirmed block. The recipe never writes to them afterwards.
+        const loaded = readBlocks(stream.blocks)
         const confirmedRaw = unsynced.size > 0
-          ? stream.blocks.filter((block) => !unsynced.has(block.id) || block.type === 'provider_status')
-          : stream.blocks
+          ? loaded.filter((block) => !unsynced.has(block.id) || block.type === 'provider_status')
+          : loaded
         // The delta can carry a tool result whose assistant row predates the
         // watermark (a mid-turn loadSession adopted it before the tool
         // finished). Attach such orphans to the already-confirmed card, or it
@@ -1148,26 +1159,22 @@ export const createSessionSlice: StateCreator<
       })
 
       // A user row the server now reports as a real (non-queued) message has
-      // left the queue; drop its optimistic twin. Matching on trimmed content
-      // is a fallback for rows whose optimistic id was never reconciled, so a
-      // deliberately repeated message ("yes" twice) may lose its duplicate.
+      // left the queue. Queued messages always carry their server id, so the
+      // match is by id: by text, a repeated "yes" lost its duplicate.
       const confirmedUser = delta.lead.messages.filter(
         (m) => m.role === 'user' && m.kind !== 'queued' && m.extra?.queue_status !== 'queued',
       )
       const confirmedUserIds = new Set(confirmedUser.map((m) => m.id))
-      const confirmedUserContents = new Set(confirmedUser.map((m) => (m.content || '').trim()))
-      if (confirmedUserIds.size > 0 || confirmedUserContents.size > 0) {
+      if (confirmedUserIds.size > 0) {
         draft._pendingMessages = draft._pendingMessages.filter((msg) => {
           if (msg.sessionId && msg.sessionId !== sessionId) return true
-          if (confirmedUserIds.has(msg.id)) return false
-          if (confirmedUserContents.has((msg.content || '').trim())) return false
-          return true
+          return !confirmedUserIds.has(msg.id)
         })
       }
 
       // Adopt any queued rows the delta revealed, matching loadSession.
       const queued = queuedMessagesFromHistory(sessionId, delta.lead.messages).filter(
-        (msg) => !confirmedUserIds.has(msg.id) && !confirmedUserContents.has(msg.content.trim()),
+        (msg) => !confirmedUserIds.has(msg.id),
       )
       if (queued.length > 0) {
         draft._pendingMessages = [

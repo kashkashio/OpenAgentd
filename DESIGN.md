@@ -726,6 +726,37 @@ value is ignored for builder-created windows), which centres them against the
 36px header and is why `mac-traffic-inset` is 70px (12px origin + ~58px button
 group). Reference window is 1280×820, floor 820×640.
 
+Inside Tauri, `lib/desktop-shell.ts` sets `<html data-shell="desktop">`. Under
+it, chrome is `user-select: none` with the arrow cursor on buttons (links keep
+the pointer), and only content selects: inputs, `.selectable-text`,
+`.oa-prose`, `pre`, `code` and `.xterm`. Images and links do not drag out. The
+webview's own right-click menu is suppressed except in text fields, over
+selected text, and in dev builds; transcript surfaces offer app menus instead.
+While another app has focus, `data-window-inactive` hides focus rings, turns
+text selection to `--bg-key` and mutes `aria-current` items, the way Finder
+greys its selection. The browser build keeps the browser's behaviour.
+
+### Keyboard focus model
+
+Tab follows the DOM order: every control is its own Tab stop. Composite
+widgets (tablists, menus, listboxes, comboboxes) keep their own arrow keys.
+
+- **Hover-revealed row actions** also show on `focus-within`, and keep a
+  keyboard shortcut: F2, Delete, Shift+F10 / the Menu key (`lib/focus/item-keys.ts`).
+- **Quiet focus**: focus a script hands back without a key press (the
+  composer pill on page load) goes through `focusQuietly`
+  (`lib/focus/quiet.ts`), so it draws no ring until the keyboard moves on.
+- **Ring follows input** (desktop): focus rings show only after a key press
+  and hide again on the next pointer press. Focus a script gives — the
+  composer at launch, a fold after its Collapse click — draws none until the
+  keyboard is used. Text fields keep their focus styles.
+- Focus never rests on `<body>` or in an `inert` panel; it returns to the
+  composer.
+
+Tooltips follow native timing: 500 ms on hover, then instant for 300 ms after
+one closes; a press, key or scroll closes them, and focus opens them only when
+it came from the keyboard.
+
 ### Mobile shell
 
 The Tauri webview sets `data-mobile-shell` on `<html>`, which switches the

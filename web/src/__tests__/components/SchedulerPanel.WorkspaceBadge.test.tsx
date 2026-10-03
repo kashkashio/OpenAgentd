@@ -23,7 +23,8 @@ describe('WorkspaceBadge', () => {
     expect(screen.getByText('Chat')).toBeInTheDocument()
 
     await user.hover(screen.getByText('Chat'))
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Chat workspace')
+    // Tooltips open after the hover delay.
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Chat workspace')
     expect(screen.queryByText('/Users/name')).not.toBeInTheDocument()
   })
 
@@ -35,6 +36,6 @@ describe('WorkspaceBadge', () => {
     expect(screen.getByText('app')).toBeInTheDocument()
 
     await user.hover(screen.getByText('app'))
-    expect(screen.getByRole('tooltip')).toHaveTextContent('/repo/app')
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('/repo/app')
   })
 })

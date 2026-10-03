@@ -156,6 +156,110 @@ const HighlightedCode = memo(function HighlightedCode({ html }: { html: string }
   return <span className="min-w-0 flex-1" dangerouslySetInnerHTML={{ __html: html || ' ' }} />
 })
 
+/** Lines per ``LineBlock``: big enough to keep blocks few, small to skip. */
+const LINES_PER_BLOCK = 200
+
+/** Start indexes of the ``LineBlock`` chunks for ``count`` lines. */
+function blockStarts(count: number): number[] {
+  return Array.from({ length: Math.ceil(count / LINES_PER_BLOCK) }, (_, i) => i * LINES_PER_BLOCK)
+}
+
+/** A run of lines the browser may skip while offscreen (``.oa-line-block``). */
+function LineBlock({ lines, lineHeightPx, children }: { lines: number; lineHeightPx: number; children: React.ReactNode }) {
+  return (
+    <div data-line-block className="oa-line-block" style={{ '--oa-line-block-height': `${lines * lineHeightPx}px` } as React.CSSProperties}>
+      {children}
+    </div>
+  )
+}
+
+/** One file line. Memoized: a selection change re-renders only lines it flips. */
+const FileLine = memo(function FileLine({
+  lineNo,
+  html,
+  selected,
+  comment,
+}: {
+  lineNo: number
+  html: string
+  selected: boolean
+  /** Set on the last selected line: shows the add-comment button. */
+  comment: { start: number; end: number; onAdd: (start: number, end: number) => void } | null
+}) {
+  return (
+    <div
+      data-line={lineNo}
+      className={cn(
+        'relative flex w-full items-start gap-3 whitespace-pre-wrap break-words px-3 text-left text-(--color-text-2)',
+        selected && 'bg-(--bg-key)',
+      )}
+    >
+      {comment ? (
+        <Tooltip className="absolute left-[calc(0.75rem+4ch+0.25rem)] top-1 z-10">
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  comment.onAdd(comment.start, comment.end)
+                }}
+                className="flex h-4 w-4 items-center justify-center rounded-xs border border-(--color-border-strong) bg-(--bg-card) text-(--color-text-muted) shadow hover:bg-(--bg-key) hover:text-(--color-text)"
+                aria-label={comment.start === comment.end ? `Add comment for line ${comment.start}` : `Add comment for lines ${comment.start}-${comment.end}`}
+              >
+                <Plus size={13} aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent>{comment.start === comment.end ? `Comment line ${comment.start}` : `Comment lines ${comment.start}-${comment.end}`}</TooltipContent>
+        </Tooltip>
+      ) : null}
+      {/* Mouse handling is delegated to the scroller (``data-select-line``). */}
+      <button type="button" data-select-line={lineNo} className="shrink-0" aria-label={`Select line ${lineNo}`}>
+        <LineGutter value={lineNo} />
+      </button>
+      <HighlightedCode html={html} />
+    </div>
+  )
+})
+
+/**
+ * ``LINES_PER_BLOCK`` lines. Memoized on its slice of the selection, so a
+ * drag re-renders only the blocks whose selected lines change.
+ */
+const FileLineBlock = memo(function FileLineBlock({
+  lines,
+  start,
+  selStart,
+  selEnd,
+  comment,
+}: {
+  lines: string[]
+  start: number
+  /** Selected 1-based line range clipped to this block; 0 when none. */
+  selStart: number
+  selEnd: number
+  comment: { start: number; end: number; onAdd: (start: number, end: number) => void } | null
+}) {
+  const end = Math.min(start + LINES_PER_BLOCK, lines.length)
+  const rows: React.ReactNode[] = []
+  for (let index = start; index < end; index++) {
+    const lineNo = index + 1
+    rows.push(
+      <FileLine
+        key={index}
+        lineNo={lineNo}
+        html={lines[index]}
+        selected={lineNo >= selStart && lineNo <= selEnd}
+        comment={comment && lineNo === comment.end ? comment : null}
+      />,
+    )
+  }
+  // 12px text at leading-relaxed.
+  return <LineBlock lines={end - start} lineHeightPx={19.5}>{rows}</LineBlock>
+})
+
 function findLineElement(node: Node | null): HTMLElement | null {
   let curr: Node | null = node
   while (curr && curr !== document.body) {
@@ -299,64 +403,48 @@ function TextPreview({
   if (content === null) return null
   const selectedStart = selection ? Math.min(selection.anchor, selection.focus) : null
   const selectedEnd = selection ? Math.max(selection.anchor, selection.focus) : null
-  const selectLine = (line: number) => {
+  const gutterLine = (target: EventTarget) => {
+    const button = (target as HTMLElement).closest?.('[data-select-line]')
+    return button ? Number(button.getAttribute('data-select-line')) : null
+  }
+  // Delegated from every line's gutter button, so lines carry no handlers.
+  const handleMouseDown = (event: React.MouseEvent) => {
+    const line = gutterLine(event.target)
+    if (line === null) return
+    event.preventDefault()
     setSelection({ anchor: line, focus: line })
     setDragging(true)
   }
-  const extendSelection = (line: number) => {
+  const handleMouseOver = (event: React.MouseEvent) => {
     if (!dragging) return
-    setSelection((prev) => prev ? { ...prev, focus: line } : prev)
+    const line = gutterLine(event.target)
+    if (line !== null) setSelection((prev) => (prev && prev.focus !== line ? { ...prev, focus: line } : prev))
   }
+  const comment = selectedStart !== null && selectedEnd !== null
+    ? { start: selectedStart, end: selectedEnd, onAdd: (start: number, end: number) => onAddComment?.(file.path, start, end) }
+    : null
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col" onMouseLeave={() => setDragging(false)} onMouseUp={() => setDragging(false)}>
-      <div className="min-h-0 flex-1 overflow-auto overscroll-contain touch-pan-y font-mono text-xs leading-relaxed" data-scroll-capture="true" data-select-container tabIndex={-1}>
-        {highlightedLines.map((lineHtml, index) => {
-          const lineNo = index + 1
-          const selected = selectedStart !== null && selectedEnd !== null && lineNo >= selectedStart && lineNo <= selectedEnd
+      <div
+        className="min-h-0 flex-1 overflow-auto overscroll-contain touch-pan-y font-mono text-xs leading-relaxed"
+        data-scroll-capture="true"
+        data-select-container
+        tabIndex={-1}
+        onMouseDown={handleMouseDown}
+        onMouseOver={handleMouseOver}
+      >
+        {blockStarts(highlightedLines.length).map((start) => {
+          const end = start + LINES_PER_BLOCK
+          const overlaps = selectedStart !== null && selectedEnd !== null && selectedStart <= end && selectedEnd > start
           return (
-            <div
-              key={index}
-              data-line={lineNo}
-              className={cn(
-                'relative flex w-full items-start gap-3 whitespace-pre-wrap break-words px-3 text-left text-(--color-text-2)',
-                selected && 'bg-(--bg-key)',
-              )}
-            >
-              {selected && lineNo === selectedEnd && selectedStart !== null ? (
-                <Tooltip className="absolute left-[calc(0.75rem+4ch+0.25rem)] top-1 z-10">
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onAddComment?.(file.path, selectedStart, selectedEnd)
-                        }}
-                        className="flex h-4 w-4 items-center justify-center rounded-xs border border-(--color-border-strong) bg-(--bg-card) text-(--color-text-muted) shadow hover:bg-(--bg-key) hover:text-(--color-text)"
-                        aria-label={selectedStart === selectedEnd ? `Add comment for line ${selectedStart}` : `Add comment for lines ${selectedStart}-${selectedEnd}`}
-                      >
-                        <Plus size={13} aria-hidden="true" />
-                      </button>
-                    }
-                  />
-                  <TooltipContent>{selectedStart === selectedEnd ? `Comment line ${selectedStart}` : `Comment lines ${selectedStart}-${selectedEnd}`}</TooltipContent>
-                </Tooltip>
-              ) : null}
-              <button
-                type="button"
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  selectLine(lineNo)
-                }}
-                onMouseEnter={() => extendSelection(lineNo)}
-                className="shrink-0"
-                aria-label={`Select line ${lineNo}`}
-              >
-                <LineGutter value={lineNo} />
-              </button>
-              <HighlightedCode html={lineHtml} />
-            </div>
+            <FileLineBlock
+              key={start}
+              lines={highlightedLines}
+              start={start}
+              selStart={overlaps ? Math.max(selectedStart, start + 1) : 0}
+              selEnd={overlaps ? Math.min(selectedEnd, end) : 0}
+              comment={comment && comment.end > start && comment.end <= end ? comment : null}
+            />
           )
         })}
       </div>
@@ -591,68 +679,80 @@ export function DiffPreview({ diff, autoScroll = true }: { diff: string; autoScr
     return result
   }, [diff])
 
+  // Rows wrap, so nothing scrolls sideways and the gutter needs no
+  // ``sticky``: a sticky cell on every row made scrolling ~6x costlier.
+  const rows: React.ReactNode[] = []
+  parsed.forEach((p, index) => {
+    if (p.kind === 'meta') return
+
+    if (p.kind === 'note') {
+      rows.push(
+        <div
+          key={index}
+          className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
+        >
+          <div className="shrink-0 border-r border-(--color-border)/40 bg-inherit">
+            <span className="block w-9 py-0.5" />
+          </div>
+          <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
+            {p.text}
+          </span>
+        </div>,
+      )
+      return
+    }
+
+    if (p.kind === 'hunk') {
+      // No skipped lines to report (e.g. the first hunk starts at the
+      // top of the file) — rendering the empty separator anyway left a
+      // blank bordered strip between the file header row and the
+      // first real diff line, reading as a stray gap.
+      if (p.skipped <= 0) return
+      rows.push(
+        <div
+          key={index}
+          className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
+        >
+          <div className="shrink-0 border-r border-(--color-border)/40 bg-inherit">
+            <span className="block w-9 py-0.5" />
+          </div>
+          <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
+            {p.skipped} line{p.skipped === 1 ? '' : 's'} unchanged
+          </span>
+        </div>,
+      )
+      return
+    }
+
+    const isAdded   = p.kind === 'add'
+    const isRemoved = p.kind === 'del'
+    rows.push(
+      <div
+        key={index}
+        ref={p.isFirstChange ? firstChangeRef : undefined}
+        className={cn(
+          'flex min-w-0 items-stretch whitespace-pre-wrap break-words text-(--color-text) [overflow-wrap:anywhere]',
+          isAdded   && 'bg-(--color-diff-add-bg) text-(--color-diff-add-text)',
+          isRemoved && 'bg-(--color-diff-del-bg) text-(--color-diff-del-text)',
+        )}
+      >
+        <div className="flex shrink-0 select-none border-r border-(--color-border)/40 bg-inherit text-right text-xs md:text-[11px] text-(--color-text-subtle)">
+          <span className="w-9 py-0.5 pr-1.5">{p.lineNo}</span>
+        </div>
+        <pre className="m-0 min-w-0 flex-1 whitespace-pre-wrap break-words px-2 py-0.5 [overflow-wrap:anywhere]">{p.text}</pre>
+      </div>,
+    )
+  })
+
   return (
     <div className="bg-(--bg-card) font-mono text-[11px] leading-relaxed">
       <div className="min-w-0">
-        {parsed.map((p, index) => {
-          if (p.kind === 'meta') return null
-
-          if (p.kind === 'note') {
-            return (
-              <div
-                key={index}
-                className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
-              >
-                <div className="sticky left-0 z-[1] shrink-0 border-r border-(--color-border)/40 bg-inherit">
-                  <span className="block w-9 py-0.5" />
-                </div>
-                <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
-                  {p.text}
-                </span>
-              </div>
-            )
-          }
-
-          if (p.kind === 'hunk') {
-            // No skipped lines to report (e.g. the first hunk starts at the
-            // top of the file) — rendering the empty separator anyway left a
-            // blank bordered strip between the file header row and the
-            // first real diff line, reading as a stray gap.
-            if (p.skipped <= 0) return null
-            return (
-              <div
-                key={index}
-                className="flex min-w-0 items-center select-none border-y border-(--color-border)/20 bg-(--bg-page)"
-              >
-                <div className="sticky left-0 z-[1] shrink-0 border-r border-(--color-border)/40 bg-inherit">
-                  <span className="block w-9 py-0.5" />
-                </div>
-                <span className="px-3 py-0.5 text-xs md:text-[11px] italic text-(--color-text-subtle)">
-                  {p.skipped} line{p.skipped === 1 ? '' : 's'} unchanged
-                </span>
-              </div>
-            )
-          }
-
-          const isAdded   = p.kind === 'add'
-          const isRemoved = p.kind === 'del'
-          return (
-            <div
-              key={index}
-              ref={p.isFirstChange ? firstChangeRef : undefined}
-              className={cn(
-                'flex min-w-0 items-stretch whitespace-pre-wrap break-words text-(--color-text) [overflow-wrap:anywhere]',
-                isAdded   && 'bg-(--color-diff-add-bg) text-(--color-diff-add-text)',
-                isRemoved && 'bg-(--color-diff-del-bg) text-(--color-diff-del-text)',
-              )}
-            >
-              <div className="sticky left-0 z-[1] flex shrink-0 select-none border-r border-(--color-border)/40 bg-inherit text-right text-xs md:text-[11px] text-(--color-text-subtle)">
-                <span className="w-9 py-0.5 pr-1.5">{p.lineNo}</span>
-              </div>
-              <pre className="m-0 min-w-0 flex-1 whitespace-pre-wrap break-words px-2 py-0.5 [overflow-wrap:anywhere]">{p.text}</pre>
-            </div>
-          )
-        })}
+        {blockStarts(rows.length).map((start) => (
+          // 11px text at leading-relaxed plus the row's 4px padding.
+          <LineBlock key={start} lines={Math.min(LINES_PER_BLOCK, rows.length - start)} lineHeightPx={22}>
+            {rows.slice(start, start + LINES_PER_BLOCK)}
+          </LineBlock>
+        ))}
       </div>
     </div>
   )

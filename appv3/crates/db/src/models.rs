@@ -94,6 +94,24 @@ impl SessionMessage {
     }
 }
 
+/// The columns tool-call pairing needs from an LLM-window row. Skips
+/// `content`/`extra`, which hold whole tool outputs on long sessions.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ToolPairRow {
+    pub session_id: String,
+    pub role: String,
+    pub tool_calls: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub created_at: String,
+    pub seq: i64,
+}
+
+impl ToolPairRow {
+    pub fn tool_calls_json(&self) -> Option<Value> {
+        json_col(self.tool_calls.as_deref()).filter(|v| v.is_array())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct CodingWorkspace {
     pub id: String,

@@ -26,7 +26,7 @@ import { mock, describe, it, expect, beforeEach, afterEach, spyOn } from "bun:te
 const mockPostAgentChat = mock(() =>
   Promise.resolve({ status: "ok", session_id: "team-sid" })
 ) as any
-const mockCancelQueuedAgentMessage = mock(() => Promise.resolve()) as any
+const mockCancelQueuedAgentMessage = mock(() => Promise.resolve(true)) as any
 const mockPostAgentCommand = mock(() =>
   Promise.resolve({ status: "accepted", session_id: "team-sid", command: "continue" })
 ) as any
@@ -442,6 +442,74 @@ describe("sendMessage with files", () => {
 // ── sendMessage: queue behaviour (lead-working guard) ────────────────────────
 
 describe("sendMessage: queue behaviour", () => {
+  // Queued messages always carry a server id (the POST returns it and
+  // ``queued_turn_start`` lists it), so a steer is matched by id. Matching by
+  // text dropped any steer the session had already said once: "yes",
+  // "continue".
+  it("queues a steer whose text an earlier message already used", async () => {
+    mockPostAgentChat.mockImplementationOnce(() =>
+      Promise.resolve({ status: "queued", session_id: "session-a", message_id: "srv-yes-2" }),
+    )
+    useAgentStore.setState({
+      sessionId: "session-a",
+      leadName: "lead",
+      agentStreams: {
+        lead: makeStream({
+          status: "working" as const,
+          blocks: [{ id: "srv-yes-1", type: "user", content: "yes" }],
+        }),
+      },
+    })
+
+    await useAgentStore.getState().sendMessage("yes", undefined, { workspace: "/repo/a" })
+
+    expect(useAgentStore.getState()._pendingMessages.map((m) => m.id)).toEqual(["srv-yes-2"])
+  })
+
+  it("splices a steer into the turn even when an earlier message had the same text", () => {
+    useAgentStore.setState({
+      sessionId: "session-a",
+      leadName: "lead",
+      agentStreams: {
+        lead: makeStream({
+          status: "working" as const,
+          blocks: [{ id: "srv-yes-1", type: "user", content: "yes" }, { id: "a-1", type: "text", content: "ok" }],
+        }),
+      },
+      _pendingMessages: [{ id: "srv-yes-2", sessionId: "session-a", content: "yes", submittedAt: Date.now() }],
+    })
+
+    useAgentStore.getState()._handleSSEEvent("queued_turn_start", {
+      agent: "lead",
+      message_ids: ["srv-yes-2"],
+      messages: [{ id: "srv-yes-2", content: "yes" }],
+    })
+
+    const lead = useAgentStore.getState().agentStreams.lead
+    expect(lead.currentBlocks.filter((b) => b.type === "user").map((b) => b.id)).toEqual(["srv-yes-2"])
+    expect(useAgentStore.getState()._pendingMessages).toHaveLength(0)
+  })
+
+  it("keeps a second identical steer queued when only the first is read", () => {
+    useAgentStore.setState({
+      sessionId: "session-a",
+      leadName: "lead",
+      agentStreams: { lead: makeStream({ status: "working" as const }) },
+      _pendingMessages: [
+        { id: "q-1", sessionId: "session-a", content: "yes", submittedAt: 1 },
+        { id: "q-2", sessionId: "session-a", content: "yes", submittedAt: 2 },
+      ],
+    })
+
+    useAgentStore.getState()._handleSSEEvent("queued_turn_start", {
+      agent: "lead",
+      message_ids: ["q-1"],
+      messages: [{ id: "q-1", content: "yes" }],
+    })
+
+    expect(useAgentStore.getState()._pendingMessages.map((m) => m.id)).toEqual(["q-2"])
+  })
+
   it("persists queued messages through the backend when lead is working", async () => {
     mockPostAgentChat.mockImplementationOnce(() =>
       Promise.resolve({ status: "queued", session_id: "session-a", message_id: "pm-a" }),
@@ -1029,7 +1097,7 @@ describe("sendMessage: queue behaviour", () => {
     expect(typeof pending.submittedAt).toBe("number")
   })
 
-  it("removePendingMessage removes message by id", () => {
+  it("removePendingMessage removes message by id", async () => {
     useAgentStore.setState({
       _pendingMessages: [
         { id: "pm-1", content: "first" },
@@ -1037,7 +1105,7 @@ describe("sendMessage: queue behaviour", () => {
         { id: "pm-3", content: "third" },
       ],
     })
-    useAgentStore.getState().removePendingMessage("pm-2")
+    await expect(useAgentStore.getState().removePendingMessage("pm-2")).resolves.toBe("cancelled")
     const pending = useAgentStore.getState()._pendingMessages
     expect(pending).toHaveLength(2)
     expect(pending[0].content).toBe("first")
@@ -1294,6 +1362,18 @@ describe("connectStream", () => {
     useAgentStore.getState().connectStream()
     expect(mockTeamStream).toHaveBeenCalledTimes(1)
     expect(mockTeamStream.mock.calls[0][0]).toBe("stream-sid")
+  })
+
+  // Every store update re-runs every subscribed selector in the app.
+  it("opens a stream with a single store update, even over a pending reconnect", () => {
+    const pending = REAL_SET_TIMEOUT(() => {}, 60_000)
+    useAgentStore.setState({ sessionId: "stream-sid", isAgentWorking: true, _reconnectTimer: pending })
+    let notifications = 0
+    const unsubscribe = useAgentStore.subscribe(() => { notifications += 1 })
+    useAgentStore.getState().connectStream()
+    unsubscribe()
+    expect(notifications).toBe(1)
+    expect(useAgentStore.getState()).toMatchObject({ isConnected: true, _reconnectTimer: null })
   })
 
   it("coalesces streaming text deltas into one store update per frame window", () => {

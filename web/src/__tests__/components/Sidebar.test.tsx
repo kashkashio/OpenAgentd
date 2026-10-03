@@ -951,6 +951,14 @@ describe('Sidebar workspace trust flow', () => {
     expect(JSON.parse(sidebar?.getAttribute('data-transition') ?? '{}')).toMatchObject({ duration: 0.22 })
   })
 
+  it('keeps a collapsed sidebar out of Tab order', async () => {
+    const collapsed = await renderSidebarWithProps({ desktopCollapsed: true })
+    expect(collapsed.container.querySelector('aside')?.hasAttribute('inert')).toBe(true)
+    collapsed.unmount()
+    const open = await renderSidebarWithProps({ desktopCollapsed: false })
+    expect(open.container.querySelector('aside')?.hasAttribute('inert')).toBe(false)
+  })
+
   it('re-clamps the resize bounds when the window shrinks, not only on the next unrelated render', async () => {
     const originalWidth = window.innerWidth
     try {
@@ -1998,6 +2006,70 @@ describe('Sidebar workspace trust flow', () => {
     )
     expect(screen.queryByLabelText('Session title')).toBeNull()
     expect(screen.queryByText('Edit session title')).toBeNull()
+  })
+
+  describe('keyboard', () => {
+    const twoSessions = () => {
+      sessionsData = ['First', 'Second'].map((title, i) => ({
+        id: `session-${i + 1}`,
+        title,
+        agent_name: 'lead',
+        created_at: `2026-05-1${3 - i}T00:00:00Z`,
+        updated_at: `2026-05-1${3 - i}T00:00:00Z`,
+        mode: 'coding',
+        workspace: '/repo/project',
+      }))
+      workspaceSessionsData = sessionsData
+    }
+    const frame = () => act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+    const row = (title: string) =>
+      Array.from(document.querySelectorAll<HTMLElement>('[data-sidebar-session]')).find((el) => el.textContent?.includes(title))!
+
+    it('keeps every row and its actions in Tab order', async () => {
+      twoSessions()
+      await renderSidebarForSessions('session-1')
+      await frame()
+      expect(row('First').getAttribute('aria-current')).toBe('page')
+      for (const el of [
+        row('First'),
+        row('Second'),
+        screen.getByLabelText('Collapse repository project'),
+        screen.getByLabelText('Edit session First'),
+        screen.getByLabelText('Delete session First'),
+        screen.getByLabelText('Actions for project'),
+      ]) expect(el.tabIndex).toBe(0)
+    })
+
+    it('climbs and folds the workspace with Left/Right', async () => {
+      const user = userEvent.setup()
+      twoSessions()
+      await renderSidebarForSessions('session-1')
+      row('Second').focus()
+      await user.keyboard('{ArrowLeft}')
+      const header = screen.getByLabelText('Collapse repository project')
+      expect(document.activeElement).toBe(header)
+      await user.keyboard('{ArrowLeft}')
+      expect(screen.getByLabelText('Expand repository project')).toBe(header)
+      await user.keyboard('{ArrowRight}')
+      expect(screen.getByLabelText('Collapse repository project')).toBe(header)
+    })
+
+    it('renames with F2, deletes with Delete and opens the row menu with Shift+F10', async () => {
+      const user = userEvent.setup()
+      twoSessions()
+      await renderSidebarForSessions('session-1')
+      row('Second').focus()
+      await user.keyboard('{Shift>}{F10}{/Shift}')
+      expect(screen.getByRole('menu', { name: 'Actions for Second' })).toBeTruthy()
+      await user.keyboard('{Escape}')
+      row('Second').focus()
+      await user.keyboard('{Delete}')
+      expect(screen.getByText('Delete session')).toBeTruthy()
+      await user.keyboard('{Escape}')
+      row('Second').focus()
+      await user.keyboard('{F2}')
+      expect(screen.getByLabelText('Session title')).toBeTruthy()
+    })
   })
 
   it('trims title edits before submitting', async () => {

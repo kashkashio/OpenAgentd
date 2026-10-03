@@ -382,6 +382,7 @@ impl SummarizationHook {
             }
         }
         let label = model_id.clone().unwrap_or_else(|| "summarizer".into());
+        let messages = crate::streaming::fit_request_images(messages, &label).await;
         let mut rs = RetryStream::new(self.provider.clone(), label, &messages, tools, kw, None, None);
         let mut text = String::new();
         let mut last_usage = None;

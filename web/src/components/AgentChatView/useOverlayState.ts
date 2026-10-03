@@ -53,7 +53,7 @@ import { useUIStore } from '@/stores/useUIStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useFileRevealStore } from '@/stores/useFileRevealStore'
 import { useToastStore } from '@/stores/useToastStore'
-import { resolveWorkspaceRef, workspaceRelativePath, type FileRef } from '@/utils/file-refs'
+import { parseMentionRef, resolveWorkspaceRef, workspaceRelativePath, type FileRef } from '@/utils/file-refs'
 import { resolveSidebarCollapsed, SIDEBAR_AUTO_EXPAND_MIN_VIEWPORT } from '@/lib/workbench-layout'
 import { useViewportAtLeast } from '@/hooks/use-viewport-width'
 import { useEdgeSwipe, type EdgeSwipeHandlers } from '@/hooks/use-edge-swipe'
@@ -109,6 +109,8 @@ export interface UseOverlayStateResult {
 
   closeOtherMobileOverlays: (keep: MobileOverlay) => void
   handleWorkspaceFiles: () => void
+  /** Opens the dock on its Git tab, or shows the open one (workspace only). */
+  handleOpenGit: () => void
   handleSidebarToggle: () => void
   handleOpenWorkspaceDialog: () => void
   handleFileSelect: (file: WorkspaceFileInfo | null) => void
@@ -249,6 +251,14 @@ export function useOverlayState({
     setSidebarCollapsed((value) => !value)
   }, [closeOtherMobileOverlays, isMobile, setSidebarCollapsed])
 
+  const handleOpenGit = useCallback(() => {
+    if (!workspace) return
+    if (isMobile) setMobileSidebarOpen(false)
+    closeOtherMobileOverlays('workspace-panel')
+    setWorkspacePanel((value) => value ?? 'changed')
+    setDockViewRequest((prev) => ({ view: 'review', key: (prev?.key ?? 0) + 1 }))
+  }, [closeOtherMobileOverlays, isMobile, workspace])
+
   const handleOpenWorkspaceDialog = useCallback(() => {
     setSidebarCollapsed(false)
     setOpenWorkspaceDialogKey((value) => value + 1)
@@ -323,8 +333,11 @@ export function useOverlayState({
   }, [closeOtherMobileOverlays, isMobile, workspace])
 
   const handleMentionFileOpen = useCallback(async (path: string) => {
-    const cleanPath = path.split('#', 1)[0]
-    if (cleanPath) await openWorkspaceFile(cleanPath)
+    // ``src/App.tsx#L42-L71`` (a mention or a design feedback source) opens
+    // the file on that range, like a ``src/App.tsx:42-71`` reference in text.
+    const ref = parseMentionRef(path)
+    if (!ref.path || !(await openWorkspaceFile(ref.path))) return
+    if (ref.line) useFileRevealStore.getState().reveal(ref.path, ref.line, ref.endLine)
   }, [openWorkspaceFile])
 
   const handleFileRefOpen = useCallback(async (ref: FileRef) => {
@@ -577,6 +590,7 @@ export function useOverlayState({
 
     closeOtherMobileOverlays,
     handleWorkspaceFiles,
+    handleOpenGit,
     handleSidebarToggle,
     handleOpenWorkspaceDialog,
     handleFileSelect,

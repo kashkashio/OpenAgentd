@@ -16,6 +16,7 @@ const INITIAL = {
   error: null,
   _pendingMessages: [] as import('@/stores/useAgentStore').PendingMessage[],
   _sessionGeneration: 0,
+  _runningPatchedFor: null,
   cacheInvalidations: [],
   _abortController: null,
   _reconnectTimer: null as ReturnType<typeof setTimeout> | null,
@@ -387,6 +388,35 @@ describe("_handleSSEEvent: tool lifecycle", () => {
 // ── _handleSSEEvent: agent_status ────────────────────────────────────────────
 
 describe("_handleSSEEvent: agent_status", () => {
+  it("queues one session_running patch per turn, not one per member", () => {
+    useAgentStore.setState({ sessionId: "team-sid" });
+    const state = useAgentStore.getState();
+    state._handleSSEEvent("agent_status", { agent: "lead", status: "working" });
+    state._handleSSEEvent("agent_status", { agent: "worker-a", status: "working" });
+    state._handleSSEEvent("agent_status", { agent: "worker-b", status: "working" });
+    state._handleSSEEvent("agent_status", { agent: "lead", status: "working" });
+    expect(useAgentStore.getState().cacheInvalidations).toEqual([
+      { kind: "session_running", sessionId: "team-sid", running: true },
+    ]);
+  });
+
+  it("queues the running patch again once the previous turn has finished", () => {
+    useAgentStore.setState({ sessionId: "team-sid" });
+    const state = useAgentStore.getState();
+    state._handleSSEEvent("agent_status", { agent: "lead", status: "working" });
+    state._handleSSEEvent("done", {});
+    // A stale "working" left on a member must not hide the next turn's start.
+    useAgentStore.setState((s) => ({
+      agentStreams: { ...s.agentStreams, "worker-a": makeStream({ status: "working" }) },
+    }));
+    state._handleSSEEvent("agent_status", { agent: "lead", status: "working" });
+    expect(useAgentStore.getState().cacheInvalidations).toEqual([
+      { kind: "session_running", sessionId: "team-sid", running: true },
+      { kind: "session_running", sessionId: "team-sid", running: false },
+      { kind: "session_running", sessionId: "team-sid", running: true },
+    ]);
+  });
+
   it("sets agent status to working", () => {
     useAgentStore.getState()._handleSSEEvent("agent_status", { agent: "lead", status: "working" });
     expect(useAgentStore.getState().agentStreams["lead"].status).toBe("working");

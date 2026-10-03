@@ -304,6 +304,7 @@ async fn http_api_end_to_end() {
     let (st, _) = c.json("DELETE", &format!("/api/agent/sessions/{other_id}"), None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
 
+    history_paging_flow(&c, &pool, &ws).await;
     plan_review_flow(&c, &pool, &ws).await;
 
     let (st, _) = c.json("DELETE", &format!("/api/agent/sessions/{sid}"), None).await;
@@ -485,6 +486,70 @@ async fn open_review(pool: &appv3_db::DbPool, sid: &str, call: &str, revision: u
     let payload = appv3_agent::tools::plan::review_payload(revision, None);
     let q = appv3_db::create_pending_question_with(pool, sid, call, "submit_plan", &payload).await.unwrap();
     appv3_db::codec::api_uuid(&q.id)
+}
+
+/// History pages for a lead with a member: the newest page carries the
+/// members and the session-wide usage totals; older pages carry only older
+/// lead rows. Member rows are shown from the newest page only, and a member's
+/// `seq` is not comparable to the lead's cursor, so re-sending them on every
+/// older page duplicated them.
+async fn history_paging_flow(c: &Client, pool: &appv3_db::DbPool, ws: &std::path::Path) {
+    let workspace = ws.display().to_string();
+    let lead = appv3_db::create_session(pool, appv3_db::NewSession { workspace: workspace.clone(), ..Default::default() }).await.unwrap();
+    let member =
+        appv3_db::create_session(pool, appv3_db::NewSession { workspace, parent_session_id: Some(lead.id.clone()), agent_name: Some("explorer".into()), ..Default::default() })
+            .await
+            .unwrap();
+    let costed = |text: String, usd: f64| {
+        let mut extra = serde_json::Map::new();
+        extra.insert("usage".into(), json!({"cost": {"estimated_usd": usd}, "output": 2}));
+        appv3_db::NewMessage { extra: Some(extra), ..appv3_db::NewMessage::assistant(Some(text)) }
+    };
+    for i in 0..150 {
+        appv3_db::save_message(pool, &lead.id, costed(format!("lead {i}"), 0.01)).await.unwrap();
+    }
+    for i in 0..10 {
+        appv3_db::save_message(pool, &member.id, costed(format!("member {i}"), 0.5)).await.unwrap();
+    }
+    let lid = appv3_db::codec::api_uuid(&lead.id);
+
+    let (st, newest) = c.json("GET", &format!("/api/agent/{lid}/history"), None).await;
+    assert_eq!(st, StatusCode::OK, "{newest}");
+    assert_eq!(newest["lead"]["messages"].as_array().map(Vec::len), Some(100));
+    assert_eq!(newest["has_more"], json!(true));
+    let members = newest["members"].as_array().expect("members");
+    assert_eq!(members.len(), 1, "{newest}");
+    assert_eq!(members[0]["messages"].as_array().map(Vec::len), Some(10));
+    assert_eq!(newest["lead"]["estimated_cost_usd"], json!(1.5), "lead total covers every page");
+    assert_eq!(newest["lead"]["completion_tokens"], json!(300));
+    assert_eq!(members[0]["estimated_cost_usd"], json!(5.0));
+    assert_eq!(members[0]["completion_tokens"], json!(20));
+
+    let cursor = newest["next_cursor"].as_str().expect("older page cursor");
+    let (st, older) = c.json("GET", &format!("/api/agent/{lid}/history?before={}", urlencode(cursor)), None).await;
+    assert_eq!(st, StatusCode::OK, "{older}");
+    assert_eq!(older["lead"]["messages"].as_array().map(Vec::len), Some(50));
+    assert_eq!(older["has_more"], json!(false));
+    assert_eq!(older["members"], json!([]), "older pages must not re-send member rows");
+    assert!(older["lead"]["estimated_cost_usd"].is_null(), "older pages skip the session-wide totals: {older}");
+
+    // Cursors are `seq[|id]` and uuid7 ids; v2-era timestamp cursors are gone.
+    let seq_only = cursor.split('|').next().unwrap();
+    let (st, by_seq) = c.json("GET", &format!("/api/agent/{lid}/history?before={seq_only}"), None).await;
+    assert_eq!(st, StatusCode::OK, "{by_seq}");
+    let newest_id = newest["lead"]["messages"][99]["id"].as_str().unwrap();
+    let (st, delta) = c.json("GET", &format!("/api/agent/{lid}/history?since={newest_id}"), None).await;
+    assert_eq!(st, StatusCode::OK, "{delta}");
+    assert_eq!(delta["lead"]["messages"], json!([]));
+    for q in ["before=2026-09-23T06:56:28Z", "since=2026-09-23T06:56:28Z", "before=2026-09-23T06:56:28Z|"] {
+        let (st, body) = c.json("GET", &format!("/api/agent/{lid}/history?{}", q.replace(':', "%3A").replace('|', "%7C")), None).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{q}: {body}");
+    }
+
+    for id in [&member.id, &lead.id] {
+        let (st, _) = c.json("DELETE", &format!("/api/agent/sessions/{}", appv3_db::codec::api_uuid(id)), None).await;
+        assert!(st == StatusCode::NO_CONTENT || st == StatusCode::NOT_FOUND, "{st}");
+    }
 }
 
 async fn tool_result(pool: &appv3_db::DbPool, sid: &str, call: &str) -> String {

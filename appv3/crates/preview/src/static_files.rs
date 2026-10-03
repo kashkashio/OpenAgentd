@@ -115,11 +115,15 @@ pub(crate) async fn serve(entry: &Entry, root: &Path, req: Request) -> Response 
     let media = appv3_core::mimetypes::guess_type(&name).unwrap_or_else(|| "application/octet-stream".to_string());
     let html = media == "text/html";
     let content_type = if media.starts_with("text/") || media == "application/javascript" { format!("{media}; charset=utf-8") } else { media };
+    if !html {
+        let range = req.headers().get(header::RANGE).and_then(|v| v.to_str().ok());
+        return file_response(&file, size, content_type, head, range).await;
+    }
     let body = match tokio::fs::read(&file).await {
         Ok(b) => b,
         Err(e) => return plain(StatusCode::NOT_FOUND, &format!("Could not read file: {e}")),
     };
-    let body = if html { inject(&body) } else { body };
+    let body = inject(&body);
     let len = body.len();
     let mut resp = Response::new(if head { Body::empty() } else { Body::from(body) });
     let h = resp.headers_mut();
@@ -128,6 +132,77 @@ pub(crate) async fn serve(entry: &Entry, root: &Path, req: Request) -> Response 
     }
     h.insert(header::CONTENT_LENGTH, len.into());
     h.insert(header::CACHE_CONTROL, "no-store".parse().expect("static header"));
+    crate::proxy::add_frame_ancestors(h);
+    resp
+}
+
+/// One `bytes=` range as `[start, end)` within `size`. `Ok(None)` serves the
+/// whole file: no header, several ranges, other units or a malformed spec
+/// (RFC 9110 lets a server ignore Range). `Err(())`: it starts past the end.
+fn single_range(raw: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(spec) = raw.and_then(|r| r.trim().strip_prefix("bytes=")) else { return Ok(None) };
+    let Some((s, e)) = spec.split_once('-').filter(|_| size > 0 && !spec.contains(',')) else { return Ok(None) };
+    let (s, e) = (s.trim(), e.trim());
+    if s.is_empty() {
+        return Ok(e.parse::<u64>().ok().filter(|n| *n > 0).map(|n| (size.saturating_sub(n), size)));
+    }
+    let Ok(start) = s.parse::<u64>() else { return Ok(None) };
+    let end = match e {
+        "" => size,
+        e => match e.parse::<u64>() {
+            Ok(last) if last >= start => (last + 1).min(size),
+            _ => return Ok(None),
+        },
+    };
+    if start >= size {
+        return Err(());
+    }
+    Ok(Some((start, end)))
+}
+
+/// Streams a non-HTML file, or the one byte range asked for: browsers open
+/// and seek media with `Range`, and a whole-file read would buffer up to
+/// [`MAX_FILE_BYTES`] per request.
+async fn file_response(file: &Path, size: u64, content_type: String, head: bool, range: Option<&str>) -> Response {
+    let (status, start, end) = match single_range(range, size) {
+        Ok(None) => (StatusCode::OK, 0, size),
+        Ok(Some((s, e))) => (StatusCode::PARTIAL_CONTENT, s, e),
+        Err(()) => {
+            let mut r = plain(StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable.");
+            if let Ok(v) = format!("bytes */{size}").parse() {
+                r.headers_mut().insert(header::CONTENT_RANGE, v);
+            }
+            return r;
+        }
+    };
+    let body = if head {
+        Body::empty()
+    } else {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let opened = async {
+            let mut f = tokio::fs::File::open(file).await?;
+            f.seek(std::io::SeekFrom::Start(start)).await?;
+            Ok::<_, std::io::Error>(f.take(end - start))
+        };
+        match opened.await {
+            Ok(f) => Body::from_stream(tokio_util::io::ReaderStream::with_capacity(f, 64 * 1024)),
+            Err(e) => return plain(StatusCode::NOT_FOUND, &format!("Could not read file: {e}")),
+        }
+    };
+    let mut resp = Response::new(body);
+    *resp.status_mut() = status;
+    let h = resp.headers_mut();
+    if let Ok(v) = content_type.parse() {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    h.insert(header::CONTENT_LENGTH, (end - start).into());
+    h.insert(header::ACCEPT_RANGES, header::HeaderValue::from_static("bytes"));
+    if status == StatusCode::PARTIAL_CONTENT {
+        if let Ok(v) = format!("bytes {start}-{}/{size}", end - 1).parse() {
+            h.insert(header::CONTENT_RANGE, v);
+        }
+    }
+    h.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
     crate::proxy::add_frame_ancestors(h);
     resp
 }
@@ -185,6 +260,55 @@ mod tests {
     fn encodes_url_paths() {
         assert_eq!(url_path("designs/landing page.html"), "/designs/landing%20page.html");
         assert_eq!(url_path("a/ü#.html"), "/a/%C3%BC%23.html");
+    }
+
+    #[test]
+    fn parses_one_byte_range() {
+        assert_eq!(single_range(None, 100), Ok(None));
+        assert_eq!(single_range(Some("bytes=0-"), 100), Ok(Some((0, 100))));
+        assert_eq!(single_range(Some("bytes=10-19"), 100), Ok(Some((10, 20))));
+        assert_eq!(single_range(Some("bytes=90-500"), 100), Ok(Some((90, 100))));
+        assert_eq!(single_range(Some("bytes=-10"), 100), Ok(Some((90, 100))));
+        assert_eq!(single_range(Some("bytes=-500"), 100), Ok(Some((0, 100))));
+        assert_eq!(single_range(Some("bytes=100-"), 100), Err(()));
+        // Ignored (whole file): several ranges, other units, malformed specs.
+        for raw in ["bytes=0-1,5-6", "items=0-1", "bytes=5-2", "bytes=x-", "bytes=-0", "bytes=-"] {
+            assert_eq!(single_range(Some(raw), 100), Ok(None), "{raw}");
+        }
+    }
+
+    async fn body_of(r: Response) -> Vec<u8> {
+        axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap().to_vec()
+    }
+
+    #[tokio::test]
+    async fn streams_files_and_honours_a_single_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("clip.mp4");
+        let data: Vec<u8> = (0..=255u8).cycle().take(300_000).collect();
+        std::fs::write(&f, &data).unwrap();
+        let size = data.len() as u64;
+
+        let full = file_response(&f, size, "video/mp4".into(), false, None).await;
+        assert_eq!(full.status(), StatusCode::OK);
+        assert_eq!(full.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(full.headers()[header::CONTENT_LENGTH], "300000");
+        assert_eq!(body_of(full).await, data);
+
+        let part = file_response(&f, size, "video/mp4".into(), false, Some("bytes=1000-1999")).await;
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(part.headers()[header::CONTENT_RANGE], "bytes 1000-1999/300000");
+        assert_eq!(part.headers()[header::CONTENT_LENGTH], "1000");
+        assert_eq!(body_of(part).await, &data[1000..2000]);
+
+        let past = file_response(&f, size, "video/mp4".into(), false, Some("bytes=300000-")).await;
+        assert_eq!(past.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(past.headers()[header::CONTENT_RANGE], "bytes */300000");
+
+        let head = file_response(&f, size, "video/mp4".into(), true, Some("bytes=0-")).await;
+        assert_eq!(head.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(head.headers()[header::CONTENT_LENGTH], "300000");
+        assert!(body_of(head).await.is_empty());
     }
 
     #[test]

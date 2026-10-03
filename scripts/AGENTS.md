@@ -13,6 +13,9 @@ generation, updater helpers, and code-health analysis.
 - `generate_icons.py`: shared source-icon conversion for native targets.
 - `make_updater_manifest.py` and `generate_updater_keys.sh`: desktop updater
   metadata and local key setup.
+- `make_sidestore_source.py`: SideStore/AltStore source feed for the iOS
+  sideload IPA, generated from the IPA's `Info.plist` by
+  `mobile/scripts/publish-ipa.sh`.
 - `release_version.sh`, `bump_version.sh`, `check_version_consistency.sh`, and
   `release_commits_since_last_tag.sh`: synchronized release metadata and
   release-note inputs. The `[workspace.package]` version in
@@ -24,7 +27,7 @@ generation, updater helpers, and code-health analysis.
 
 The repository has no Python project. Scripts run with `python3` and the
 standard library (plus Pillow for `generate_icons.py`); `make verify-scripts`
-supplies the test dependencies through `uv run --with`. Keep scripts
+installs the test dependencies into the local, git-ignored `.venv`. Keep scripts
 non-interactive by default, repository-root-relative, and portable across
 supported platforms.
 

@@ -59,6 +59,7 @@ interface FakeSocket {
 type TerminalCallbacks = {
   onOutput: (d: string) => void
   onExit?: () => void
+  onBusy?: (busy: boolean) => void
   onError?: (e: Error) => void
   onClose?: () => void
 }
@@ -203,6 +204,33 @@ describe('useTerminalStore', () => {
     // …but is reaped once a full idle window elapses.
     s.reapIdle(Date.now() + 2 * TERMINAL_IDLE_CLOSE_MS + 2)
     expect(useTerminalStore.getState().sessions[fresh]?.status).toBe('exited')
+  })
+
+  it('reapIdle never closes a session with a running command', async () => {
+    const s = useTerminalStore.getState()
+    const id = s.open({ workspace: '/tmp/ws' }, '/tmp/ws')
+    await flush()
+    s.setAttached(id, false)
+    // A detached dev server or build runs with no keystrokes for a long time.
+    lastCallbacks!.onBusy!(true)
+    expect(useTerminalStore.getState().sessions[id]?.busy).toBe(true)
+
+    s.reapIdle(Date.now() + 10 * TERMINAL_IDLE_CLOSE_MS)
+    expect(useTerminalStore.getState().sessions[id]?.status).toBe('connected')
+    expect(createdTerms[0].dispose).not.toHaveBeenCalled()
+
+    // Back at the prompt, the idle window applies again.
+    lastCallbacks!.onBusy!(false)
+    s.reapIdle(Date.now() + 10 * TERMINAL_IDLE_CLOSE_MS)
+    expect(useTerminalStore.getState().sessions[id]?.status).toBe('exited')
+  })
+
+  it('a shell that exits is no longer busy', async () => {
+    const id = useTerminalStore.getState().open({ workspace: '/tmp/ws' }, '/tmp/ws')
+    await flush()
+    lastCallbacks!.onBusy!(true)
+    lastCallbacks!.onExit!()
+    expect(useTerminalStore.getState().sessions[id]?.busy).toBeFalsy()
   })
 
   it('sendInput applies the registered transform and notes activity', async () => {

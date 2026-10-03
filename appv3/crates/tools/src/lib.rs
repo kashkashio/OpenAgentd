@@ -246,7 +246,13 @@ pub async fn execute(tools: &ToolSet, ctx: &ToolContext, name: &str, raw_args: &
             tracing::info!("tool_done agent={} tool={} elapsed={:.2}s result_len={}", ctx.agent_name, name, elapsed, t.chars().count());
             Ok(ExecOutcome { text: t, parts: None, mcp_app: None })
         }
-        Ok(ToolOutput::Parts { parts, mcp_app }) => {
+        Ok(ToolOutput::Parts { mut parts, mcp_app }) => {
+            // MCP/plugin images: header check inline, resize only oversized ones off the runtime.
+            let t = std::time::Instant::now();
+            let resized = appv3_providers::images::fit_tool_parts(&mut parts).await;
+            if resized > 0 {
+                tracing::debug!("tool_images_resized tool={name} count={resized} ms={}", t.elapsed().as_millis());
+            }
             let mut text = parts
                 .iter()
                 .filter_map(|p| match p {
@@ -318,4 +324,52 @@ pub(crate) fn py_json_error(e: &serde_json::Error) -> String {
     let keep = matches!(e.classify(), serde_json::error::Category::Eof) || base.contains("key must be a string");
     let col = e.column().saturating_sub(if keep { 0 } else { 1 });
     format!("{py}: line {} column {} (char {})", e.line(), col.max(1), col.saturating_sub(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use appv3_providers::images::{dimensions_b64, fixtures};
+    use base64::Engine;
+
+    struct ImageTool(Vec<ContentBlock>);
+
+    #[async_trait]
+    impl Tool for ImageTool {
+        fn name(&self) -> &str {
+            "shot"
+        }
+        async fn run(&self, _: &ToolContext, _: Value) -> ToolResult {
+            Ok(ToolOutput::Parts { parts: self.0.clone(), mcp_app: None })
+        }
+    }
+
+    fn ctx(ws: &std::path::Path) -> ToolContext {
+        ToolContext {
+            session_id: None,
+            agent_name: "t".into(),
+            tool_call_id: "c".into(),
+            denied: Arc::new(DeniedPaths::with(ws, None, Some(vec![]), Some(vec![]))),
+            workspace: None,
+            output: None,
+            metadata: Default::default(),
+            messages: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_shrinks_oversized_tool_images_and_keeps_small_ones() {
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let small = ContentBlock::ImageData { data: b64(&fixtures::png(200, 100)).into(), media_type: "image/png".into() };
+        let big = ContentBlock::ImageData { data: b64(&fixtures::png(2400, 1600)).into(), media_type: "image/png".into() };
+        let mut set = ToolSet::new();
+        set.add(Arc::new(ImageTool(vec![ContentBlock::text("[screenshot]"), big, small.clone()])));
+        let d = tempfile::tempdir().unwrap();
+        let out = execute(&set, &ctx(d.path()), "shot", "{}").await.unwrap();
+        assert_eq!(out.text, "[screenshot]");
+        let parts = out.parts.unwrap();
+        let ContentBlock::ImageData { data, media_type } = &parts[1] else { panic!("image") };
+        assert_eq!((dimensions_b64(data), media_type.as_str()), (Some((2000, 1333)), "image/png"));
+        assert_eq!(parts[2], small);
+    }
 }

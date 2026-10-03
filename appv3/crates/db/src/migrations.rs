@@ -27,6 +27,23 @@ use std::path::Path;
 /// Alembic head revision this build is schema-compatible with.
 pub const ALEMBIC_HEAD: &str = "00000022";
 
+/// Indexes v3 adds on top of v2's head schema, outside the Alembic chain:
+/// no revision stamp moves, so a v2 build still opens the file, and v2 only
+/// ever sees extra indexes. Created idempotently on every open.
+pub const V3_INDEXES: [&str; 2] = [
+    // History loads sum usage per session: the indexed `json_extract` values
+    // spare parsing every row's `extra` (whole tool results and image
+    // parts). SQLite ≥ 3.47 also reads the sum from the index alone; the
+    // bundled 3.46 still visits each row.
+    "CREATE INDEX IF NOT EXISTS ix_session_messages_usage ON session_messages \
+     (session_id, kind, json_extract(extra, '$.usage.cost.estimated_usd'), json_extract(extra, '$.usage.output'))",
+    // Queued rows in transcript order. Every model call asks whether any
+    // exist, and listing or promoting them sorts by `seq`, which otherwise
+    // walks the whole session on `(session_id, seq, id)`. Holding only queued
+    // rows, it costs ordinary inserts nothing.
+    "CREATE INDEX IF NOT EXISTS ix_session_messages_queued ON session_messages (session_id, seq, id) WHERE kind = 'queued'",
+];
+
 /// `(revision, statements)` in upgrade order.
 pub const MIGRATIONS: [(&str, &str); 22] = [
     ("00000001", include_str!("../resources/migrations/00000001.sql")),
@@ -241,8 +258,16 @@ pub async fn upgrade(conn: &mut SqliteConnection) -> Result<SchemaState> {
     })
 }
 
+async fn ensure_v3_indexes(conn: &mut SqliteConnection) -> Result<()> {
+    for stmt in V3_INDEXES {
+        exec(conn, stmt).await?;
+    }
+    Ok(())
+}
+
 /// `run_migrations()`: upgrade to head with `foreign_keys=OFF` on one pooled
-/// connection, serialised by the sibling `.migrate.lock` file.
+/// connection, serialised by the sibling `.migrate.lock` file, then add
+/// [`V3_INDEXES`].
 pub async fn run_migrations(pool: &SqlitePool) -> Result<SchemaState> {
     let db_file: Option<std::path::PathBuf> = {
         let rows: Vec<(i64, String, String)> = sqlx::query_as("PRAGMA database_list").fetch_all(pool).await?;
@@ -260,13 +285,32 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<SchemaState> {
     if state != SchemaState::Current {
         tracing::info!("auto_migrate_complete");
     }
+    ensure_v3_indexes(&mut conn).await?;
     if db_file.is_some() {
         // `_optimize_sqlite` (best-effort).
-        let _ = sqlx::query("PRAGMA analysis_limit=1000").execute(&mut *conn).await;
-        let _ = sqlx::query("PRAGMA optimize=0x10002").execute(&mut *conn).await;
-        let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&mut *conn).await;
+        if state == SchemaState::Current {
+            // Nothing changed the schema, so the statistics are only stale,
+            // and a WAL left by a crash can take a while to checkpoint: keep
+            // both off the path to the server's first request.
+            drop(conn);
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                if let Ok(mut conn) = pool.acquire().await {
+                    optimize(&mut conn).await;
+                }
+            });
+        } else {
+            optimize(&mut conn).await;
+        }
     }
     Ok(state)
+}
+
+/// One connection: `analysis_limit` applies to the connection that sets it.
+async fn optimize(conn: &mut SqliteConnection) {
+    let _ = sqlx::query("PRAGMA analysis_limit=1000").execute(&mut *conn).await;
+    let _ = sqlx::query("PRAGMA optimize=0x10002").execute(&mut *conn).await;
+    let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&mut *conn).await;
 }
 
 /// `_sqlite_migration_lock`: exclusive lock on `<db>.migrate.lock`.

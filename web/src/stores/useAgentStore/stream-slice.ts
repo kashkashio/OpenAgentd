@@ -387,13 +387,14 @@ export const createStreamSlice: StateCreator<
     const generation = get()._sessionGeneration
 
     get()._abortController?.abort()
+    const abort = new AbortController()
+    // One store update: each one re-runs every subscribed selector.
     set((draft) => {
       clearReconnectTimer(draft)
-    })
-    const abort = new AbortController()
-    set((draft) => {
       draft.isConnected = true
       draft._abortController = abort
+      // The global stream may have patched the row while this one was down.
+      draft._runningPatchedFor = null
       // Every attach replays the accumulated turn text as one snapshot chunk
       // per kind before live events resume, so re-arm the replay guard for all
       // known streams. Without this a reconnect mid-turn doubles the visible
@@ -540,6 +541,7 @@ export const createStreamSlice: StateCreator<
             // Stream closed with the session idle — the row is no longer
             // running. Patch that flag rather than refetching every loaded
             // page of the session list.
+            draft._runningPatchedFor = null
             draft.cacheInvalidations.push({
               kind: 'session_running',
               sessionId,

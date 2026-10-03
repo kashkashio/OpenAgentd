@@ -169,20 +169,33 @@ pub fn show_desktop_notification(
 
 // Access keys live in the OS credential store, keyed by canonical origin;
 // the logic is shared with the mobile shell in `openagentd-shell-core`.
+//
+// A sync command runs on the main thread, and a keychain call blocks for as
+// long as the store takes: ~1.5 ms to read, ~12 ms to write, and until the
+// user answers if macOS asks for the keychain password. So the commands run
+// the call on the blocking pool and the UI keeps drawing.
 
-#[tauri::command]
-pub fn secure_get_access_key(origin: String) -> Result<Option<String>, String> {
-    openagentd_shell_core::get_access_key(&origin)
+async fn off_main_thread<T: Send + 'static>(
+    call: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(call)
+        .await
+        .map_err(|_| "credential store unavailable".to_string())?
 }
 
 #[tauri::command]
-pub fn secure_set_access_key(origin: String, key: String) -> Result<(), String> {
-    openagentd_shell_core::set_access_key(&origin, &key)
+pub async fn secure_get_access_key(origin: String) -> Result<Option<String>, String> {
+    off_main_thread(move || openagentd_shell_core::get_access_key(&origin)).await
 }
 
 #[tauri::command]
-pub fn secure_delete_access_key(origin: String) -> Result<(), String> {
-    openagentd_shell_core::delete_access_key(&origin)
+pub async fn secure_set_access_key(origin: String, key: String) -> Result<(), String> {
+    off_main_thread(move || openagentd_shell_core::set_access_key(&origin, &key)).await
+}
+
+#[tauri::command]
+pub async fn secure_delete_access_key(origin: String) -> Result<(), String> {
+    off_main_thread(move || openagentd_shell_core::delete_access_key(&origin)).await
 }
 
 #[derive(Deserialize)]
@@ -562,11 +575,14 @@ pub async fn app_new_window(app: AppHandle, initial_path: Option<String>) -> Res
         .map_err(|e| format!("{e:#}"))
 }
 
+/// Wait until the bundled sidecar at `base` (loopback) answers its health check.
 pub async fn wait_for_health(base: &str, attempts: u32, delay: Duration) -> Result<()> {
-    // Shared process-wide client (see `usage::shared_client`); the short
-    // per-attempt deadline is applied per-request rather than baking a
-    // dedicated 2s client just for health checks.
-    let client = crate::usage::shared_client();
+    wait_for_health_with(crate::usage::loopback_client(), base, attempts, delay).await
+}
+
+async fn wait_for_health_with(client: &reqwest::Client, base: &str, attempts: u32, delay: Duration) -> Result<()> {
+    // The short per-attempt deadline is applied per request rather than
+    // baking a dedicated 2 s client just for health checks.
     let url = format!("{base}/api/health/live");
     for i in 0..attempts {
         match client
@@ -584,6 +600,60 @@ pub async fn wait_for_health(base: &str, attempts: u32, delay: Duration) -> Resu
     Err(anyhow!(
         "backend did not become healthy after {attempts} attempts"
     ))
+}
+
+/// Whether the saved external server answers at launch. One attempt: the
+/// bundled backend waits on it, and falling back keeps the saved choice for
+/// the next launch (the Server connection dialog switches back any time).
+pub async fn probe_saved_backend(base: &str) -> Result<()> {
+    wait_for_health_with(crate::usage::shared_client(), base, 1, Duration::ZERO).await
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::probe_saved_backend;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A server that fails every health check, counting them.
+    fn unhealthy_server() -> (String, Arc<AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.read(&mut [0u8; 4096]);
+                let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        (base, hits)
+    }
+
+    // Every retry held up the bundled backend: 2 s when the server refused,
+    // 18 s when each request timed out (a remote behind a VPN that is off).
+    #[tokio::test]
+    async fn a_saved_server_that_is_down_is_probed_once() {
+        let (base, hits) = unhealthy_server();
+
+        assert!(probe_saved_backend(&base).await.is_err());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    // Inputs here fail before the credential store is reached, so the test
+    // never touches the real keychain.
+    #[tokio::test]
+    async fn access_key_commands_are_awaited_and_keep_shell_core_errors() {
+        let invalid = Err("invalid backend origin".to_string());
+        assert_eq!(super::secure_get_access_key("not a url".into()).await, invalid);
+        assert_eq!(super::secure_delete_access_key("ftp://example.com".into()).await, Err("invalid backend origin".to_string()));
+        assert_eq!(
+            super::secure_set_access_key("https://example.com".into(), "  \n".into()).await,
+            Err("access key is required".to_string())
+        );
+    }
 }
 
 #[cfg(test)]

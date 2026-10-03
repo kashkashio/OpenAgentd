@@ -104,10 +104,11 @@ describe('Review dock preview tabs', () => {
   })
 
   it('keeps the page mounted while another tab is active', async () => {
-    await renderPanel({ target: { kind: 'url', url: 'http://localhost:5173/' }, key: 1 })
+    const { rerender } = await renderPanel({ target: { kind: 'url', url: 'http://localhost:5173/' }, key: 1 })
     await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
     const frame = document.querySelector('iframe')
-    fireEvent.click(screen.getByRole('button', { name: 'Git' }))
+    await rerender({ target: { kind: 'file', path: 'a.html' }, key: 2 })
+    await screen.findByRole('button', { name: 'Preview a.html' })
     expect(document.querySelector('iframe')).toBe(frame)
     expect(frame?.closest('.hidden')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Preview localhost:5173' }))

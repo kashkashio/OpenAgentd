@@ -104,8 +104,10 @@ impl Envelope {
         self.data.get(name).and_then(|v| v.as_str())
     }
     /// orjson-compatible compact encoding (non-ASCII kept verbatim).
+    /// Serializes the map by reference: this runs once per token while a
+    /// client is attached, so a clone of the payload here is pure overhead.
     pub fn to_wire(&self) -> Arc<WireEvent> {
-        Arc::new(WireEvent { event: self.event.clone(), data: compact(&Value::Object(self.data.clone())) })
+        Arc::new(WireEvent { event: self.event.clone(), data: serde_json::to_string(&self.data).unwrap_or_else(|_| "{}".into()) })
     }
 }
 

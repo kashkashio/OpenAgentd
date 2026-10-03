@@ -182,8 +182,7 @@ cli_target() {
             fi
             case "$arch" in
                 arm64|aarch64) TARGET="aarch64-apple-darwin" ;;
-                x86_64) TARGET="x86_64-apple-darwin" ;;
-                *) fail "unsupported macOS architecture: $arch" ;;
+                *) fail "Intel Macs are not supported; prebuilt CLI releases are Apple Silicon only" ;;
             esac
             ;;
         Linux)
@@ -192,8 +191,7 @@ cli_target() {
             fi
             case "$arch" in
                 x86_64|amd64) TARGET="x86_64-unknown-linux-gnu" ;;
-                aarch64|arm64) TARGET="aarch64-unknown-linux-gnu" ;;
-                *) fail "unsupported Linux architecture: $arch" ;;
+                *) fail "unsupported Linux architecture: $arch (prebuilt CLI releases are x86_64 only)" ;;
             esac
             ;;
         *) fail "unsupported platform: $os" ;;

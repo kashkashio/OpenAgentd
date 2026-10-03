@@ -26,6 +26,16 @@ fn tool_use_block(tc: &ToolCall) -> Value {
     json!({"type": "tool_use", "id": tc.id, "name": tc.function.name, "input": parse_args(&tc.function.arguments)})
 }
 
+/// Append a streamed delta to a raw content block's string field in place.
+/// Rebuilding the field (`cur + t`) copied the whole accumulated block on
+/// every delta, which is quadratic over a long thinking or text block.
+fn append_block_text(block: &mut Value, key: &str, text: &str) {
+    match block.get_mut(key) {
+        Some(Value::String(s)) => s.push_str(text),
+        _ => block[key] = Value::String(text.to_string()),
+    }
+}
+
 fn image_blocks(parts: &[ContentBlock]) -> Vec<Value> {
     let mut blocks = vec![];
     for p in parts {
@@ -416,7 +426,7 @@ impl AnthropicProvider {
         };
         let mut p = Map::new();
         p.insert("model".into(), json!(self.model));
-        p.insert("messages".into(), json!(msgs));
+        p.insert("messages".into(), Value::Array(msgs));
         p.insert("max_tokens".into(), json!(max_tokens));
         if let Some(s) = system {
             p.insert("system".into(), json!(s));
@@ -474,7 +484,7 @@ impl AnthropicProvider {
                 ToolCall::new(
                     b["id"].as_str().unwrap_or(""),
                     b["name"].as_str().unwrap_or(""),
-                    appv3_core::pyjson::dumps(b.get("input").filter(|v| !v.is_null()).unwrap_or(&json!({}))),
+                    b.get("input").filter(|v| !v.is_null()).map(Value::to_string).unwrap_or_else(|| "{}".into()),
                 )
             })
             .collect();
@@ -606,18 +616,18 @@ impl LlmProvider for AnthropicProvider {
                         let bi = event.get("index").and_then(|v| v.as_i64()).unwrap_or(0);
                         if let Some(t) = delta.get("thinking").and_then(|v| v.as_str()) {
                             if let Some(b) = raw_blocks.get_mut(&bi).filter(|b| b["type"] == "thinking") {
-                                let cur = b["thinking"].as_str().unwrap_or("").to_string(); b["thinking"] = json!(cur + t);
+                                append_block_text(b, "thinking", t);
                             }
                             yield Ok(mk(ChatCompletionDelta { reasoning_content: Some(t.into()), ..Default::default() }, None, None));
                         } else if dt == Some("signature_delta") && delta.get("signature").map(|v| v.is_string()).unwrap_or(false) {
                             let s = delta["signature"].as_str().unwrap();
                             if let Some(b) = raw_blocks.get_mut(&bi).filter(|b| b["type"] == "thinking") {
-                                let cur = b["signature"].as_str().unwrap_or("").to_string(); b["signature"] = json!(cur + s);
+                                append_block_text(b, "signature", s);
                             }
                             yield Ok(mk(ChatCompletionDelta { reasoning_signature: Some(s.into()), ..Default::default() }, None, None));
                         } else if let Some(t) = delta.get("text").and_then(|v| v.as_str()) {
                             if let Some(b) = raw_blocks.get_mut(&bi).filter(|b| b["type"] == "text") {
-                                let cur = b["text"].as_str().unwrap_or("").to_string(); b["text"] = json!(cur + t);
+                                append_block_text(b, "text", t);
                             }
                             yield Ok(mk(ChatCompletionDelta { content: Some(t.into()), ..Default::default() }, None, None));
                         } else if dt == Some("input_json_delta") && delta.get("partial_json").map(|v| v.is_string()).unwrap_or(false) {
@@ -630,7 +640,7 @@ impl LlmProvider for AnthropicProvider {
                 }
             }
             if !order.is_empty() {
-                let blocks: Vec<Value> = order.iter().filter_map(|i| raw_blocks.get(i).cloned()).collect();
+                let blocks: Vec<Value> = order.iter().filter_map(|i| raw_blocks.remove(i)).collect();
                 yield Ok(mk(ChatCompletionDelta { anthropic_raw_blocks: Some(blocks), ..Default::default() }, None, None));
             }
         };
@@ -665,5 +675,27 @@ mod tests {
     fn thinking_budget_matches_v2() {
         assert_eq!(thinking_budget("low", 32000), 8000);
         assert_eq!(thinking_budget("high", 1000), 1024);
+    }
+
+    #[test]
+    fn streamed_text_appends_onto_the_raw_block() {
+        let mut block = json!({"type": "thinking", "thinking": "", "signature": ""});
+        for part in ["Let ", "me ", "think."] {
+            append_block_text(&mut block, "thinking", part);
+        }
+        append_block_text(&mut block, "signature", "sig");
+        assert_eq!(block, json!({"type": "thinking", "thinking": "Let me think.", "signature": "sig"}));
+
+        // A field the start event did not create starts empty.
+        let mut text = json!({"type": "text"});
+        append_block_text(&mut text, "text", "hi");
+        assert_eq!(text["text"], "hi");
+    }
+
+    #[test]
+    fn tool_use_input_becomes_compact_utf8_arguments() {
+        let p = AnthropicProvider::new("k", "claude-sonnet-4-5", "http://127.0.0.1:9", Kwargs::new()).unwrap();
+        let msg = p.parse_response(&json!({"content": [{"type": "tool_use", "id": "t1", "name": "patch", "input": {"note": "Cài đặt ✓", "n": 1}}]}));
+        assert_eq!(msg.tool_calls.unwrap()[0].function.arguments, r#"{"note":"Cài đặt ✓","n":1}"#);
     }
 }

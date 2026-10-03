@@ -798,6 +798,16 @@ describe("AgentView — streaming auto-follow without compositor churn", () => {
     expect(anchor.style.overflowAnchor).toBe("auto")
   })
 
+  // ``overflow-y: auto`` alone makes ``overflow-x`` compute to ``auto``, so one
+  // over-wide row let the whole transcript pan sideways on touch screens. Wide
+  // content (code, tables, diagrams) scrolls inside its own box.
+  it("scrolls the transcript vertically only", () => {
+    const { container } = renderStream({ blocks: [makeTextBlock("b1", "Hi")] })
+    const el = container.querySelector(".oa-chat-scroll") as HTMLDivElement
+
+    expect(el.className).toContain("overflow-x-hidden")
+  })
+
   it("disables the sentinel's overflow-anchor when the user detaches, and restores it on re-attach", async () => {
     const { container } = renderStream({ blocks: [makeTextBlock("b1", "Hi")] })
     const el = container.querySelector(".overflow-y-auto") as HTMLDivElement

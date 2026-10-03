@@ -15,7 +15,7 @@ import { useUIStore } from '@/stores/useUIStore'
 export function KeyboardShortcutsSheet() {
   const open = useUIStore((s) => s.shortcutsHelpOpen)
   const close = useUIStore((s) => s.closeShortcutsHelp)
-  const { os } = usePlatform()
+  const { os, isTauri } = usePlatform()
 
   return (
     <AppOverlay open={open} onClose={close} label="Keyboard shortcuts" maxWidth="640px">
@@ -27,7 +27,7 @@ export function KeyboardShortcutsSheet() {
         <p className="text-sm text-(--color-text-muted)">
           Escape closes whatever is on top. While a dialog is open, app shortcuts wait; ⌘K, ⌘P and ⌘, can still switch to another overlay.
         </p>
-        {shortcutHelp(os).map((group) => (
+        {shortcutHelp(os, { desktopApp: isTauri }).map((group) => (
           <SectionCard key={group.title}>
             <SectionCardHeader>{group.title}</SectionCardHeader>
             <SectionCardRows>

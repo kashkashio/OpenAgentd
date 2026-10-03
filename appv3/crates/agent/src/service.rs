@@ -253,8 +253,8 @@ fn truncate_chars(s: &str, n: usize) -> String {
 /// `_sanitize_upload_filename`.
 pub fn sanitize_upload_filename(raw: &str, category: &str) -> String {
     let leaf = py_name(if raw.is_empty() { "upload" } else { raw });
-    let re = regex::Regex::new(r"[\x00-\x1f\x7f/\\]+").unwrap();
-    let mut cleaned = re.replace_all(&leaf, "_").trim().trim_matches('.').to_string();
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"[\x00-\x1f\x7f/\\]+").unwrap());
+    let mut cleaned = RE.replace_all(&leaf, "_").trim().trim_matches('.').to_string();
     if cleaned.is_empty() {
         cleaned = format!("upload{}", default_ext(category));
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, mock } from 'bun:test'
 
-import { fetchTerminalTicket, terminalWsUrl } from '@/api/terminal'
+import { fetchTerminalTicket, handleTerminalFrame, terminalWsUrl } from '@/api/terminal'
 
 const originalFetch = globalThis.fetch
 
@@ -67,5 +67,34 @@ describe('terminalWsUrl', () => {
   it('url-encodes the ticket', () => {
     const url = terminalWsUrl('a b+c')
     expect(url).toContain('ticket=a%20b%2Bc')
+  })
+})
+
+describe('handleTerminalFrame', () => {
+  const callbacks = () => ({
+    onOutput: mock(() => {}),
+    onExit: mock(() => {}),
+    onBusy: mock(() => {}),
+    onError: mock(() => {}),
+  })
+
+  it('routes output, exit and busy frames', () => {
+    const cb = callbacks()
+    handleTerminalFrame(JSON.stringify({ type: 'output', data: 'hi' }), cb)
+    handleTerminalFrame(JSON.stringify({ type: 'busy', busy: true }), cb)
+    handleTerminalFrame(JSON.stringify({ type: 'busy', busy: false }), cb)
+    handleTerminalFrame(JSON.stringify({ type: 'exit' }), cb)
+    expect(cb.onOutput).toHaveBeenCalledWith('hi')
+    expect(cb.onBusy.mock.calls).toEqual([[true], [false]])
+    expect(cb.onExit).toHaveBeenCalledTimes(1)
+    expect(cb.onError).not.toHaveBeenCalled()
+  })
+
+  it('ignores a busy frame without a boolean and reports malformed JSON', () => {
+    const cb = callbacks()
+    handleTerminalFrame(JSON.stringify({ type: 'busy' }), cb)
+    expect(cb.onBusy).not.toHaveBeenCalled()
+    handleTerminalFrame('{', cb)
+    expect(cb.onError).toHaveBeenCalledTimes(1)
   })
 })

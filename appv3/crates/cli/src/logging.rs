@@ -110,7 +110,15 @@ struct FileSink {
     path: PathBuf,
     min_level: u32,
     retention_secs: u64,
-    file: Mutex<Option<std::fs::File>>,
+    /// The open file and its size: counting the bytes written spares an
+    /// `fstat` per line (the size only decides when to rotate).
+    file: Mutex<Option<(std::fs::File, u64)>>,
+}
+
+fn open_append(path: &Path) -> Option<(std::fs::File, u64)> {
+    let f = std::fs::OpenOptions::new().create(true).append(true).open(path).ok()?;
+    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    Some((f, size))
 }
 
 impl FileSink {
@@ -118,7 +126,7 @@ impl FileSink {
         if let Some(d) = path.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        let f = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        let f = open_append(&path);
         FileSink { path, min_level, retention_secs: retention_days * 86_400, file: Mutex::new(f) }
     }
 
@@ -128,16 +136,18 @@ impl FileSink {
             if let Some(d) = self.path.parent() {
                 let _ = std::fs::create_dir_all(d);
             }
-            *g = std::fs::OpenOptions::new().create(true).append(true).open(&self.path).ok();
+            *g = open_append(&self.path);
         }
-        let size = g.as_ref().and_then(|f| f.metadata().ok()).map(|m| m.len()).unwrap_or(0);
+        let size = g.as_ref().map(|(_, n)| *n).unwrap_or(0);
         if size + line.len() as u64 > ROTATION_BYTES {
             *g = None;
             self.rotate();
-            *g = std::fs::OpenOptions::new().create(true).append(true).open(&self.path).ok();
+            *g = open_append(&self.path);
         }
-        if let Some(f) = g.as_mut() {
-            let _ = f.write_all(line.as_bytes());
+        if let Some((f, n)) = g.as_mut() {
+            if f.write_all(line.as_bytes()).is_ok() {
+                *n += line.len() as u64;
+            }
         }
     }
 
@@ -263,7 +273,10 @@ impl<S: Subscriber> Layer<S> for LoguruLayer {
                 "time": {"repr": now.format("%Y-%m-%d %H:%M:%S%.6f%:z").to_string(), "timestamp": ts_micros as f64 / 1e6},
             },
         });
-        let line = format!("{}\n", appv3_core::pyjson::dumps_unicode(&record));
+        // Same loguru record schema the log tools read; compact serde_json
+        // instead of Python's json.dumps spacing (about 4x cheaper per line).
+        let mut line = serde_json::to_string(&record).expect("serde_json::Value always serializes");
+        line.push('\n');
         for s in sinks {
             s.write(&line);
         }
@@ -318,6 +331,25 @@ mod tests {
         assert_eq!(timedelta_repr(1_000_000), "0:00:01");
         assert_eq!(timedelta_repr(86_400_000_000 + 3_723_000_001), "1 day, 1:02:03.000001");
         assert_eq!(timedelta_repr(2 * 86_400_000_000), "2 days, 0:00:00");
+    }
+
+    #[test]
+    fn file_records_are_compact_loguru_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        let layer = LoguruLayer { stderr_level: 100, files: vec![FileSink::new(path.clone(), 10, 7)], start: Instant::now(), env_filter: false };
+        let sub = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(sub, || tracing::info!(target: "appv3_test", call_id = "c1", "tool_start name=shell Tiếng Việt"));
+        let line = std::fs::read_to_string(&path).unwrap();
+        assert!(line.ends_with('\n') && line.lines().count() == 1, "{line}");
+        assert!(line.contains("Tiếng Việt"), "non-ASCII stays verbatim: {line}");
+        assert!(!line.contains("\", \"") && !line.contains("\": "), "compact separators: {line}");
+        let v: Value = serde_json::from_str(&line).unwrap();
+        let rec = &v["record"];
+        assert_eq!(rec["message"], "tool_start name=shell Tiếng Việt call_id=c1");
+        assert_eq!(rec["level"]["name"], "INFO");
+        assert!(rec["time"]["repr"].is_string() && rec["time"]["timestamp"].is_f64());
+        assert!(v["text"].as_str().unwrap().contains(" | INFO     | "));
     }
 
     #[test]

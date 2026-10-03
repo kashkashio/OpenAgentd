@@ -4,6 +4,7 @@ import { LongPressButton } from '@/components/ui/long-press-button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DiffPreview } from '../FileViewerPanel'
 import { FileTypeIcon } from '../FileTypeIcon'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import type { WorkspaceFileInfo, WorkspaceGitDiffResponse } from '@/api/types'
 import { ChangeCounts } from './ChangeCounts'
@@ -64,7 +65,7 @@ function GitReviewSubPanelView({
           Changed list may be incomplete because the diff was truncated.
         </p>
       )}
-      <ul className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
+      <ul aria-label="Changed files" className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
         {changedFiles.map((changedFile) => {
           const isSelected = selectedFilePath === changedFile.path
           const expanded = expandedDiffs.has(changedFile.path)
@@ -85,6 +86,12 @@ function GitReviewSubPanelView({
                           if (mobile) return
                           e.preventDefault()
                           setDesktopFileActions({ file: changedFile, x: e.clientX, y: e.clientY })
+                        }}
+                        onKeyDown={(e) => {
+                          if (mobile || !isMenuKey(e)) return
+                          e.preventDefault()
+                          const at = menuPointFor(e.currentTarget)
+                          setDesktopFileActions({ file: changedFile, x: at.clientX, y: at.clientY })
                         }}
                         className={cn(
                           'flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 pl-3 text-left text-xs outline-none hover:text-(--color-text) focus-visible:bg-(--bg-key)/60',

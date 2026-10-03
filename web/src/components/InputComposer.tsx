@@ -20,6 +20,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { usePlatform } from '@/hooks/use-platform'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { isPrimaryModifierOS } from '@/lib/keyboard-shortcut'
+import { focusQuietly } from '@/lib/focus/quiet'
 import { SessionModeToggle } from './SessionModeToggle'
 
 // Re-export the public type so callers can import ``FileRef`` from this module
@@ -422,8 +423,13 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
 
   useImperativeHandle(ref, () => ({
     focus: (options) => {
-      const target = options?.expand === false && minimized ? expandButtonRef.current : textareaRef.current
-      target?.focus()
+      const pill = options?.expand === false && minimized ? expandButtonRef.current : null
+      // Handing focus back (page load, dock close) isn't keyboard-steered, but
+      // a script focus() on a fresh page counts as :focus-visible and rings
+      // the pill. Focus it quietly: Tab still continues from here, and the
+      // ring returns on the next control the keyboard reaches.
+      if (pill) focusQuietly(pill, {})
+      else textareaRef.current?.focus()
     },
     setValue: (text: string) => {
       // A restored message's design feedback blocks come back as chips.
@@ -513,7 +519,18 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
   useEffect(() => {
     const wasMinimized = prevMinimizedRef.current
     prevMinimizedRef.current = minimized
-    if (!wasMinimized || minimized) return
+    if (wasMinimized === minimized) return
+    if (minimized) {
+      // Minimizing disables the textarea, and the browser drops its focus
+      // onto <body> without an event (after a send, or Esc). Keep focus in
+      // the composer on the pill instead, so the next Tab, Enter or typed
+      // key starts here rather than at the top of the page.
+      const active = document.activeElement
+      if (active === textareaRef.current || active === document.body || active === null) {
+        expandButtonRef.current?.focus({ preventScroll: true })
+      }
+      return
+    }
     // ``resizeAfterLayout``'s double-rAF lets Framer's spring reach (or get
     // very close to) the bar's final width before scrollHeight is measured.
     return resizeAfterLayout(() => textareaRef.current?.focus())
@@ -942,6 +959,10 @@ export const InputComposer = forwardRef<InputComposerHandle, InputComposerProps>
         // text-layout paths drift by 1–2px, leaving the squiggle a word
         // off. Same call Discord/Slack/ChatGPT make for the same reason.
         spellCheck={false}
+        // Prompts carry code and paths: on desktop, no smart quotes, dashes
+        // or autocapitalised identifiers. Phone keyboards keep theirs.
+        autoCorrect={isMobile ? undefined : 'off'}
+        autoCapitalize={isMobile ? undefined : 'off'}
         aria-label="Message input"
         aria-expanded={menu !== null}
         aria-controls={activePopupId}

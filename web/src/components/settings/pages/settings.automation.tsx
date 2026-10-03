@@ -264,7 +264,7 @@ export function AutomationSettingsPage() {
               </SettingsField>
               <SettingsField
                 label="Wait timeout"
-                hint="Seconds to wait for backend processing before generating."
+                hint="Seconds the first reply waits for its title before finishing. 0 doesn't wait; the title shows up when it's ready."
               >
                 <Input
                   type="number"

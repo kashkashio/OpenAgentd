@@ -17,11 +17,50 @@ pub fn lines(resp: reqwest::Response) -> impl Stream<Item = ProviderResult<Strin
     lines_idle(resp, Some(DEFAULT_TIMEOUT))
 }
 
+/// Splits bytes into `\n`-terminated lines with a trailing `\r` stripped.
+/// Remembers how far it has scanned, so a long line that arrives over many
+/// chunks is searched once rather than from its start on every chunk.
+#[derive(Default)]
+pub struct LineBuf {
+    buf: Vec<u8>,
+    scanned: usize,
+}
+
+impl LineBuf {
+    /// Append `chunk` and move every completed line into `out`.
+    pub fn push(&mut self, chunk: &[u8], out: &mut Vec<String>) {
+        self.buf.extend_from_slice(chunk);
+        let mut start = 0;
+        while let Some(rel) = self.buf[self.scanned..].iter().position(|b| *b == b'\n') {
+            let end = self.scanned + rel;
+            out.push(line_text(&self.buf[start..end]));
+            start = end + 1;
+            self.scanned = start;
+        }
+        if start > 0 {
+            self.buf.drain(..start);
+        }
+        self.scanned = self.buf.len();
+    }
+
+    /// The unterminated tail left when the stream ends, if any.
+    pub fn finish(&mut self) -> Option<String> {
+        let rest = std::mem::take(&mut self.buf);
+        self.scanned = 0;
+        (!rest.is_empty()).then(|| line_text(&rest))
+    }
+}
+
+fn line_text(line: &[u8]) -> String {
+    String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line)).into_owned()
+}
+
 /// [`lines`] with an httpx-style read timeout between chunks (`None` = none).
 pub fn lines_idle(resp: reqwest::Response, idle: Option<Duration>) -> impl Stream<Item = ProviderResult<String>> + Send {
     let mut bytes = resp.bytes_stream();
     async_stream::stream! {
-        let mut buf: Vec<u8> = Vec::new();
+        let mut buf = LineBuf::default();
+        let mut ready: Vec<String> = Vec::new();
         loop {
             let next = match idle {
                 Some(d) => match tokio::time::timeout(d, bytes.next()).await {
@@ -32,20 +71,15 @@ pub fn lines_idle(resp: reqwest::Response, idle: Option<Duration>) -> impl Strea
             };
             match next {
                 Some(Ok(chunk)) => {
-                    buf.extend_from_slice(&chunk);
-                    while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
-                        let mut line: Vec<u8> = buf.drain(..=pos).collect();
-                        line.pop();
-                        if line.last() == Some(&b'\r') { line.pop(); }
-                        yield Ok(String::from_utf8_lossy(&line).into_owned());
+                    buf.push(&chunk, &mut ready);
+                    for line in ready.drain(..) {
+                        yield Ok(line);
                     }
                 }
                 Some(Err(e)) => { yield Err(ProviderError::from_reqwest(e)); return; }
                 None => {
-                    if !buf.is_empty() {
-                        let mut line = std::mem::take(&mut buf);
-                        if line.last() == Some(&b'\r') { line.pop(); }
-                        yield Ok(String::from_utf8_lossy(&line).into_owned());
+                    if let Some(line) = buf.finish() {
+                        yield Ok(line);
                     }
                     return;
                 }
@@ -120,6 +154,39 @@ pub async fn check_status(resp: reqwest::Response, label: &str) -> ProviderResul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn feed(chunks: &[&[u8]]) -> (Vec<String>, Option<String>) {
+        let mut lb = LineBuf::default();
+        let mut out = Vec::new();
+        for c in chunks {
+            lb.push(c, &mut out);
+        }
+        (out, lb.finish())
+    }
+
+    #[test]
+    fn line_buf_reassembles_a_long_line_from_many_chunks() {
+        let line = format!("data: {}", "x".repeat(10_000));
+        let bytes = format!("{line}\r\nnext\n");
+        let chunks: Vec<&[u8]> = bytes.as_bytes().chunks(7).collect();
+        assert_eq!(feed(&chunks), (vec![line, "next".to_string()], None));
+    }
+
+    #[test]
+    fn line_buf_splits_one_chunk_into_lines_and_keeps_blank_ones() {
+        assert_eq!(feed(&[b"event: a\ndata: 1\n\ndata: 2\r\n\r\n"]), (vec!["event: a".into(), "data: 1".into(), "".into(), "data: 2".into(), "".into()], None));
+    }
+
+    #[test]
+    fn line_buf_returns_an_unterminated_tail_at_the_end() {
+        assert_eq!(feed(&[b"data: 1\nda", b"ta: 2\r"]), (vec!["data: 1".to_string()], Some("data: 2".to_string())));
+        assert_eq!(feed(&[b"data: 1\n"]), (vec!["data: 1".to_string()], None));
+    }
+
+    #[test]
+    fn line_buf_keeps_a_multibyte_char_split_across_chunks() {
+        assert_eq!(feed(&[b"data: \xC3", b"\xA9\n"]), (vec!["data: é".to_string()], None));
+    }
 
     #[tokio::test]
     async fn utf8_split_across_chunks_is_preserved() {

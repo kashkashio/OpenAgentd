@@ -239,6 +239,21 @@ function previewPageActionLabel(action: string, parsed: Record<string, unknown>)
   }
 }
 
+/** ``Fill e1 → Click e4 +2 more`` for a chain of page actions (steps may still be streaming). */
+function previewChainLabel(parsed: Record<string, unknown>): { short: string; full: string } {
+  const steps = Array.isArray(parsed.steps) ? parsed.steps : []
+  const labels = steps.flatMap((step) => {
+    if (!step || typeof step !== 'object') return []
+    const s = step as Record<string, unknown>
+    const action = str(s, 'action')
+    const label = action ? previewPageActionLabel(action, s) : null
+    return label ? [label] : []
+  })
+  if (!labels.length) return { short: 'Chain', full: 'Chain' }
+  const shown = labels.slice(0, 3).join(' → ')
+  return { short: labels.length > 3 ? `${shown} +${labels.length - 3} more` : shown, full: labels.join(' → ') }
+}
+
 function getToolDisplayInternal(name: string, parsed: Record<string, unknown>): ToolDisplay {
   // ── Claude Code tools: shown as the OpenAgentd tool they correspond to ──
   const counterpart = claudeCodeAsOpenAgentd(name, parsed)
@@ -263,6 +278,10 @@ function getToolDisplayInternal(name: string, parsed: Record<string, unknown>): 
     if (action === 'logs') {
       const label = str(parsed, 'level') === 'error' ? 'Console errors' : 'Console'
       return { header: <Arg>{label}</Arg>, headerTitle: label, formattedArgs: null }
+    }
+    if (action === 'chain') {
+      const { short, full } = previewChainLabel(parsed)
+      return { header: <Arg>{short}</Arg>, headerTitle: full, formattedArgs: null }
     }
     const page = action ? previewPageActionLabel(action, parsed) : null
     if (page) return { header: <Arg>{page}</Arg>, headerTitle: page, formattedArgs: null }

@@ -40,9 +40,25 @@ const MARK_CLASS: Record<MarkKind, string> = {
 }
 
 const ID_SEPARATOR = '\u0000'
+/**
+ * Marks are re-measured at most this often while the transcript only grows
+ * (a streaming answer resizes it every frame). Each measure reads layout for
+ * every rendered prompt and re-renders the rail; a mark that trails by a few
+ * frames is invisible at this scale. Find and question changes measure at once.
+ */
+const MARK_REMEASURE_MS = 200
 
 function percent(fraction: number): string {
   return `${Math.round(fraction * 10_000) / 100}%`
+}
+
+/** Equal as drawn: `percent()` rounds to 0.01%. */
+function sameFraction(a: number, b: number): boolean {
+  return Math.round(a * 10_000) === Math.round(b * 10_000)
+}
+
+function sameMarks(a: readonly Mark[], b: readonly Mark[]): boolean {
+  return a.length === b.length && a.every((mark, i) => mark.key === b[i].key && mark.kind === b[i].kind && sameFraction(mark.at, b[i].at))
 }
 
 export function TimelineScrubber({ scrollRef, contentRef, findBlockIds, activeFindBlockId }: {
@@ -58,6 +74,8 @@ export function TimelineScrubber({ scrollRef, contentRef, findBlockIds, activeFi
   const [marks, setMarks] = useState<Mark[]>([])
   const [dragging, setDragging] = useState(false)
   const measuredHeight = useRef(-1)
+  const lastMeasureAt = useRef(Number.NEGATIVE_INFINITY)
+  const remeasureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Where on the thumb the pointer holds it, in px; null when not dragging. */
   const grab = useRef<number | null>(null)
   // A string, so a new array with the same ids does not re-measure.
@@ -83,28 +101,52 @@ export function TimelineScrubber({ scrollRef, contentRef, findBlockIds, activeFi
     }
     const question = root.querySelector('[data-question-waiting]')
     if (question) next.push({ key: 'question', kind: 'question', at: at(question) })
-    setMarks(next)
+    setMarks((current) => (sameMarks(current, next) ? current : next))
   }, [activeFindBlockId, findKey])
+  const measureMarksRef = useRef(measureMarks)
+  measureMarksRef.current = measureMarks
 
-  /** Moves the thumb; marks are re-measured when forced or the height changed. */
+  /**
+   * Moves the thumb; marks are re-measured when forced, or — throttled to
+   * ``MARK_REMEASURE_MS`` — when the height changed.
+   */
   const sync = useCallback((force: boolean) => {
     const root = scrollRef.current
     if (!root) return
     const { scrollHeight, clientHeight, scrollTop } = root
-    if (force || scrollHeight !== measuredHeight.current) measureMarks(root)
-    setView(scrollHeight > clientHeight + 1 ? { top: scrollTop / scrollHeight, height: clientHeight / scrollHeight } : null)
+    const now = performance.now()
+    if (force || (scrollHeight !== measuredHeight.current && now - lastMeasureAt.current >= MARK_REMEASURE_MS)) {
+      lastMeasureAt.current = now
+      measureMarks(root)
+    } else if (scrollHeight !== measuredHeight.current && remeasureTimer.current === null) {
+      remeasureTimer.current = setTimeout(() => {
+        remeasureTimer.current = null
+        const current = scrollRef.current
+        if (!current) return
+        lastMeasureAt.current = performance.now()
+        measureMarksRef.current(current)
+      }, MARK_REMEASURE_MS - (now - lastMeasureAt.current))
+    }
+    const next = scrollHeight > clientHeight + 1 ? { top: scrollTop / scrollHeight, height: clientHeight / scrollHeight } : null
+    setView((current) => (
+      current && next && sameFraction(current.top, next.top) && sameFraction(current.height, next.height) ? current : next
+    ))
   }, [measureMarks, scrollRef])
 
   useEffect(() => {
     sync(true)
   }, [sync])
 
+  useEffect(() => () => {
+    if (remeasureTimer.current !== null) clearTimeout(remeasureTimer.current)
+  }, [])
+
   useEffect(() => {
     const root = scrollRef.current
     if (!root) return
     const onScroll = () => sync(false)
     root.addEventListener('scroll', onScroll, { passive: true })
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => sync(true))
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => sync(false))
     observer?.observe(root)
     if (contentRef.current) observer?.observe(contentRef.current)
     return () => {

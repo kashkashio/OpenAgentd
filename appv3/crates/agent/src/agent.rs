@@ -200,7 +200,7 @@ fn merge_question_calls(primary: &mut ToolCall, dups: &[ToolCall]) {
     qs.truncate(4);
     if let Some(o) = merged.as_object_mut() {
         o.insert("questions".into(), Value::Array(qs));
-        primary.function.arguments = appv3_core::pyjson::dumps(&merged);
+        primary.function.arguments = merged.to_string();
     }
 }
 
@@ -433,15 +433,15 @@ impl Agent {
             let model_span = otel_hook.map(|o| (o, o.start_model_span(&ctx, &req), Instant::now()));
             let span_ctx = model_span.as_ref().map(|(_, s, _)| s.ctx()).or_else(appv3_core::otel::current);
             let call = appv3_core::otel::scope(span_ctx, async {
-                let req = Self::prepare_call(&hooks, &ctx, &mut state, req).await;
+                let ModelRequest { messages, system_prompt } = Self::prepare_call(&hooks, &ctx, &mut state, req).await;
                 stream_and_assemble(StreamArgs {
                     ctx: &ctx,
                     state: &state,
                     hooks: &hooks,
                     interrupt: opts.interrupt.as_ref(),
                     hard_cancel: opts.hard_cancel.as_ref(),
-                    system_prompt: &req.system_prompt,
-                    messages: &req.messages,
+                    system_prompt: &system_prompt,
+                    messages,
                     tool_defs: &tool_defs,
                     provider: provider.clone(),
                     label: &label,
@@ -736,5 +736,18 @@ impl Agent {
         );
         let metadata = state.metadata.lock().unwrap().clone();
         Ok(RunOutcome { messages: state.messages, metadata })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merged_question_calls_keep_non_ascii_text_verbatim() {
+        let mut primary = ToolCall::new("a", "ask_user", r#"{"questions":[{"question":"Chọn màu?"}]}"#);
+        let dup = ToolCall::new("b", "ask_user", r#"{"questions": [{"question": "Größe?"}]}"#);
+        merge_question_calls(&mut primary, &[dup]);
+        assert_eq!(primary.function.arguments, r#"{"questions":[{"question":"Chọn màu?"},{"question":"Größe?"}]}"#);
     }
 }

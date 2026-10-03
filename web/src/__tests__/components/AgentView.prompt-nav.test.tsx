@@ -6,6 +6,7 @@ mock.module('lucide-react', () => new Proxy({}, { get: () => () => null }))
 import { AgentView } from '@/components/AgentView'
 import { PROMPT_JUMP_MARGIN } from '@/components/AgentView/prompt-nav'
 import { useAgentStore } from '@/stores/useAgentStore'
+import { useDisplayPrefsStore } from '@/stores/useDisplayPrefsStore'
 import { useTranscriptFollowStore } from '@/stores/useTranscriptFollowStore'
 import type { ContentBlock } from '@/api/types'
 
@@ -316,8 +317,13 @@ describe('AgentView — a loaded page holding no prompt', () => {
     { id: 'run:a1', type: 'text', content: 'still working' },
   ]
 
+  beforeEach(() => {
+    useDisplayPrefsStore.setState({ transcriptStyle: 'reader' })
+  })
+
   afterEach(() => {
     useAgentStore.setState({ hasMore: false, loadOlderUntilPrompt })
+    useDisplayPrefsStore.setState({ transcriptStyle: 'detailed' })
   })
 
   it('loads back to the nearest prompt once, without a scroll', async () => {
@@ -330,6 +336,30 @@ describe('AgentView — a loaded page holding no prompt', () => {
     await act(async () => {})
 
     expect(loadOlder).toHaveBeenCalledTimes(1)
+  })
+
+  it('seeks only a few pages, not the manual jump budget', async () => {
+    const loadOlder = mock(async (..._args: unknown[]) => true)
+    useAgentStore.setState({ hasMore: true, loadOlderUntilPrompt: loadOlder })
+
+    render(<AgentView blocks={RUN} currentBlocks={[]} isWorking={false} />)
+    await act(async () => {})
+
+    expect(loadOlder).toHaveBeenCalledTimes(1)
+    const pages = loadOlder.mock.calls[0]?.[0] as number | undefined
+    expect(pages).toBeDefined()
+    expect(pages!).toBeLessThanOrEqual(3)
+  })
+
+  it('leaves history alone in the detailed transcript, which scrolls to load', async () => {
+    useDisplayPrefsStore.setState({ transcriptStyle: 'detailed' })
+    const loadOlder = mock(async () => true)
+    useAgentStore.setState({ hasMore: true, loadOlderUntilPrompt: loadOlder })
+
+    render(<AgentView blocks={RUN} currentBlocks={[]} isWorking={false} />)
+    await act(async () => {})
+
+    expect(loadOlder).not.toHaveBeenCalled()
   })
 
   it('leaves history alone when a prompt is already loaded', async () => {

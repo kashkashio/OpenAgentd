@@ -29,6 +29,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { usePlatform } from '@/hooks/use-platform'
 import { APP_SHORTCUTS, shortcutLabel } from '@/lib/app-shortcuts'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { PanelResizeHandle, ResizableAside, type LiveWidth } from '@/components/ResizableAside'
 import { useViewportWidth } from '@/hooks/use-viewport-width'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
@@ -692,7 +693,7 @@ export function Sidebar({
     })
   }
 
-  const handleSessionDelete = (e: React.MouseEvent, session: SessionResponse) => {
+  const handleSessionDelete = (e: React.SyntheticEvent, session: SessionResponse) => {
     e.stopPropagation()
     setDeleteTarget(session)
   }
@@ -769,6 +770,9 @@ export function Sidebar({
       initial={false}
       resize={sidebarResize}
       getMotion={sidebarMotion}
+      // Collapsed (desktop) or closed (mobile), the sidebar is off screen
+      // but still in the DOM: keep Tab and screen readers out of it.
+      inert={isMobile ? !mobileOpen && mobileDragOffset === null : desktopCollapsed}
       className={
         isMobile
           ? 'mobile-safe-top fixed bottom-0 left-0 z-40 flex w-[min(272px,calc(100vw-2rem))] shrink-0 flex-col overflow-hidden border-r border-(--color-border) bg-(--bg-page) shadow-xl dark:bg-(--bg-sidebar)'
@@ -777,6 +781,19 @@ export function Sidebar({
     >
       {!isMobile && !desktopCollapsed && <PanelResizeHandle edge="right" />}
 
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        onKeyDown={(event) => {
+          // Left on a session row climbs to its workspace, like a tree.
+          if (event.defaultPrevented || event.key !== 'ArrowLeft' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+          const target = event.target as HTMLElement
+          if (!target.closest('[data-sidebar-session]')) return
+          const header = target.closest('[data-sidebar-workspace-group]')?.querySelector<HTMLElement>('[data-sidebar-workspace]')
+          if (!header) return
+          event.preventDefault()
+          header.focus()
+        }}
+      >
       <NeedsYouSection
         currentSessionId={currentSessionId}
         workspaceName={(path) => (isChatPath(path) ? (chatWorkspace?.name ?? path) : workspaceLabel(path))}
@@ -887,7 +904,7 @@ export function Sidebar({
           const checkoutLabel = selectedWorktree?.name ?? (checkouts.selected ? 'main worktree' : 'all')
 
           return (
-            <div key={path} className="relative">
+            <div key={path} className="relative" data-sidebar-workspace-group="">
               <div className="group mx-1.5 flex h-(--spacing-list-row) items-center rounded-sm hover:bg-(--bg-key)/40">
                 <Tooltip className="min-w-0 flex-1">
                   <TooltipTrigger
@@ -900,7 +917,20 @@ export function Sidebar({
                         // way left to start a new chat session.
                         onLongPress={() => setMobileWorkspaceActions({ path, sessionPath: sessionTarget, kind: sourceIsChat ? 'chat' : 'main' })}
                         type="button"
+                        data-sidebar-workspace=""
                         onClick={() => toggleWorkspaceExpanded(path)}
+                        onKeyDown={(event) => {
+                          const expandKey = event.key === 'ArrowRight' && !sourceIsExpanded
+                          const collapseKey = event.key === 'ArrowLeft' && sourceIsExpanded
+                          if (expandKey || collapseKey) {
+                            event.preventDefault()
+                            toggleWorkspaceExpanded(path)
+                          } else if (isMenuKey(event) && !mobileLongPressActions && !sourceIsChat) {
+                            event.preventDefault()
+                            const at = menuPointFor(event.currentTarget)
+                            setDesktopWorkspaceActions({ path, sessionPath: sessionTarget, x: at.clientX, y: at.clientY })
+                          }
+                        }}
                         onContextMenu={(event) => {
                           if (mobileLongPressActions || sourceIsChat) return
                           event.preventDefault()
@@ -1054,6 +1084,7 @@ export function Sidebar({
       )}
 
       <ScheduledSection onMobileClose={onMobileClose} />
+      </div>
 
       {/* Mobile drawer footer — on desktop this lives in AppFooter status bar */}
       <div className="flex md:hidden items-center justify-between gap-2 border-t border-(--color-border) px-3 py-2 pb-safe">
@@ -1363,6 +1394,9 @@ export function Sidebar({
                     value={worktreeName}
                     onChange={(e) => setWorktreeName(e.target.value)}
                     placeholder="feature-login"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                     className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 font-mono text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-subtle) focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                     maxLength={80}
                     autoFocus
@@ -1375,6 +1409,9 @@ export function Sidebar({
                     value={worktreeBranch}
                     onChange={(e) => setWorktreeBranch(e.target.value)}
                     placeholder="openagentd/feature-login"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                     className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 font-mono text-sm text-(--color-text) outline-none transition-colors placeholder:text-(--color-text-subtle) focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                     maxLength={255}
                   />
@@ -1413,7 +1450,7 @@ export function Sidebar({
                                     type="button"
                                     onClick={() => setRemoveWorktreeTarget(item)}
                                     disabled={worktreeRemoving === item.directory}
-                                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xs text-(--color-text-subtle) opacity-100 transition-colors hover:bg-(--color-error-subtle) hover:text-(--color-error) disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100"
+                                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xs text-(--color-text-subtle) opacity-100 transition-colors hover:bg-(--color-error-subtle) hover:text-(--color-error) disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
                                     aria-label={`Remove worktree ${item.name}`}
                                   >
                                     {worktreeRemoving === item.directory ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Trash2 size={12} aria-hidden="true" />}
@@ -1703,6 +1740,9 @@ export function Sidebar({
                 ref={worktreeEditInputRef}
                 value={worktreeEditTitle}
                 onChange={(e) => setWorktreeEditTitle(e.target.value)}
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 className="min-h-9 w-full min-w-0 rounded-sm border border-(--color-border) bg-(--bg-page) px-2.5 py-1 text-sm text-(--color-text) outline-none focus:outline-none focus-visible:outline-none focus-visible:border-(--focus-ring) focus-visible:ring-2 focus-visible:ring-(--focus-ring)/25 md:min-h-8"
                 aria-label="Worktree title"
                 maxLength={255}

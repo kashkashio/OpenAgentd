@@ -34,7 +34,8 @@ import { useUIStore } from '@/stores/useUIStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useMarkSessionRead } from '@/stores/useUnreadStore'
 import { useElementWidthSelect } from '@/hooks/use-element-width'
-import { useReturnFocusFromDock } from '@/hooks/use-dock-focus'
+import { settledWidthBesidePanels } from '@/components/ResizableAside'
+import { isFocusStranded, useReturnFocusFromDock, useStrandedFocusGuard } from '@/hooks/use-dock-focus'
 import { dockOverlaysChat } from '@/lib/workbench-layout'
 import { isLocalBackend, lastPreviewUrl } from '@/api/preview'
 import { OPEN_PREVIEW_EVENT, isPreviewTarget } from '../Preview/preview-events'
@@ -181,7 +182,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
   const inputRef = useRef<InputComposerHandle>(null)
   const mainColumnRef = useRef<HTMLDivElement>(null)
   // Handing focus back from the dock must not summon a collapsed composer.
-  const returnFocusToComposer = useCallback(() => inputRef.current?.focus({ expand: false }), [])
+  const returnFocusToComposer = useCallback(() => inputRef.current?.focus?.({ expand: false }), [])
 
   const [fileRefsEnabled, setFileRefsEnabled] = useState(false)
   const [isSwitchingInteractionMode, setIsSwitchingInteractionMode] = useState(false)
@@ -304,6 +305,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     showTodos,
     showMobileActions,
     handleWorkspaceFiles,
+    handleOpenGit,
     handleSidebarToggle,
     handleOpenWorkspaceDialog,
     handleFileSelect,
@@ -505,6 +507,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     workspacePanelOpen: workspacePanel !== null,
     handleNewSession,
     handleWorkspaceFiles,
+    handleOpenGit: workspace && !isChatWorkspace ? handleOpenGit : undefined,
     handleSidebarToggle,
     handleToggleAgentCapabilities,
     handleToggleTasks,
@@ -528,8 +531,13 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
   // center itself; the shell subscribes to one bit so a sidebar tween or a
   // window drag does not re-render this whole tree every frame.
   const centerRef = useRef<HTMLDivElement>(null)
-  const centerTooNarrow = useElementWidthSelect(centerRef, isCenterTooNarrow)
+  const centerTooNarrow = useElementWidthSelect(centerRef, isCenterTooNarrow, settledWidthBesidePanels)
   const dockMaximized = useLayoutStore((s) => s.dockMaximized)
+  // After its first open the dock stays mounted, closed or not, so its tabs
+  // and their live content (preview pages, unsent comments) survive a close.
+  const dockOpen = workspacePanel !== null
+  const [dockKept, setDockKept] = useState(dockOpen)
+  if (dockOpen && !dockKept) setDockKept(true)
   const chatCoveredByDock = !isMobile && Boolean(workspace) && workspacePanel !== null && (dockMaximized || centerTooNarrow)
   // The dock claims focus while it covers the chat; give it back when it
   // closes or uncovers the chat so it is never left on <body>.
@@ -540,6 +548,13 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     isInDock: isInReviewDock,
     onReturn: returnFocusToComposer,
   })
+  // A desktop app always has a focused control: never leave focus on
+  // <body>, and start in the composer once a session is on screen.
+  useStrandedFocusGuard(!isMobile, returnFocusToComposer)
+  useEffect(() => {
+    if (isMobile || isSessionLoading || typeof document === 'undefined') return
+    if (document.hasFocus() && isFocusStranded()) returnFocusToComposer()
+  }, [isMobile, isSessionLoading, sessionIdState, returnFocusToComposer])
 
   const handleRetry = useCallback(() => {
     if (effectiveWorkspace) void retryLatestPrompt(effectiveWorkspace)
@@ -795,11 +810,11 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
             or an overlay across it when maximized / the window is narrow.
             Mobile: fixed full-screen overlay from the right. */}
         <AnimatePresence initial={false}>
-          {workspace && workspacePanel !== null && (
+          {workspace && (dockOpen || dockKept) && (
             <WorkspacePanel
               key="review-dock"
               workspace={workspace}
-              open
+              open={dockOpen}
               chatWorkspace={isChatWorkspace}
               mobile={isMobile}
               mobileDragOffset={workspacePanelDragOffset}
@@ -822,6 +837,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
               onClearPlan={handleClearPlan}
               onFileSelect={handleFileSelect}
               onAddComment={handleAddFileComment}
+              onRequestClose={() => setWorkspacePanel(null)}
             />
           )}
         </AnimatePresence>
@@ -838,7 +854,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
         sessionThinkingLevel={sessionThinkingLevel}
         sessionFastMode={storeState.sessionFastMode}
         onToggleSessionSettings={handleToggleAgentCapabilities}
-        onOpenGitChanges={workspace ? handleWorkspaceFiles : undefined}
+        onOpenGitChanges={workspace && !isChatWorkspace ? handleOpenGit : undefined}
       />
 
       <AgentChatPanels

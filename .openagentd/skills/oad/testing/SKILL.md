@@ -1,104 +1,72 @@
 ---
 name: oad/testing
-description: >
-  OpenAgentd testing reference — environment setup, run commands, and fix
-  patterns for backend (cargo) and frontend (Bun/RTL). Load this for
-  running, fixing, or adding coverage to existing tests. For writing a
-  failing test before new code, use oad/test-driven-development instead.
+description: OpenAgentd testing workflow — test-first (red/green/refactor, Prove-It for bugs), per-surface run commands, placement, and fix patterns for the Rust backend (appv3), the web UI (Bun + Testing Library), native shells, and scripts. Use when implementing or changing behavior, fixing a bug, or running and fixing tests.
 ---
 
-# When to load which skill
+Tests are the proof that a change works. Write them first for behavior; skip
+them only for config, docs, or static content with no behavioral effect.
 
-| Situation | Skill |
-|---|---|
-| Running or fixing existing tests | **this skill** |
-| Adding coverage for already-written code | **this skill** |
-| Writing a failing test *before* implementing new behavior | `oad/test-driven-development` (loads this automatically) |
-| Reproducing a bug with a test before fixing | `oad/test-driven-development` (Prove-It pattern) |
+## 1. Test first
 
----
+1. **Red** — write the test for the new behavior and run it. It must fail for
+   the expected reason (not a typo, import error, or missing fixture).
+2. **Green** — make the smallest change that passes it. No speculative branches or config.
+3. **Refactor** — clean up with the test green, re-running after each step.
 
-# Backend (v3, Rust / cargo test)
+**Bug fixes (Prove-It):** reproduce the bug in a failing test before touching the
+implementation, fix the root cause, then run the surface's full suite.
 
-## Run commands
+## 2. Run commands
 
-```bash
-make verify-v3                                                           # fmt check, clippy -D warnings, all tests
-cargo test --manifest-path appv3/Cargo.toml -p appv3-api                 # one crate
-cargo test --manifest-path appv3/Cargo.toml -p appv3-agent --test session_turn  # one integration file
-cargo test --manifest-path appv3/Cargo.toml -p appv3-agent <name_filter> # tests matching a name
-```
+| Surface | Focused | Full gate |
+|---|---|---|
+| Backend `appv3/` | `cargo test --manifest-path appv3/Cargo.toml -p <crate> [name_filter]` | `make verify-v3` (fmt check, clippy `-D warnings`, all tests) |
+| Web `web/` | `cd web && bun test --parallel src/__tests__/<path>.test.tsx` | `make verify-web` (oxlint, `tsc -b` incl. tests, full suite) |
+| Shared native crate | `cd native/shell-core && cargo test <filter>` | `make verify-shell-core` |
+| Desktop shell | see `reference/native.md` | `make verify-desktop` |
+| Mobile shell | — | `make verify-mobile` (check only) |
+| Scripts, installers, workflows | `.venv/bin/python -m pytest scripts/tests/<file> -q` | `make verify-scripts` |
 
-## Environment rules
+Crates are named `appv3-<dir>` (`appv3-api`, `appv3-agent`, `appv3-tools`, …);
+integration files run with `--test <file_stem>`. `make verify` runs the portable
+set (v3, scripts, web, docs, version); `make verify-native` runs the three native targets.
+API or SSE changes need both backend and web checks, and event types must match
+`appv3/contract/sse_events.json`.
 
-- Integration tests that spawn `server serve` (`appv3/crates/cli/tests/`) build the binary and use throw-away `HOME`/XDG roots — never point tests at real user data.
-- Timing-dependent async tests use `#[tokio::test(start_paused = true)]` instead of real sleeps.
-- API or SSE event changes also need `make verify-web`; event types must match `appv3/contract/sse_events.json`.
+## 3. Placement
 
-## Placement
+- **Rust**: unit tests in `#[cfg(test)] mod tests` beside the code; behavior that
+  crosses modules in `appv3/crates/<crate>/tests/<topic>.rs` (e.g. `api/tests/http_api.rs`).
+- **Web**: mirror the source path under `web/src/__tests__/`
+  (`src/components/Foo.tsx` → `src/__tests__/components/Foo.test.tsx`); split a
+  large component by concern (`AgentView.scroll.test.tsx`).
+- **Scripts**: `scripts/tests/test_<script>.py`.
 
-Unit tests go in a `#[cfg(test)] mod tests` beside the code. Behavior that crosses modules goes in `appv3/crates/<crate>/tests/<topic>.rs` (e.g. `crates/api/tests/http_api.rs`).
+## 4. Surface rules
 
----
+**Backend**
+- Tests that spawn `server serve` (`appv3/crates/cli/tests/`) use throw-away
+  `HOME`/XDG roots; never point a test at real user data.
+- Use `#[tokio::test(start_paused = true)]` for timing, not real sleeps.
 
-# Frontend (Bun / React Testing Library)
+**Web** — details and boilerplate in `reference/frontend.md`.
+- Always pass `--parallel`: `mock.module()` patches Bun's global module registry,
+  `mock.restore()` does not undo it, and `--parallel` gives each file its own worker.
+- Call `mock.module()` before importing the code that uses it; `afterEach(cleanup)` in component tests.
+- Reset stores in `beforeEach`; drive real store actions and SSE handlers rather than
+  asserting on mocked internals.
 
-## Run commands
+## 5. Good tests
 
-```bash
-cd web && bun test --parallel         # full suite
-cd web && bun test src/__tests__/path/to/Foo.test.tsx  # single file
-```
+- Assert on outcomes (state, rendered output, return values), not on which internals were called.
+- One behavior per test, named as a spec: `keeps a moved tab where it is`, not `works`.
+- Real implementation > fake > stub > mock; mock only slow, non-deterministic, or external boundaries.
+- DAMP over DRY: each test reads on its own.
+- Never sleep for timing; use paused time, fake timers, or drive the awaited event.
+- Never skip or delete a failing test to get green; fix it or say why it is wrong.
 
-## Environment rules
+## 6. Done when
 
-- `afterEach(cleanup)` in every component test file.
-- Mock `lucide-react` at the top of every component test file:
-  `mock.module('lucide-react', () => new Proxy({}, { get: () => () => null }))`.
-- `mock.module()` patches the global Bun module registry and is not undone by `mock.restore()` — always run with `--parallel` so files get their own worker. Place any `mock.module()` call **before** the import of the code that uses it.
-- Store tests reset state in `beforeEach` (`useXStore.setState(INITIAL)`).
-- Prefer firing real store actions/SSE handlers over asserting on mocked internals (e.g. `useAgentStore.getState()._handleSSEEvent(...)`, then read `getState()` back).
-
-## Placement
-
-`web/src/components/Foo.tsx` → `web/src/__tests__/components/Foo.test.tsx`
-
----
-
-# Desktop (Rust / Tauri / cargo test)
-
-Read the surface-specific reference for commands and gotchas:
-
-```
-read("<skill_dir>/reference/rust-tauri.md")
-```
-
----
-
-# Writing good tests (applies to all surfaces)
-
-- **Assert on outcome, not internals.** Check returned/rendered state, not which method was called.
-- **DAMP over DRY.** Each test reads standalone — some duplication across test bodies is fine.
-- **Real implementation > fake > stub > mock.** Mock only at slow, non-deterministic, or external boundaries.
-- **One behavior per test**, named as a spec: `sets completedAt when task is completed`, not `works`.
-- **Never sleep for real delays** — use paused tokio time or fake timers, or drive the event you are waiting on.
-
-# Anti-patterns
-
-| Anti-pattern | Fix |
-|---|---|
-| Testing implementation details (mock call assertions) | Assert on state/output |
-| Flaky tests (order/timing-dependent) | Isolate state; patch delays, never sleep |
-| Mocking everything | Prefer real fixtures; mock only slow/non-deterministic boundaries |
-| Bug fix with no reproduction test | Use `oad/test-driven-development` Prove-It pattern |
-| Skipping a failing test to get green | Fix it or track it explicitly, never silently skip |
-
-# Test pyramid
-
-```
-    Integration tests — API route + DB (crate tests/), component + store (mirrored path)
-   Unit tests — pure functions, isolated hooks/modules — most of the suite
-```
-
-- Most new tests should be unit: no DB, no network, milliseconds each.
-- Cross a boundary → integration test, prefer real fixtures over mocks.
+- [ ] New behavior has a test in the right place; a bug fix has a test that failed first.
+- [ ] The full gate for every touched surface passes.
+- [ ] Ready to ship → load `oad/commit`.

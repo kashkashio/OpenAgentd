@@ -181,6 +181,20 @@ describe("AgentView — mentioned files", () => {
     expect(onMentionFileOpen).toHaveBeenCalledWith("src/App.tsx")
   })
 
+  it("hands a ranged mention over with its #L range", async () => {
+    const user = userEvent.setup()
+    const onMentionFileOpen = mock(() => {})
+
+    renderStream({
+      blocks: [makeUserBlock("u1", "Look at @src/App.tsx#L3-L9 first")],
+      onMentionFileOpen,
+    })
+
+    await user.click(screen.getByRole("button", { name: "@src/App.tsx#L3-L9" }))
+
+    expect(onMentionFileOpen).toHaveBeenCalledWith("src/App.tsx#L3-L9")
+  })
+
   it("does not make folder mentions clickable", () => {
     renderStream({
       blocks: [makeUserBlock("u1", "Check @src/components/ first")],

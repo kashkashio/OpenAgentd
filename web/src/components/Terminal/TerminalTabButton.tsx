@@ -2,15 +2,17 @@
  * TerminalTabButton — tab chip for a terminal session in
  * WorkspacePanel (terminal needs an attached workspace).
  *
- * Desktop: right-click opens a small menu (Rename / Close).
+ * Desktop: right-click opens a small menu (Rename / Clear / Close).
  * Mobile: long-press opens the same choice as a bottom sheet — no native
  * context menu on touch, matching the LongPressButton pattern used
  * elsewhere (Sidebar sessions, changed-files, commits).
- * Both funnel into useTerminalStore.rename() / .close().
+ * Rename edits the title in place, like a sidebar session; F2 or a
+ * double-click on a desktop tab starts it too.
+ * Both funnel into useTerminalStore.rename() / .clear() / .close().
  */
 
-import { useRef, useState } from 'react'
-import { Pencil, TerminalSquare, X } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Eraser, Pencil, TerminalSquare, X } from 'lucide-react'
 
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -18,8 +20,9 @@ import {
   CONTEXT_MENU_ITEM_CLASS,
   CONTEXT_MENU_ITEM_DANGER_CLASS,
   ContextMenu,
+  ContextMenuSeparator,
 } from '@/components/ui/context-menu'
-import { Input } from '@/components/ui/input'
+import { InlineTitleInput } from '@/components/ui/inline-title-input'
 import { LongPressButton } from '@/components/ui/long-press-button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -28,6 +31,7 @@ import {
   dockTabCloseClass,
 } from '@/components/WorkspacePanel/dock-tab-styles'
 import { softHapticFeedback } from '@/lib/haptics'
+import { isMenuKey, isRenameKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import { useTerminalStore, type TerminalSessionMeta } from '@/stores/useTerminalStore'
 
@@ -38,6 +42,12 @@ interface TerminalTabButtonProps {
   onActivate: () => void
   className?: string
   buttonRef?: (node: HTMLButtonElement | null) => void
+  /** Tab-strip items (Close Others, …) appended to the desktop menu. */
+  extraMenuItems?: (dismiss: () => void) => ReactNode
+  /** Closes the tab through the dock, which picks the next active tab. */
+  onClose?: () => void
+  /** The dock strip's tab id, marking the wrapper as a drag handle. */
+  dockTabId?: string
 }
 
 export function TerminalTabButton({
@@ -47,22 +57,26 @@ export function TerminalTabButton({
   onActivate,
   className,
   buttonRef,
+  extraMenuItems,
+  onClose,
+  dockTabId,
 }: TerminalTabButtonProps) {
   const [desktopMenuAt, setDesktopMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
-  const [draftTitle, setDraftTitle] = useState(meta.title)
-  const renameInputRef = useRef<HTMLInputElement>(null)
+  const close = onClose ?? (() => useTerminalStore.getState().close(meta.id))
 
-  const openRename = () => {
-    setDraftTitle(meta.title)
-    setRenaming(true)
-  }
-
-  const submitRename = (e: React.FormEvent) => {
-    e.preventDefault()
-    useTerminalStore.getState().rename(meta.id, draftTitle)
+  const openRename = () => setRenaming(true)
+  // The tab button remounts in place of the field; give it focus back so
+  // the keyboard continues from the renamed tab.
+  const endRename = () => {
     setRenaming(false)
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active === document.body || active === null) {
+        document.querySelector<HTMLElement>(`[data-terminal-tab="${CSS.escape(meta.id)}"]`)?.focus({ preventScroll: true })
+      }
+    })
   }
 
   return (
@@ -70,7 +84,23 @@ export function TerminalTabButton({
       {/* Same editor-tab chrome as the dock's file/diff/commit tabs: the
           wrapper carries the tab surface, the activate button and the close
           button are siblings (never a control nested inside a button). */}
-      <div className={cn(dockTabClass(active), className)}>
+      <div data-dock-tab={dockTabId} className={cn(dockTabClass(active), className)}>
+        {renaming ? (
+          <div className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2">
+            <TerminalSquare size={12} className="shrink-0 text-(--color-text-muted)" aria-hidden="true" />
+            <InlineTitleInput
+              initial={meta.title}
+              label="Terminal name"
+              maxLength={64}
+              onSubmit={(title) => {
+                useTerminalStore.getState().rename(meta.id, title)
+                endRename()
+              }}
+              onCancel={endRename}
+              className="h-5 w-32 flex-1 font-mono text-xs"
+            />
+          </div>
+        ) : (
         <Tooltip className="h-full min-w-0 flex-1">
           <TooltipTrigger
             className="h-full min-w-0 flex-1"
@@ -78,6 +108,7 @@ export function TerminalTabButton({
               <LongPressButton
                 ref={buttonRef}
                 type="button"
+                data-terminal-tab={meta.id}
                 aria-current={active ? 'true' : undefined}
                 enabled={mobile}
                 onLongPress={() => {
@@ -89,11 +120,25 @@ export function TerminalTabButton({
                   e.preventDefault()
                   setDesktopMenuAt({ x: e.clientX, y: e.clientY })
                 }}
+                onKeyDown={(e) => {
+                  if (mobile) return
+                  if (isRenameKey(e)) {
+                    e.preventDefault()
+                    openRename()
+                  } else if (isMenuKey(e)) {
+                    e.preventDefault()
+                    const at = menuPointFor(e.currentTarget)
+                    setDesktopMenuAt({ x: at.clientX, y: at.clientY })
+                  }
+                }}
                 onClick={onActivate}
+                onDoubleClick={() => {
+                  if (!mobile) openRename()
+                }}
                 onAuxClick={(e) => {
                   if (mobile || e.button !== 1) return
                   e.preventDefault()
-                  useTerminalStore.getState().close(meta.id)
+                  close()
                 }}
                 className={cn(dockTabButtonClass(!mobile), 'flex-1')}
               >
@@ -104,12 +149,14 @@ export function TerminalTabButton({
           />
           <TooltipContent>{meta.title}</TooltipContent>
         </Tooltip>
-        {!mobile && (
+        )}
+        {!mobile && !renaming && (
           <button
             type="button"
+            data-dock-tab-close
             onClick={(e) => {
               e.stopPropagation()
-              useTerminalStore.getState().close(meta.id)
+              close()
             }}
             className={dockTabCloseClass(active)}
             aria-label={`Close ${meta.title}`}
@@ -134,15 +181,33 @@ export function TerminalTabButton({
           <button
             type="button"
             role="menuitem"
+            className={CONTEXT_MENU_ITEM_CLASS}
+            onClick={() => {
+              setDesktopMenuAt(null)
+              useTerminalStore.getState().clear(meta.id)
+            }}
+          >
+            <Eraser size={12} aria-hidden="true" />
+            Clear
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             className={CONTEXT_MENU_ITEM_DANGER_CLASS}
             onClick={() => {
               setDesktopMenuAt(null)
-              useTerminalStore.getState().close(meta.id)
+              close()
             }}
           >
             <X size={12} aria-hidden="true" />
             Close
           </button>
+          {extraMenuItems && (
+            <>
+              <ContextMenuSeparator />
+              {extraMenuItems(() => setDesktopMenuAt(null))}
+            </>
+          )}
         </ContextMenu>
       )}
 
@@ -165,11 +230,23 @@ export function TerminalTabButton({
             </Button>
             <Button
               type="button"
+              variant="ghost"
+              className="justify-start"
+              onClick={() => {
+                setMobileSheetOpen(false)
+                useTerminalStore.getState().clear(meta.id)
+              }}
+            >
+              <Eraser size={14} aria-hidden="true" />
+              Clear terminal
+            </Button>
+            <Button
+              type="button"
               variant="danger-subtle"
               className="justify-start"
               onClick={() => {
                 setMobileSheetOpen(false)
-                useTerminalStore.getState().close(meta.id)
+                close()
               }}
               aria-label="Close terminal"
             >
@@ -177,42 +254,6 @@ export function TerminalTabButton({
               Close terminal
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Shared rename dialog (desktop menu + mobile sheet both open it) */}
-      <Dialog
-        open={renaming}
-        onOpenChange={(open) => {
-          setRenaming(open)
-          if (open) window.setTimeout(() => renameInputRef.current?.select(), 0)
-        }}
-      >
-        <DialogContent showCloseButton={false}>
-          <form onSubmit={submitRename}>
-            <DialogHeader>
-              <DialogTitle>Rename terminal</DialogTitle>
-              <DialogDescription>Give this session a memorable name.</DialogDescription>
-            </DialogHeader>
-            <div className="px-3 py-2">
-              <Input
-                ref={renameInputRef}
-                value={draftTitle}
-                onChange={(e) => setDraftTitle(e.target.value)}
-                aria-label="Terminal name"
-                maxLength={64}
-                autoFocus
-              />
-            </div>
-            <DialogFooter className="p-3">
-              <Button type="button" variant="default" onClick={() => setRenaming(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={!draftTitle.trim()}>
-                Save
-              </Button>
-            </DialogFooter>
-          </form>
         </DialogContent>
       </Dialog>
     </>

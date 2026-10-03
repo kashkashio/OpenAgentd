@@ -129,8 +129,10 @@ function UsageRow({
   )
 }
 
+const amountFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+
 function formatAmount(value: number): string {
-  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value)
+  return amountFormatter.format(value)
 }
 
 function SpendRow({

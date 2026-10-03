@@ -59,6 +59,15 @@ describe('AgentChatHeader', () => {
     expect(screen.getByText('Fix updater restart')).toBeInTheDocument()
   })
 
+  it('keeps every header control in Tab order', () => {
+    const { container } = renderHeader({ isMobile: false, onRenameSession: () => undefined })
+    const buttons = Array.from(container.querySelectorAll<HTMLElement>('header button'))
+    expect(buttons.length).toBeGreaterThan(1)
+    expect(buttons.every((el) => el.tabIndex === 0)).toBe(true)
+    expect(screen.getByRole('button', { name: 'Toggle sidebar' }).tabIndex).toBe(0)
+    expect(screen.getByRole('button', { name: 'Rename session Fix updater restart' }).tabIndex).toBe(0)
+  })
+
   it('renames the session from its title on desktop', async () => {
     const user = userEvent.setup()
     const onRenameSession = mock((..._args: unknown[]) => {})
@@ -169,7 +178,8 @@ describe('AgentChatHeader', () => {
 
     await user.hover(screen.getByText('Workspace A'))
 
-    expect(screen.getByRole('tooltip')).toHaveTextContent('/Users/name/Workspace A')
+    // Tooltips open after the hover delay.
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('/Users/name/Workspace A')
   })
 
   it('never leaks the home path into the chat workspace tooltip', async () => {
@@ -183,7 +193,7 @@ describe('AgentChatHeader', () => {
 
     await user.hover(screen.getByText('Chat'))
 
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Chat')
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Chat')
     expect(screen.queryByText('/Users/name')).not.toBeInTheDocument()
   })
 

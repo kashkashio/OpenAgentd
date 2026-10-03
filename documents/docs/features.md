@@ -2,7 +2,7 @@
 title: Features
 description: Canonical, version-cited catalogue of shipped user-visible OpenAgentd features.
 status: stable
-updated: 2026-09-30
+updated: 2026-10-03
 ---
 
 # Features
@@ -14,7 +14,7 @@ release that introduced it (where known). When you ship something new, **add it 
 > double-clickable app that runs an agent on your machine, with a
 > real UI to watch every step. Open source (Apache 2.0). 16 providers. Your keys.
 
-**Latest release:** v3.3.1 · September 30, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.3.1)
+**Latest release:** v3.7.0 · October 3, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.7.0)
 
 ---
 
@@ -81,6 +81,22 @@ run from the terminal (the native Rust binary since v3.0.0).
   functions, options, PATH) once and reuses them, instead of sourcing
   `.zshrc`/`.bashrc` on every call (about 130 ms saved per call; rebuilt when
   an rc file changes; `OPENAGENTD_SHELL_SNAPSHOT=false` restores v2 behaviour).
+- **Faster reopen, streaming and desktop launch** `[v3.4.0]`:
+  - Reopening a long session with member agents loads 3 history pages
+    instead of 11 (1.7 MB instead of 13.3 MB), and member rows are no longer
+    repeated.
+  - While a reply streams, only the live turn re-renders, and a long answer
+    re-parses only its unfinished tail (0.5 ms per update at 100k characters,
+    was 8 ms).
+  - Large files, diffs, model lists, trace waterfalls and commit patches open
+    and scroll without stalls.
+  - The desktop app's bundled backend is ready ~220 ms after launch (was
+    ~880 ms). A saved server that is offline costs one 2 s check instead of
+    up to 18 s, and in dark mode a new window opens dark instead of
+    flashing light.
+  - An idle server uses almost no CPU (under 10 ms a minute, was 60 ms).
+  - `grep` keeps the matches it found when it times out. `read` caps
+    directory listings and reports binary files instead of dumping them.
 - **Plugins page and live settings refresh (v3)** `[v3.0.0]` — Settings →
   Plugins lists each plugin with its provider, tool hooks and load errors,
   and flags v2 Python plugins that have no TypeScript port (v3 does not run
@@ -298,6 +314,36 @@ run from the terminal (the native Rust binary since v3.0.0).
   page uses itself stay with it), so `⌘W` there closes the tab instead of the
   window. **Keyboard Shortcuts** (`⌘/`/`Ctrl+/`, or the palette) lists every
   shortcut by area.
+- **Keyboard areas, like a desktop app** `[v3.5.0]` *(deprecated — removed in
+  v3.6.0: Tab and Shift+Tab move through every control in page order again,
+  and arrow keys no longer walk between buttons)* — Tab and Shift+Tab moved
+  between areas (header, sidebar, chat, composer, dock, status bar) instead of
+  through every button; arrow keys, Home and End moved inside an area.
+- **Keyboard paths and focus continuity** `[v3.5.0, v3.6.0]`:
+  - Row actions that only show on hover also appear on keyboard focus and keep keys:
+    F2 renames, Delete (or `⌘⌫` / `Ctrl+Backspace`) deletes, Shift+F10 or
+    the Menu key opens the row's menu. In the sidebar, Left and Right
+    collapse and expand a workspace.
+  - Focus never drops to the page: after sending, Escape or a deleted row it
+    returns to the composer, and a collapsed sidebar or closed drawer cannot
+    take it. In the composer, Tab still switches Plan and Code; Shift+Tab or
+    Escape leaves it. Focus handed back on page load draws no focus ring
+    until you press a key `[v3.6.0]`.
+  - The desktop app shows **Skip to main content** on the first Tab `[v3.6.0]`.
+  - The Keyboard Shortcuts sheet lists the new keys under **Moving around**.
+- **Desktop app polish** `[v3.5.0]` — in the desktop app, dragging across UI
+  chrome no longer highlights it (chat, code, diffs and the terminal still
+  select), buttons use the arrow cursor, links and images cannot be dragged
+  out, and a window in the background dims its highlights. The webview's
+  Reload / Back / Inspect menu is gone: right-click in the chat offers **Open
+  link** / **Copy link**, **Copy code**, **Copy response** / **Copy as
+  Markdown** and, on your messages, **Copy** / **Edit**; text fields and
+  selected text keep the native menu. Shift+F10 opens the same menus in the
+  browser too.
+  - Tooltips wait half a second before appearing, then show at once while you
+    move along a toolbar, and only open on keyboard focus, not after a click.
+  - Search, palette, find, title and worktree fields, and the desktop
+    composer, no longer autocorrect or curl quotes.
 - **Type-to-focus composer** `[v1.40.0]` — in coding chat, start
   typing on the chat surface to expand/focus the composer and capture the first
   character without pressing `⌘I`/`Ctrl+I` first.
@@ -441,13 +487,12 @@ run from the terminal (the native Rust binary since v3.0.0).
 - **Clickable URLs in user message bubbles** `[v1.77.0]` — plain-text URLs typed
   or pasted into a user message are rendered as tappable links; style matches
   agent response links.
-- **Mermaid diagrams in agent responses** `[v1.121.0, v1.123.0]` — completed
-  `mermaid` code fences render as responsive diagrams with Diagram and Code
-  views. A fence now renders as soon as it closes while later response content
-  is still streaming; unfinished and invalid diagrams retain readable source.
-  Full-screen diagrams keep the chrome minimal while supporting keyboard,
-  wheel/trackpad and pinch zoom, double-click/double-tap, and drag-to-pan;
-  diagram text selection is disabled so gestures stay responsive.
+- **Mermaid diagrams in agent responses** *(deprecated)* `[v1.121.0, v1.123.0, v3.5.0]` —
+  completed `mermaid` code fences rendered as diagrams with Diagram and Code
+  views and a full-screen pan/zoom view. Since v3.5.0 the chat no longer
+  renders diagrams: a `mermaid` fence shows as an ordinary code block with copy,
+  and the Mermaid library is no longer shipped. For drawn diagrams, an agent
+  writes a self-contained HTML/SVG file and opens it in the Preview tab.
 - **LaTeX math rendering** `[v1.133.0]` — inline math (`$math$` and `\(math\)`),
   display math (`$$math$$` and `\[math\]`), and fenced code blocks (`math`, `katex`)
   render formatted LaTeX mathematics via KaTeX. Distinguishes mathematical
@@ -468,15 +513,18 @@ run from the terminal (the native Rust binary since v3.0.0).
 - **Pin chat transcript via CSS `overflow-anchor`** `[v2.0.0]` — pins chat transcript
   scrolling using native browser `overflow-anchor` instead of per-frame JS `scrollTop`
   calculations, eliminating stream stutter and CPU churn during fast agent output.
-- **On-demand bundle splitting for heavy components** `[v2.0.0]` — xterm.js, Mermaid
-  diagrams, and PDF.js load lazily on demand when first needed, accelerating cold-start
+- **On-demand bundle splitting for heavy components** `[v2.0.0, v3.5.0]` — xterm.js,
+  KaTeX, and PDF.js load lazily on demand when first needed, accelerating cold-start
   boot time and reducing initial bundle memory.
 - **App surfaces open without a loading step** `[v3.0.0]` — Settings pages,
   Telemetry, the review dock with its Tasks and Schedule tabs, the scheduler and
   session settings dialogs, session search, message Markdown, and MCP app
   results ship with the app instead of loading on first open, so none of them
-  shows a placeholder first. Only xterm.js, Mermaid, and PDF.js still load on
+  shows a placeholder first. Only xterm.js, KaTeX, and PDF.js still load on
   demand.
+- **Scroll position per session** `[v3.5.0]` — leave a session scrolled up and
+  come back to it, and the transcript opens where you were reading; a session
+  you left at the bottom keeps following new output. Kept while the app runs.
 - **Stream auto-stick restored after scroll-to-bottom on mobile** `[v1.77.0]` —
   tapping the scroll-to-bottom button no longer detaches the stream
   auto-follow; direction-based detach logic removed from `onScroll` (was
@@ -508,6 +556,8 @@ run from the terminal (the native Rust binary since v3.0.0).
     `src/app.ts` for `web/src/app.ts`) finds its file, preferring one the
     session read or patched; when several files match, Quick Open opens
     searching for the reference.
+  - Clicking an `@path#L42-L58` mention or a design feedback source opens the
+    file with that range selected too, not just the file `[v3.6.0]`.
   - On desktop a timeline scrubber replaces the transcript's scrollbar and
     marks prompts, find matches, and a question waiting for you.
   - Reply footers add the turn's output tokens, or its cost when the model
@@ -542,7 +592,7 @@ run from the terminal (the native Rust binary since v3.0.0).
   - A finished turn lists the files its `patch` calls changed, with line
     counts; each opens its git diff in the review dock. Since `[v3.1.0]` the list starts
     closed behind its "N files changed" header.
-- **The composer while the agent works** `[v3.0.0]`:
+- **The composer while the agent works** `[v3.0.0, updated v3.4.0]`:
   - Scrolled away from the live end, a "↓ N new" chip rides on the
     composer, wherever it is dragged, and counts what arrived since.
   - While a turn runs, Send splits in two. The pill steers: the agent reads
@@ -551,8 +601,21 @@ run from the terminal (the native Rust binary since v3.0.0).
     its own once the turn ends (`⌥Enter` / `Alt+Enter`), and Stop & send
     (`⌘Enter` / `Ctrl+Enter`). In the transcript, steering messages read
     "Read before the next step" and held ones "Sends when this turn ends".
-    Stopping, or a turn that fails, returns held messages to the composer.
-    They are lost on reload.
+  - Queued messages reach the agent in the order they go out: steers first,
+    then held messages, one turn each. A steer is read before the running
+    turn's next step, or starts the next turn if that turn makes no further
+    step. Its `@` mentions arrive with it `[v3.4.0]`. A steer sent while a
+    question or plan review waits replaces it and starts a new turn; a held
+    message waits until the question is answered or dismissed.
+  - Stop, or a turn that fails, returns what the agent has not read yet to
+    the composer: unread steers, then held messages `[v3.4.0]`. A steer the
+    agent read first stays in the transcript. A steer with files sent from
+    another window stays with the agent and goes out ahead of the next
+    message.
+  - Limits: held messages live only in this window and are lost on reload.
+    A steer sent late still goes out before an earlier held message. Steers
+    read together run with the model and thinking level of the last one
+    sent.
 - **Tool-call inspector** `[since v1.0]` — every tool call expands to show
   arguments, status, results, and inline Git-like diffs for file edits. Read
   results and file-change diffs keep line numbers visible while scrolling
@@ -633,6 +696,10 @@ run from the terminal (the native Rust binary since v3.0.0).
   the shared Web UI and connects to saved remote API servers. Foreground resume
   now reconciles missed history and replaces potentially frozen chat streams;
   remembered-server launches prefetch and reuse native credentials.
+- **Sideloadable iOS app** `[v3.7.0]` — each release includes an ad-hoc-signed
+  `OpenAgentd_<version>_iOS.ipa` with a checksum. A SideStore/AltStore source at
+  `releases/download/latest-ios/source.json` installs the app and offers new
+  versions as updates. See [Install the iOS app](../../mobile/INSTALL-IOS.md).
 - **LAN access key for external clients** `[v1.43.0, v1.103.0, v2.4.0]` — `openagentd server start --host 0.0.0.0 --key`
   stores the CLI server's bind address, port, and bearer key in `server.yaml`, separate from the desktop builtin sidecar's ephemeral token while agents, providers, sessions, and other settings remain shared. Restart and upgrade preserve that key without exposing it in process arguments. OpenAgentd-managed launchers refuse non-loopback binds without a configured key `[v1.101.0]`.
 - **Desktop server connection manager** `[v1.43.4, v1.99.8, v1.104.0]` — the desktop **Server connection** dialog switches the current window between the builtin sidecar and saved external servers, normalizes pasted `/api` URLs, and preserves other open windows' backend choices. Typed servers now require a successful health and access-key test before they can be named, saved, and connected. Saved LAN access keys are scoped per backend origin and stored in the native OS credential store on installed desktop/mobile shells; browser development keeps the per-origin localStorage fallback. Remembered external servers reconnect on app launch with sidecar fallback, while the desktop window opens immediately as backend startup continues asynchronously `[v1.57.1]`.
@@ -822,6 +889,24 @@ agent against it.
     the palette gives the dock the full width over the chat; the conversation
     stays loaded underneath. Tabs close with ×, middle-click or `Ctrl/⌘+W`, and
     focus moves to the neighbouring tab.
+  - **Movable dock tabs and Git on demand** `[v3.5.0]` — the dock works like
+    an editor's tab bar.
+    - A new dock opens empty, on a launcher with Git, Terminal, Preview and
+      Open File. Git is an ordinary tab you can close and move; it opens from
+      the status-bar branch, `⌘⇧G` / `Ctrl+Shift+G`, **Open Git** in the
+      palette, or the launcher. `⌘D` is **Toggle Review Dock**, and `⌘W` on
+      the empty launcher closes the dock.
+    - New tabs open right after the active one. Drag a tab to move it, or
+      use `⌥⇧←/→` (`Alt+Shift+←/→`) or **Move Left / Move Right** in its menu.
+      A dragged tab lifts and follows the pointer while the others slide
+      aside to show where it lands; it drops on release, and Escape puts it
+      back `[v3.6.0]`.
+      Closing the active tab activates its right neighbour.
+    - `⌘1`–`⌘8` pick a tab and `⌘9` the last; `⌃Tab` / `⌃⇧Tab` step through
+      them, also from the terminal. In a browser, which keeps these keys for
+      its own tabs, they work in the desktop app only.
+    - Right-click or Shift+F10 on a tab: **Close**, **Close Others**, **Close
+      to the Right**, **Copy Path**; closing running terminals asks first.
   - **Tasks and Scheduled tasks in the dock** `[v3.0.0]` — on desktop with a
     workspace open, the header's task-list button (`Ctrl/⌘+T`) and **Scheduled
     Tasks** in the palette or the sidebar's Scheduled section open the agent's task list and the
@@ -830,6 +915,10 @@ agent against it.
     hides the dock; the header's review-dock button shows and hides it. On
     phones with a workspace, scheduled tasks open as a tab in the review sheet
     too, while the task list stays a popover so the chat remains visible.
+    Hiding the dock keeps it as it was: reopening shows the same tabs with the
+    last active one focused (not the Git tab), and preview pages, their unsent
+    comments and scroll positions are still there, for as long as the app
+    stays open `[v3.5.0]`.
   - **Web preview and design comments in the dock** `[v3.3.0]` — **New
     preview** in the dock's actions, **Open Preview** in the palette, or the
     globe on an HTML file tab opens a **Preview** tab. It shows a local dev
@@ -851,7 +940,8 @@ agent against it.
     source, attached like an `@path#Lx-Ly` mention. React 19 sources come
     from where the JSX ran, mapped through the dev server's source maps.
     In the chat the feedback shows as a card of numbered comments, and
-    restoring the message (undo, edit, history) brings the chip back.
+    restoring the message (undo, edit, history) brings the chip back. The card
+    also shows after a reload, with or without text before it `[v3.6.0]`.
     While the agent uses the page, the toolbar shows **Agent**.
     Tabs keep their page and comments while another tab is open. Previews
     need the backend on the same computer; remote servers and the mobile app
@@ -1048,15 +1138,24 @@ agent against it.
   Changes/Commits/file tabs. Coding-mode only — there is no separate general-chat mode
   terminal. The session survives tab switches (detached PTYs idle-close
   after 15 minutes of no input; the backend reaper is the 30-minute
-  backstop). Includes PTY output backpressure, GPU-accelerated WebGL rendering `[v1.118.0]`,
+  backstop). A terminal with a command still running (a dev server, a
+  build) is never idle-closed, by either reaper, on macOS and Linux `[v3.5.0]`.
+  Includes PTY output backpressure, GPU-accelerated WebGL rendering `[v1.118.0]`,
   debounced SIGWINCH resizing, and mobile key bar ergonomics (touch-and-hold arrow repeat,
   soft-keyboard focus preservation, quick symbol row).
   Terminal font defaults to a best-guess Nerd Font stack
   (MesloLGS NF and similar) for correct Powerlevel10k/Starship glyph rendering.
-  On macOS a focused terminal keeps `⌘K` (clears it, as in Terminal.app) and
-  `⌘F` instead of opening the palette or transcript find `[v3.0.0]`.
+  App shortcuts work from a focused terminal: on macOS every `⌘` shortcut,
+  including `⌘K` for the palette and `⌘F` for transcript find, and on
+  Windows/Linux `Ctrl+K` and `Ctrl+P` skip the shell to open the palette and
+  quick open. **Clear** in the terminal tab's menu clears the scrollback
+  `[v3.5.0]`.
+  **Rename** edits the tab's title in place instead of opening a dialog;
+  `F2` or a double-click on the tab starts it, Enter or clicking away saves
+  and Escape cancels `[v3.6.0]`.
   `⌘W` on a terminal whose shell is still running asks before closing it; the
-  tab's close button still closes right away `[v3.3.0]`.
+  tab's close button still closes right away `[v3.3.0]`, unless a command is
+  running in it, which asks first too `[v3.5.0]`.
 - **Workspace status card** `[v1.18.0]` — empty coding sessions show the
   workspace path, branch, dirty state, last commit instead of the old
   agent-selection fallback. Since `[v3.0.0]` the card shows the workspace
@@ -1300,6 +1399,12 @@ MCP.
   refs (`e1`, `e2`, …), and it can **click**, **fill** fields, **press**
   keys, **scroll**, **navigate**, **wait** for text, and **inspect** an
   element's source, styles and HTML. Acted-on elements flash in the page.
+  A cursor in the page glides to each element it acts on, labeled with what
+  it is doing (*Clicking*, *Typing*), so you can follow along `[v3.5.0]`.
+  It can **chain** up to 20 of these actions in one call, such as filling a
+  form, submitting it and taking a snapshot, stopping at the first step that
+  fails `[v3.5.0]`. Session settings list `preview` among the agent's tools
+  in coding workspaces `[v3.5.0]`.
   Only loopback URLs are accepted, never the OpenAgentd API port. Everything
   works only while the page is open in the Preview tab; there is no headless
   browser and no screenshots.
@@ -1307,8 +1412,9 @@ MCP.
   **coding mode** `[v2.1.0]`, the agent can stop mid-turn and ask you 1–4 questions rather
   than guessing on a decision that would cost real work to undo. Each question
   carries up to 5 options with optional descriptions, single- or multi-select,
-  a "Recommended" badge on the agent's preferred choice, and an optional
-  free-text answer. Multi-question cards are stepped through one at a time —
+  a "Recommended" badge on the agent's preferred choice, and a free-text
+  answer. **Type your own answer** is on every question `[v3.4.0]`; the agent
+  can no longer turn it off. Multi-question cards are stepped through one at a time —
   **Back** replaces **Dismiss** past the first question — and the whole set is
   submitted together at the end. The card renders **inline in the transcript**, in place of
   the tool call that raised it, with exactly two states: waiting (the questions
@@ -1364,6 +1470,8 @@ MCP.
   (`lsp:`) → built-in defaults**. Python is special-cased to run *multiple*
   complementary servers and merge results — a type checker (`ty`/`pyright`) **and**
   a linter (`ruff`) — because neither alone catches both type errors and lint;
+  only one type checker runs, `ty` when it starts, else `pyright`, else `pylsp`
+  `[v3.5.0]`;
   `ruff`/`ty` are **not bundled** with the runtime: when a project pins them (or
   declares them bare), the backend silently downloads the checksum-verified
   wheel for the project's exact `==` pin (PyPI latest for ranges) into the user
@@ -1501,6 +1609,10 @@ Four orthogonal ways to add capability.
     MIME types (`ImageContent` and image embedded resources), which are
     translated to structured `ImageDataBlock` parts for vision models while
     preserving concise textual summaries in transcripts and history.
+    Images are capped at 2000 px on the long edge for every provider `[v3.5.0]`: tool
+    results (including `read`) are shrunk when they arrive, and requests also
+    shrink oversized images replayed from older history, so Anthropic's
+    many-image limit and other providers' pixel limits always hold.
 - **Sandboxed UI artifacts** `[v1.36.0]` *(beta)* — tool-produced HTML UI
 - **Sandboxed UI artifacts** `[v1.36.0, updated v2.17.0]` *(beta)* — tool-produced HTML UI
   resources render as sandboxed sibling chat artifacts. The first producer is
@@ -1666,7 +1778,16 @@ Desktop is primary. CLI / server is the developer path.
 
 - **macOS desktop** `[since v1.0]` — Homebrew cask
   (`brew install --cask lthoangg/tap/openagentd`) or `.dmg` with bundled
-  `install.sh` (ad-hoc signs locally).
+  `install.sh` (signs locally). Installs, cask upgrades and in-app updates
+  sign with your Apple Development identity if you have one, else an
+  "OpenAgentd Local Signer" identity kept in its own keychain
+  (`openagentd-signing.keychain-db`), so signing never asks for a password
+  `[v3.4.0]`. Earlier builds kept that identity in the login keychain, where
+  codesign asked to use its key on every install or update.
+  If codesign cannot use the identity ("no identity found"), the install or
+  update signs ad hoc instead of failing `[v3.6.0]`; v3.4.0–v3.5.0 in-app
+  updates stopped there, so those installs update with `install.sh` or
+  `brew upgrade --cask`.
 - **Linux desktop** `[since v1.0]` — AppImage (`chmod +x`) or `.deb` for
   Debian/Ubuntu.
 - **Windows desktop** `[v1.106.0]` — native x64 `.msi` installer with the
@@ -1685,6 +1806,9 @@ Desktop is primary. CLI / server is the developer path.
   native standalone executable into `~/.local/bin` (or `%LOCALAPPDATA%\OpenAgentd\bin`)
   and cleans up any existing Python v2 uv/pipx install. The Python package managers
   (`uv tool`, `pipx`, `pip`) were used through v2 and are sunset in v2.27.0.
+  Prebuilt CLI archives cover Apple Silicon macOS, x86_64 Linux and x86_64 Windows;
+  releases after v3.6.0 no longer ship Intel macOS or ARM Linux archives, and
+  `install.sh` says so on those machines.
 - **v2 end-of-life notice** `[v2.27.0]` — the last Python release. Interactive
   CLI commands and `openagentd upgrade` say that v2 gets no further updates and
   print the v3 install command plus the step that removes the uv/pipx/pip copy.

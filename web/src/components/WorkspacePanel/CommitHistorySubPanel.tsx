@@ -4,6 +4,7 @@ import { ExternalLink } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { LongPressButton } from '@/components/ui/long-press-button'
 import { Button } from '@/components/ui/button'
+import { isMenuKey, menuPointFor } from '@/lib/focus/item-keys'
 import { cn } from '@/lib/utils'
 import type { GitCommit } from '@/api/types'
 import {
@@ -155,7 +156,7 @@ function CommitHistorySubPanelView({
 
     return (
       <div>
-        <ul className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
+        <ul aria-label="Commits" className="divide-y divide-(--color-border-subtle) border-b border-(--color-border-subtle)">
           {commits.map((commit) => {
             const isExpanded = expandedCommitSha === commit.sha
             const subject = safeDecodeURIComponent(commit.subject)
@@ -174,6 +175,12 @@ function CommitHistorySubPanelView({
                       if (mobile) return
                       e.preventDefault()
                       setDesktopCommitActions({ ...target, x: e.clientX, y: e.clientY })
+                    }}
+                    onKeyDown={(e) => {
+                      if (mobile || !isMenuKey(e)) return
+                      e.preventDefault()
+                      const at = menuPointFor(e.currentTarget)
+                      setDesktopCommitActions({ ...target, x: at.clientX, y: at.clientY })
                     }}
                     className="flex min-w-0 flex-1 cursor-pointer flex-col gap-0.5 px-3 py-1.5 text-left outline-none focus-visible:bg-(--bg-key)/60"
                   >

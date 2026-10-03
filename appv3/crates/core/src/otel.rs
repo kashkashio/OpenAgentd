@@ -487,14 +487,26 @@ impl JsonlWriter {
     }
 }
 
+/// How long the writer waits for the next message: until one arrives when
+/// nothing is batched (`None`), otherwise until the batch's flush deadline.
+fn writer_wait(batch_empty: bool, since_flush: Duration) -> Option<Duration> {
+    if batch_empty {
+        return None;
+    }
+    Some(FLUSH_INTERVAL.saturating_sub(since_flush).max(Duration::from_millis(50)))
+}
+
 fn run_writer(rx: Receiver<Msg>, root: &Path, partition: fn(DateTime<Utc>) -> String, name: &str) {
     let mut batch: Vec<(Value, DateTime<Utc>)> = vec![];
     let mut last_flush = Instant::now();
     loop {
-        let timeout = FLUSH_INTERVAL.saturating_sub(last_flush.elapsed()).max(Duration::from_millis(50));
         let mut stop = false;
         let mut ack: Option<SyncSender<()>> = None;
-        match rx.recv_timeout(timeout) {
+        let next = match writer_wait(batch.is_empty(), last_flush.elapsed()) {
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(timeout) => rx.recv_timeout(timeout),
+        };
+        match next {
             Ok(Msg::Rec(v, ts)) => batch.push((v, ts)),
             Ok(Msg::Flush(a)) => ack = Some(a),
             Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => stop = true,
@@ -1005,6 +1017,17 @@ pub fn stop_retention() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_writer_blocks_instead_of_polling() {
+        // Nothing batched: wait for the next record, however long ago the
+        // last flush was (a 50 ms floor here woke two threads 20x/s forever).
+        assert_eq!(writer_wait(true, Duration::from_secs(30)), None);
+        assert_eq!(writer_wait(true, Duration::ZERO), None);
+        // Something batched: wake for the flush deadline.
+        assert_eq!(writer_wait(false, Duration::from_millis(200)), Some(Duration::from_millis(800)));
+        assert_eq!(writer_wait(false, Duration::from_secs(5)), Some(Duration::from_millis(50)));
+    }
 
     #[test]
     fn ratio_threshold() {

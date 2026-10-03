@@ -49,7 +49,7 @@ const planReview = (id: string): PendingQuestion => ({
   toolCallId: `call-${id}`,
   kind: 'plan_review',
   planRevision: 1,
-  questions: [{ question: 'Review plan revision 1.', header: 'Plan review', multiple: false, custom: true, options: [] }],
+  questions: [{ question: 'Review plan revision 1.', header: 'Plan review', multiple: false, options: [] }],
 })
 
 describe('useOverlayState dock views', () => {
@@ -125,6 +125,19 @@ describe('useOverlayState dock views', () => {
     act(() => result.current.handleToggleScheduler())
     expect(args.toggleScheduler).toHaveBeenCalledTimes(1)
     expect(result.current.workspacePanel).toBeNull()
+  })
+
+  it('opens the dock on its Git tab, and never closes it on a second call', () => {
+    const { result } = renderOverlay()
+
+    act(() => result.current.handleOpenGit())
+    expect(result.current.workspacePanel).toBe('changed')
+    expect(result.current.dockViewRequest).toEqual({ view: 'review', key: 1 })
+
+    act(() => result.current.setDockActiveView('review'))
+    act(() => result.current.handleOpenGit())
+    expect(result.current.workspacePanel).toBe('changed')
+    expect(result.current.dockViewRequest).toEqual({ view: 'review', key: 2 })
   })
 })
 

@@ -12,6 +12,10 @@ pub const MAX_READ_BYTES: usize = 5_242_880;
 pub const MAX_CONTEXT_CHARS: usize = 50_000;
 pub const MAX_LINE_CHARS: usize = 2_000;
 pub const MAX_IMAGE_BYTES: u64 = 10_485_760;
+/// Directory listings show this many entries, then how many more there are.
+pub const MAX_DIR_ENTRIES: usize = 500;
+/// A NUL byte this early means binary content, which is not decoded.
+const BINARY_SNIFF_BYTES: usize = 8192;
 
 const IMAGE_EXT: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tiff", ".tif"];
 const DOC_EXT: &[&str] = &[".pdf", ".docx"];
@@ -64,9 +68,11 @@ pub(crate) fn fmt_thousands(n: usize) -> String {
     out
 }
 
-pub fn cap_long_lines(text: &str) -> String {
-    if text.is_empty() || py_len(text) <= MAX_LINE_CHARS {
-        return text.to_string();
+pub fn cap_long_lines(text: &str) -> std::borrow::Cow<'_, str> {
+    // A line within MAX_LINE_CHARS bytes is within it in chars too, so only
+    // longer lines are counted; most files have none and are not copied.
+    if text.split('\n').all(|l| l.len() <= MAX_LINE_CHARS || py_len(l) <= MAX_LINE_CHARS) {
+        return std::borrow::Cow::Borrowed(text);
     }
     let trailing = text.ends_with('\n');
     let body = if trailing { &text[..text.len() - 1] } else { text };
@@ -80,7 +86,7 @@ pub fn cap_long_lines(text: &str) -> String {
             }
         })
         .collect();
-    capped.join("\n") + if trailing { "\n" } else { "" }
+    std::borrow::Cow::Owned(capped.join("\n") + if trailing { "\n" } else { "" })
 }
 
 fn cap_for_context(text: &str, rel: &str) -> String {
@@ -109,21 +115,17 @@ pub fn decode_text(raw: &[u8]) -> String {
 pub fn splitlines_keepends(text: &str) -> Vec<&str> {
     let mut out = vec![];
     let mut start = 0;
-    let bytes: Vec<(usize, char)> = text.char_indices().collect();
-    let mut i = 0;
-    while i < bytes.len() {
-        let (idx, c) = bytes[i];
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
         let is_break = matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}');
         if is_break {
             let mut end = idx + c.len_utf8();
-            if c == '\r' && i + 1 < bytes.len() && bytes[i + 1].1 == '\n' {
+            if c == '\r' && chars.next_if(|&(_, n)| n == '\n').is_some() {
                 end += 1;
-                i += 1;
             }
             out.push(&text[start..end]);
             start = end;
         }
-        i += 1;
     }
     if start < text.len() {
         out.push(&text[start..]);
@@ -140,6 +142,10 @@ pub fn read_text(resolved: &Path, rel: &str, offset: i64, limit: Option<i64>) ->
         tracing::warn!("file_read_truncated path={} size={}", resolved.display(), raw.len());
         raw.truncate(MAX_READ_BYTES);
     }
+    if raw[..raw.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+        let size = f.metadata().map(|m| m.len() as usize).unwrap_or(raw.len());
+        return Ok(format!("[{rel} is a binary file ({} bytes); not shown. Use the shell (for example `file` or `xxd | head`) to inspect it.]", fmt_thousands(size)));
+    }
     let text = decode_text(&raw);
     if offset == 1 && limit.is_none() {
         return Ok(cap_for_context(&cap_long_lines(&text), rel));
@@ -155,25 +161,39 @@ pub fn read_text(resolved: &Path, rel: &str, offset: i64, limit: Option<i64>) ->
         Some(l) => total.min(start + l as usize),
     };
     let header = format!("[{}-{}/{}]\n", start + 1, end, total);
-    let body = cap_long_lines(&lines[start..end].concat());
+    let selected = lines[start..end].concat();
+    let body = cap_long_lines(&selected);
     Ok(cap_for_context(&(header + &body), rel))
 }
 
 pub fn format_directory(resolved: &Path) -> std::io::Result<String> {
-    let mut entries: Vec<(bool, String, u64)> = std::fs::read_dir(resolved)?
+    // Sort on the kinds readdir reports; stat only the entries shown.
+    let mut entries: Vec<(bool, String, std::path::PathBuf)> = std::fs::read_dir(resolved)?
         .filter_map(|e| e.ok())
         .map(|e| {
             let p = e.path();
-            let is_file = p.is_file();
-            let size = if is_file { std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) } else { 0 };
-            (is_file, e.file_name().to_string_lossy().to_string(), size)
+            let is_file = match e.file_type() {
+                Ok(t) if t.is_file() => true,
+                Ok(t) if t.is_dir() => false,
+                _ => p.is_file(),
+            };
+            (is_file, e.file_name().to_string_lossy().to_string(), p)
         })
         .collect();
     entries.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
     if entries.is_empty() {
         return Ok("(empty directory)".into());
     }
-    Ok(entries.iter().map(|(f, n, s)| if *f { format!("[f] {n}  ({s} bytes)") } else { format!("[d] {n}/") }).collect::<Vec<_>>().join("\n"))
+    let shown: Vec<String> = entries
+        .iter()
+        .take(MAX_DIR_ENTRIES)
+        .map(|(f, n, p)| if *f { format!("[f] {n}  ({} bytes)", std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)) } else { format!("[d] {n}/") })
+        .collect();
+    let mut out = shown.join("\n");
+    if entries.len() > MAX_DIR_ENTRIES {
+        out.push_str(&format!("\n\n[{} more entries not shown ({} in total). Use glob with a pattern to find specific files.]", entries.len() - MAX_DIR_ENTRIES, entries.len()));
+    }
+    Ok(out)
 }
 
 pub fn handle_image(resolved: &Path, rel: &str) -> Result<ToolOutput, ToolError> {
@@ -182,11 +202,13 @@ pub fn handle_image(resolved: &Path, rel: &str) -> Result<ToolOutput, ToolError>
         return Err(ToolError::Execution(format!("Image '{rel}' is {} KB — exceeds the {} KB limit for vision input.", size / 1024, MAX_IMAGE_BYTES / 1024)));
     }
     let raw = std::fs::read(resolved)?;
+    // Shrink before encoding: one decode, one base64 pass (images::MAX_IMAGE_EDGE).
+    let (label, raw, media_type) = match appv3_providers::images::fit_image_bytes(&raw, appv3_providers::images::MAX_IMAGE_EDGE) {
+        Some(f) => (format!("[Image: {rel} (resized {}×{} → {}×{})]", f.from.0, f.from.1, f.to.0, f.to.1), f.bytes, f.media_type.to_string()),
+        None => (format!("[Image: {rel}]"), raw, image_mime(resolved)),
+    };
     Ok(ToolOutput::Parts {
-        parts: vec![
-            ContentBlock::text(format!("[Image: {rel}]")),
-            ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(raw), media_type: image_mime(resolved) },
-        ],
+        parts: vec![ContentBlock::text(label), ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(raw).into(), media_type }],
         mcp_app: None,
     })
 }
@@ -235,7 +257,7 @@ pub fn handle_document(resolved: &Path, rel: &str) -> Result<ToolOutput, ToolErr
         return Ok(ToolOutput::Parts {
             parts: vec![
                 ContentBlock::text(format!("[Document: {rel}] (PDF — raw, text extraction failed)")),
-                ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&raw), media_type: "application/pdf".into() },
+                ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&raw).into(), media_type: "application/pdf".into() },
             ],
             mcp_app: None,
         });
@@ -358,5 +380,94 @@ mod tests {
         let (t, raw) = doc("payroll.pdf", &minimal_pdf("secret", true));
         assert!(t.contains("The document is encrypted or password-protected"), "{t}");
         assert!(!raw);
+    }
+
+    #[test]
+    fn large_images_are_resized_before_encoding_and_small_ones_sent_as_is() {
+        use appv3_providers::images::{dimensions_b64, fixtures};
+        let d = tempfile::tempdir().unwrap();
+        let big = d.path().join("big.png");
+        std::fs::write(&big, fixtures::png(2400, 1600)).unwrap();
+        let ToolOutput::Parts { parts, .. } = handle_image(&big, "big.png").unwrap() else { panic!("parts") };
+        assert_eq!(parts[0], ContentBlock::text("[Image: big.png (resized 2400×1600 → 2000×1333)]"));
+        let ContentBlock::ImageData { data, media_type } = &parts[1] else { panic!("image") };
+        assert_eq!((dimensions_b64(data), media_type.as_str()), (Some((2000, 1333)), "image/png"));
+
+        let small_bytes = fixtures::jpeg(320, 200);
+        let small = d.path().join("small.jpg");
+        std::fs::write(&small, &small_bytes).unwrap();
+        let ToolOutput::Parts { parts, .. } = handle_image(&small, "small.jpg").unwrap() else { panic!("parts") };
+        assert_eq!(parts[0], ContentBlock::text("[Image: small.jpg]"));
+        assert_eq!(parts[1], ContentBlock::ImageData { data: base64::engine::general_purpose::STANDARD.encode(&small_bytes).into(), media_type: "image/jpeg".into() });
+    }
+
+    #[test]
+    fn splitlines_follows_python() {
+        assert_eq!(splitlines_keepends("a\nb\r\nc\rd\x0be\u{2028}f\u{85}g"), ["a\n", "b\r\n", "c\r", "d\x0b", "e\u{2028}", "f\u{85}", "g"]);
+        assert_eq!(splitlines_keepends("x\n\n"), ["x\n", "\n"]);
+        assert_eq!(splitlines_keepends("\r"), ["\r"]);
+        assert!(splitlines_keepends("").is_empty());
+    }
+
+    #[test]
+    fn long_lines_and_large_files_are_capped() {
+        assert_eq!(cap_long_lines("short\nlines\n"), "short\nlines\n");
+        let long = "é".repeat(MAX_LINE_CHARS + 5);
+        let input = format!("ok\n{long}\nend");
+        let capped = cap_long_lines(&input);
+        assert_eq!(capped, format!("ok\n{}… (line truncated to {MAX_LINE_CHARS} chars)\nend", "é".repeat(MAX_LINE_CHARS)));
+        // Exactly at the limit (in chars, though over it in bytes): kept.
+        let edge = "é".repeat(MAX_LINE_CHARS);
+        assert_eq!(cap_long_lines(&format!("{edge}\n{edge}\n")), format!("{edge}\n{edge}\n"));
+        let big = "abcdefghi\n".repeat(MAX_CONTEXT_CHARS / 5);
+        let out = cap_for_context(&big, "big.txt");
+        assert!(out.starts_with("abcdefghi\n"), "{}", &out[..20]);
+        assert!(out.ends_with(&format!("[read output truncated for LLM context: big.txt is {} characters; shown first 50,000. Use offset and limit to read a smaller line range, or shell tools such as grep/sed/head/tail for targeted inspection.]", fmt_thousands(MAX_CONTEXT_CHARS * 2))));
+        assert_eq!(cap_for_context("small", "s"), "small");
+    }
+
+    #[test]
+    fn small_directories_list_dirs_then_files() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("b.txt"), "hey").unwrap();
+        std::fs::write(d.path().join("a.txt"), "x").unwrap();
+        assert_eq!(format_directory(d.path()).unwrap(), "[d] sub/\n[f] a.txt  (1 bytes)\n[f] b.txt  (3 bytes)");
+        let e = tempfile::tempdir().unwrap();
+        assert_eq!(format_directory(e.path()).unwrap(), "(empty directory)");
+    }
+
+    #[test]
+    fn large_directories_are_capped() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            std::fs::create_dir(d.path().join(format!("d{i:02}"))).unwrap();
+        }
+        for i in 0..(MAX_DIR_ENTRIES + 90) {
+            std::fs::write(d.path().join(format!("f{i:04}")), "").unwrap();
+        }
+        let out = format_directory(d.path()).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), MAX_DIR_ENTRIES + 2, "entries, a blank line, the note");
+        assert_eq!(lines[0], "[d] d00/");
+        assert_eq!(lines[10], "[f] f0000  (0 bytes)");
+        assert_eq!(lines[MAX_DIR_ENTRIES + 1], format!("[100 more entries not shown ({} in total). Use glob with a pattern to find specific files.]", MAX_DIR_ENTRIES + 100));
+    }
+
+    #[test]
+    fn binary_files_are_reported_not_decoded() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("blob.bin");
+        let mut bytes = b"MZ\x90\x00\x03".to_vec();
+        bytes.extend(std::iter::repeat_n(0xffu8, 2000));
+        std::fs::write(&p, &bytes).unwrap();
+        assert_eq!(
+            read_text(&p, "blob.bin", 1, None).unwrap(),
+            "[blob.bin is a binary file (2,005 bytes); not shown. Use the shell (for example `file` or `xxd | head`) to inspect it.]"
+        );
+        // Latin-1 text without NUL bytes still decodes as before.
+        let t = d.path().join("latin.txt");
+        std::fs::write(&t, b"caf\xe9\n").unwrap();
+        assert_eq!(read_text(&t, "latin.txt", 1, None).unwrap(), "café\n");
     }
 }

@@ -13,45 +13,59 @@ export function applyCacheInvalidations(
   queryClient: BridgeQueryClient,
   events: readonly CacheInvalidation[],
 ): void {
+  // One drain can carry a burst of tool ends from a single stream flush.
+  // Invalidate each key once (a repeat cancels the refetch and sends it
+  // again), and patch each workspace's diff once with every touched path:
+  // two concurrent scoped patches would both merge into the same stale
+  // cached diff, and the one that resolved last would drop the other's file.
+  const keys = new Map<string, readonly unknown[]>()
+  const invalidate = (queryKey: readonly unknown[]) => keys.set(JSON.stringify(queryKey), queryKey)
+  const scopedPaths = new Map<string, string[]>()
+  const wholeWorkspace = new Set<string>()
   for (const event of events) {
     switch (event.kind) {
       case 'workspace_files':
-        queryClient.invalidateQueries({ queryKey: queryKeys.session.files(event.sessionId) })
+        invalidate(queryKeys.session.files(event.sessionId))
         break
       case 'coding_workspace':
-        queryClient.invalidateQueries({ queryKey: queryKeys.coding.files(event.workspace) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.coding.diff(event.workspace) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.coding.status(event.workspace) })
+        invalidate(queryKeys.coding.files(event.workspace))
+        invalidate(queryKeys.coding.diff(event.workspace))
+        invalidate(queryKeys.coding.status(event.workspace))
+        wholeWorkspace.add(event.workspace)
         break
-      case 'coding_workspace_paths':
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.coding.files(event.workspace),
-        })
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.coding.status(event.workspace),
-        })
-        void patchDiffForPaths(queryClient, event.workspace, event.paths)
+      case 'coding_workspace_paths': {
+        invalidate(queryKeys.coding.files(event.workspace))
+        invalidate(queryKeys.coding.status(event.workspace))
+        const paths = scopedPaths.get(event.workspace) ?? []
+        for (const path of event.paths) if (!paths.includes(path)) paths.push(path)
+        scopedPaths.set(event.workspace, paths)
         break
+      }
       case 'scheduler':
-        queryClient.invalidateQueries({ queryKey: queryKeys.scheduler.list() })
+        invalidate(queryKeys.scheduler.list())
         break
       case 'todos':
-        queryClient.invalidateQueries({ queryKey: queryKeys.todos(event.sessionId) })
+        invalidate(queryKeys.todos(event.sessionId))
         break
       case 'plan':
-        queryClient.invalidateQueries({ queryKey: queryKeys.plan(event.sessionId) })
+        invalidate(queryKeys.plan(event.sessionId))
         break
       case 'subagents':
-        queryClient.invalidateQueries({ queryKey: queryKeys.session.subagents(event.sessionId) })
+        invalidate(queryKeys.session.subagents(event.sessionId))
         break
       case 'session_running':
         // Patch in place; only fall back to a refetch when the session is not
         // in any cached page yet (nothing to patch).
         if (!patchSessionRunning(queryClient, event.sessionId, event.running)) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.session.sessions.all() })
+          invalidate(queryKeys.session.sessions.all())
         }
         break
     }
+  }
+  for (const queryKey of keys.values()) queryClient.invalidateQueries({ queryKey })
+  for (const [workspace, paths] of scopedPaths) {
+    // A whole-workspace refresh in the same batch already refetches the diff.
+    if (!wholeWorkspace.has(workspace)) void patchDiffForPaths(queryClient, workspace, paths)
   }
 }
 

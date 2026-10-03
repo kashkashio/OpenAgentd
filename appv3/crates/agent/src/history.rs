@@ -18,19 +18,21 @@ fn meta_from_row(row: &SessionMessage) -> MessageMeta {
     MessageMeta { exclude_from_context: false, kind: row.kind.clone(), pinned: row.pinned, extra, db_id: Some(db::codec::api_uuid(&row.id)) }
 }
 
-fn parse_parts(v: Option<&Value>) -> Option<Vec<ContentBlock>> {
-    let arr = v?.as_array()?;
-    Some(arr.iter().filter_map(|p| serde_json::from_value(p.clone()).ok()).collect())
+fn parse_parts(v: Option<Value>) -> Option<Vec<ContentBlock>> {
+    let Value::Array(arr) = v? else { return None };
+    Some(arr.into_iter().filter_map(|p| serde_json::from_value(p).ok()).collect())
 }
 
-/// `_chat_message_from_row`.
-pub fn message_from_row(row: &SessionMessage) -> Option<ChatMessage> {
-    let meta = meta_from_row(row);
+/// `_chat_message_from_row`. Takes the row so its text moves into the
+/// message instead of being copied.
+pub fn message_from_row(row: SessionMessage) -> Option<ChatMessage> {
+    let mut meta = meta_from_row(&row);
     Some(match row.role.as_str() {
-        "system" => ChatMessage::System { content: row.content.clone(), meta },
-        "user" => ChatMessage::User { content: row.content.clone(), parts: None, meta },
+        "system" => ChatMessage::System { content: row.content, meta },
+        "user" => ChatMessage::User { content: row.content, parts: None, meta },
         "assistant" => {
-            let extra = meta.extra.clone().unwrap_or_default();
+            let empty = Map::new();
+            let extra = meta.extra.as_ref().unwrap_or(&empty);
             let signature = extra.get("reasoning_signature").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
             let redacted = extra.get("redacted_thinking_blocks").and_then(|v| v.as_array()).filter(|a| !a.is_empty()).cloned();
             let raw = extra.get("raw_content_blocks").and_then(|v| v.as_array()).filter(|a| !a.is_empty()).cloned();
@@ -53,8 +55,8 @@ pub fn message_from_row(row: &SessionMessage) -> Option<ChatMessage> {
             }
             let tool_calls: Option<Vec<ToolCall>> = row.tool_calls_json().and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok());
             ChatMessage::Assistant(AssistantMessage {
-                content: row.content.clone(),
-                reasoning_content: row.reasoning_content.clone(),
+                content: row.content,
+                reasoning_content: row.reasoning_content,
                 reasoning_signature: signature,
                 redacted_thinking_blocks: redacted,
                 raw_content_blocks: raw,
@@ -66,8 +68,10 @@ pub fn message_from_row(row: &SessionMessage) -> Option<ChatMessage> {
             })
         }
         "tool" => {
-            let parts = parse_parts(meta.extra.as_ref().and_then(|e| e.get("parts")));
-            ChatMessage::Tool { content: row.content.clone(), tool_call_id: row.tool_call_id.clone().unwrap_or_default(), name: row.name.clone(), parts, meta }
+            // `parts` (image data) lives on the message only; saving writes
+            // it back into `extra` (`to_new_message`).
+            let parts = parse_parts(meta.extra.as_mut().and_then(|e| e.shift_remove("parts")));
+            ChatMessage::Tool { content: row.content, tool_call_id: row.tool_call_id.unwrap_or_default(), name: row.name, parts, meta }
         }
         other => {
             tracing::warn!("deserialize_skip_unknown_role session_id={} message_id={} role={}", row.session_id, row.id, other);
@@ -77,8 +81,8 @@ pub fn message_from_row(row: &SessionMessage) -> Option<ChatMessage> {
 }
 
 /// `deserialize_messages`.
-pub fn deserialize_messages(rows: &[SessionMessage], sanitize_tool_pairs: bool) -> Vec<ChatMessage> {
-    let mut result: Vec<ChatMessage> = rows.iter().filter_map(message_from_row).collect();
+pub fn deserialize_messages(rows: Vec<SessionMessage>, sanitize_tool_pairs: bool) -> Vec<ChatMessage> {
+    let mut result: Vec<ChatMessage> = rows.into_iter().filter_map(message_from_row).collect();
     let mut bad: HashSet<String> = HashSet::new();
     for msg in result.iter_mut() {
         if let ChatMessage::Assistant(a) = msg {
@@ -109,58 +113,73 @@ pub fn deserialize_messages(rows: &[SessionMessage], sanitize_tool_pairs: bool) 
     result
 }
 
-/// `sanitize_tool_message_pairs`.
+/// `sanitize_tool_message_pairs`. Decides per message first, then moves the
+/// kept ones, so the history is not copied.
 pub fn sanitize_tool_message_pairs(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    let mut result = Vec::with_capacity(messages.len());
+    enum Keep {
+        Yes,
+        No,
+        WithoutToolCalls,
+    }
+    let mut keep = Vec::with_capacity(messages.len());
     let mut expected: HashSet<String> = HashSet::new();
     for idx in 0..messages.len() {
-        match &messages[idx] {
+        keep.push(match &messages[idx] {
             ChatMessage::Assistant(a) => {
                 expected.clear();
-                let Some(tcs) = &a.tool_calls else {
-                    result.push(messages[idx].clone());
-                    continue;
-                };
-                if tcs.is_empty() {
-                    result.push(messages[idx].clone());
-                    continue;
-                }
-                let ids: HashSet<String> = tcs.iter().filter(|t| !t.id.is_empty()).map(|t| t.id.clone()).collect();
-                let mut following = HashSet::new();
-                for m in &messages[idx + 1..] {
-                    match m {
-                        ChatMessage::Tool { tool_call_id, .. } => {
-                            if !tool_call_id.is_empty() {
-                                following.insert(tool_call_id.clone());
+                match &a.tool_calls {
+                    None => Keep::Yes,
+                    Some(tcs) if tcs.is_empty() => Keep::Yes,
+                    Some(tcs) => {
+                        let ids: HashSet<String> = tcs.iter().filter(|t| !t.id.is_empty()).map(|t| t.id.clone()).collect();
+                        let mut following = HashSet::new();
+                        for m in &messages[idx + 1..] {
+                            match m {
+                                ChatMessage::Tool { tool_call_id, .. } => {
+                                    if !tool_call_id.is_empty() {
+                                        following.insert(tool_call_id.as_str());
+                                    }
+                                }
+                                _ => break,
                             }
                         }
-                        _ => break,
-                    }
-                }
-                let missing: Vec<&String> = ids.difference(&following).collect();
-                if !ids.is_empty() && missing.is_empty() {
-                    expected = ids;
-                    result.push(messages[idx].clone());
-                } else {
-                    let mut stripped = a.clone();
-                    stripped.tool_calls = None;
-                    if stripped.content.is_some() && !stripped.content.as_deref().unwrap_or("").is_empty() {
-                        result.push(ChatMessage::Assistant(stripped));
+                        if !ids.is_empty() && ids.iter().all(|id| following.contains(id.as_str())) {
+                            expected = ids;
+                            Keep::Yes
+                        } else if !a.content.as_deref().unwrap_or("").is_empty() {
+                            Keep::WithoutToolCalls
+                        } else {
+                            Keep::No
+                        }
                     }
                 }
             }
             ChatMessage::Tool { tool_call_id, .. } => {
                 if !tool_call_id.is_empty() && expected.remove(tool_call_id) {
-                    result.push(messages[idx].clone());
+                    Keep::Yes
+                } else {
+                    Keep::No
                 }
             }
             _ => {
                 expected.clear();
-                result.push(messages[idx].clone());
+                Keep::Yes
             }
-        }
+        });
     }
-    result
+    messages
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(m, k)| match (k, m) {
+            (Keep::Yes, m) => Some(m),
+            (Keep::No, _) => None,
+            (Keep::WithoutToolCalls, ChatMessage::Assistant(mut a)) => {
+                a.tool_calls = None;
+                Some(ChatMessage::Assistant(a))
+            }
+            (Keep::WithoutToolCalls, m) => Some(m),
+        })
+        .collect()
 }
 
 /// `_attachment_hint_parts`.
@@ -182,7 +201,7 @@ pub fn apply_llm_content_overrides(messages: Vec<ChatMessage>) -> Vec<ChatMessag
     let mut out = Vec::with_capacity(messages.len());
     for mut msg in messages {
         if let ChatMessage::User { content, parts, meta } = &mut msg {
-            if let Some(extra) = meta.extra.clone() {
+            if let Some(extra) = meta.extra.as_ref() {
                 let truthy = |k: &str| extra.get(k).map(crate::util::truthy).unwrap_or(false);
                 if truthy("attachment_for_message_id") && !truthy("mention_context") {
                     continue;
@@ -208,11 +227,11 @@ pub fn apply_llm_content_overrides(messages: Vec<ChatMessage>) -> Vec<ChatMessag
 /// `get_messages_for_llm`.
 pub async fn get_messages_for_llm(pool: &DbPool, session_id: &str) -> Result<Vec<ChatMessage>> {
     let rows = db::llm_window_rows(pool, session_id, true).await?;
-    Ok(apply_llm_content_overrides(deserialize_messages(&rows, true)))
+    Ok(apply_llm_content_overrides(deserialize_messages(rows, true)))
 }
 
 /// Rows → runtime messages without the pair sanitiser (queued injection).
-pub fn rows_to_llm_messages(rows: &[SessionMessage]) -> Vec<ChatMessage> {
+pub fn rows_to_llm_messages(rows: Vec<SessionMessage>) -> Vec<ChatMessage> {
     apply_llm_content_overrides(deserialize_messages(rows, false))
 }
 
@@ -272,8 +291,8 @@ pub fn to_new_message(msg: &ChatMessage) -> NewMessage {
 
 /// Insert synthetic tool rows for unmatched tool_calls in the LLM window.
 pub async fn heal_orphaned_tool_calls(pool: &DbPool, session_id: &str) -> Result<usize> {
-    let rows = db::llm_window_rows(pool, session_id, false).await?;
-    let assistants: Vec<&SessionMessage> =
+    let rows = db::llm_window_tool_pairs(pool, session_id).await?;
+    let assistants: Vec<&db::ToolPairRow> =
         rows.iter().filter(|r| r.role == "assistant" && r.tool_calls_json().map(|t| t.as_array().map(|a| !a.is_empty()).unwrap_or(false)).unwrap_or(false)).collect();
     if assistants.is_empty() {
         return Ok(0);
@@ -340,5 +359,32 @@ mod tests {
         let out = sanitize_tool_message_pairs(msgs);
         assert_eq!(out.len(), 3);
         assert!(out[1].as_assistant().unwrap().tool_calls.is_none());
+    }
+
+    /// An image result is the bulk of a row; loading it into both `parts`
+    /// and `meta.extra` doubled it in every copy of the history.
+    #[test]
+    fn tool_image_parts_load_once_and_save_back_unchanged() {
+        let extra = json!({"duration_ms": 40, "parts": [{"type": "image_data", "data": "QUJD", "media_type": "image/png"}]});
+        let row = SessionMessage {
+            id: "0".repeat(32),
+            session_id: "1".repeat(32),
+            role: "tool".into(),
+            content: Some("[Image: a.png]".into()),
+            tool_call_id: Some("c1".into()),
+            name: Some("read".into()),
+            extra: Some(extra.to_string()),
+            reasoning_content: None,
+            tool_calls: None,
+            created_at: "2026-01-01 00:00:00.000000".into(),
+            seq: 1,
+            kind: "chat".into(),
+            pinned: false,
+        };
+        let msg = message_from_row(row).unwrap();
+        let ChatMessage::Tool { parts, meta, .. } = &msg else { panic!("tool") };
+        assert_eq!(parts.as_deref(), Some(&[ContentBlock::ImageData { data: "QUJD".into(), media_type: "image/png".into() }][..]));
+        assert!(meta.extra.as_ref().unwrap().get("parts").is_none(), "{:?}", meta.extra);
+        assert_eq!(Value::Object(to_new_message(&msg).extra.unwrap()), extra);
     }
 }

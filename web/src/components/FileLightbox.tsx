@@ -362,7 +362,15 @@ export function FileLightboxGeneric({ item }: { item: FileLightboxItem }) {
 
 // ─── FileLightbox (shell) ──────────────────────────────────────────────────────
 
-export function FileLightbox({ items, index = 0, isOpen, onClose, labelMode = 'file' }: FileLightboxProps) {
+export function FileLightbox(props: FileLightboxProps) {
+  // Every markdown image and attachment bubble mounts a closed lightbox, so
+  // its hooks (six global shortcuts, a key layer, pan/zoom) only exist while
+  // it is open. Reopening remounts it, which also resets index and zoom.
+  if (!props.isOpen) return null
+  return <OpenFileLightbox {...props} />
+}
+
+function OpenFileLightbox({ items, index = 0, isOpen, onClose, labelMode = 'file' }: FileLightboxProps) {
   const isImageMode   = labelMode === 'image'
   const dialogLabel   = isImageMode ? 'Image lightbox' : `File preview: ${items[Math.max(0, Math.min(index, items.length - 1))]?.name ?? ''}`
   const downloadLabel = isImageMode ? 'Download image' : 'Download file'

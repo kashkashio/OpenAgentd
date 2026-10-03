@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppFooter } from '@/components/AppFooter'
@@ -93,6 +93,14 @@ describe('AppFooter', () => {
     backendExternal = true
     renderWithQueryClient(<AppFooter />)
     expect(screen.getByRole('button', { name: /Connected\. Change backend connection/ })).toBeTruthy()
+  })
+
+  it('keeps every status item in Tab order', () => {
+    renderWithQueryClient(<AppFooter />)
+    const footer = screen.getByRole('status', { name: 'Application status' })
+    const buttons = Array.from(footer.querySelectorAll<HTMLElement>('button'))
+    expect(buttons.length).toBeGreaterThan(1)
+    expect(buttons.every((el) => el.tabIndex === 0)).toBe(true)
   })
 
   it('shows the backend indicator when the backend is unhealthy', () => {
@@ -246,5 +254,67 @@ describe('AppFooter', () => {
   it('leaves the spend out until the summary loads', () => {
     renderWithQueryClient(<AppFooter />)
     expect(screen.queryByRole('button', { name: /Spend in the last 24 hours/ })).toBeNull()
+  })
+})
+
+/** Spend only changes while a model call runs, so the footer polls on activity. */
+describe('AppFooter spend refresh', () => {
+  const summaryKey = queryKeys.observability.summary(1, { workspace: null, model: null, session: null })
+  const realFetch = globalThis.fetch
+  const realMatchMedia = window.matchMedia
+  let requested: string[] = []
+
+  beforeEach(() => {
+    requested = []
+    globalThis.fetch = ((input: unknown) => {
+      requested.push(String(input))
+      return new Promise(() => {})
+    }) as unknown as typeof fetch
+  })
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    window.matchMedia = realMatchMedia
+    cleanup()
+  })
+
+  const activePage = (rows: Array<{ running?: boolean; needs_input?: boolean }>) => ({
+    pages: [{ data: rows.map((r, i) => ({ id: `s${i}`, title: null, agent_name: null, created_at: null, updated_at: null, workspace: '/w', ...r })), next_cursor: null, has_more: false }],
+    pageParams: [null],
+  })
+
+  function mount(rows: Array<{ running?: boolean; needs_input?: boolean }>, { seedSpend = true } = {}) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    if (seedSpend) client.setQueryData(summaryKey, { totals: { estimated_cost_usd: 1 } })
+    client.setQueryData(queryKeys.session.sessions.active(), activePage(rows))
+    render(<QueryClientProvider client={client}><AppFooter /></QueryClientProvider>)
+    const interval = () => client.getQueryCache().find({ queryKey: summaryKey })?.observers[0]?.options.refetchInterval
+    return { client, interval }
+  }
+  const spendRequests = () => requested.filter((url) => url.includes('/observability/summary')).length
+
+  it('polls every minute while a turn runs and slowly while idle', () => {
+    expect(mount([{ running: true }]).interval()).toBe(60_000)
+    cleanup()
+    expect(mount([]).interval()).toBe(15 * 60_000)
+  })
+
+  it('does not count a session waiting on the user as spending', () => {
+    expect(mount([{ running: true, needs_input: true }]).interval()).toBe(15 * 60_000)
+  })
+
+  it('refreshes spend once when the last running turn finishes', async () => {
+    const { client } = mount([{ running: true }])
+    expect(spendRequests()).toBe(0)
+    act(() => { client.setQueryData(queryKeys.session.sessions.active(), activePage([{ running: false }])) })
+    await waitFor(() => expect(spendRequests()).toBe(1))
+  })
+
+  it('fetches no spend while the footer is hidden on a narrow window', () => {
+    window.matchMedia = ((query: string) => ({
+      matches: false, media: query, onchange: null,
+      addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+    mount([{ running: true }], { seedSpend: false })
+    expect(spendRequests()).toBe(0)
   })
 })

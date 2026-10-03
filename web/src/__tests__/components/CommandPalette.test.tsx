@@ -139,6 +139,25 @@ describe("CommandPalette", () => {
     expect(screen.queryByText("Toggle Reader Mode")).toBeNull()
   })
 
+  it("ranks label matches above description matches, in one list", async () => {
+    const user = userEvent.setup()
+    const commands: Command[] = [
+      { id: "maximize", group: "View", label: "Maximize Review Dock", description: "Full width for diffs, files, and terminals", action: () => {} },
+      { id: "panes", group: "View", label: "Split Panes", description: "Determine the layout", action: () => {} },
+      { id: "terminal", group: "Dock", label: "Open Terminal", description: "Interactive shell", action: () => {} },
+    ]
+    render(<CommandPalette commands={commands} onClose={() => {}} />)
+    await user.type(screen.getByPlaceholderText("Search commands…"), "terminal")
+
+    const rows = Array.from(document.querySelectorAll("[data-idx]")).map((row) => row.textContent)
+    expect(rows[0]).toContain("Open Terminal")
+    expect(rows[1]).toContain("Maximize Review Dock")
+    // Only word starts count outside the label: "determine" is no match.
+    expect(rows).toHaveLength(2)
+    // A ranked result is not split back into groups.
+    expect(screen.queryByText("Dock")).toBeNull()
+  })
+
   it("shows no-match message when query has no results", async () => {
     const user = userEvent.setup()
     render(<CommandPalette commands={makeCommands()} onClose={() => {}} />)

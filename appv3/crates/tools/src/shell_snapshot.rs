@@ -9,7 +9,8 @@
 //!
 //! Differences from v2: rc side effects are not re-run per call, and rc
 //! changes are picked up when an rc file's mtime/size changes or after
-//! [`MAX_AGE`] (for files the rc sources indirectly). Any build failure falls
+//! [`MAX_AGE`] (for files the rc sources indirectly; an aged snapshot keeps
+//! serving while it rebuilds in the background). Any build failure falls
 //! back to v2's argv; `OPENAGENTD_SHELL_SNAPSHOT=false` disables snapshots.
 //! The script can hold values the rc exports, so it is written owner-only.
 
@@ -189,55 +190,142 @@ struct Entry {
     fingerprint: u64,
     built: Instant,
     ok: bool,
+    /// A background rebuild of this aged entry is in flight.
+    refreshing: bool,
 }
 
 /// Process-wide cache: one snapshot per shell binary, rebuilt when stale.
 pub struct Cache {
-    entries: tokio::sync::Mutex<HashMap<String, Entry>>,
+    entries: std::sync::Mutex<HashMap<String, Entry>>,
+    /// Serialises builds, so the snapshot written last is also the one
+    /// recorded last; concurrent callers wait for one build.
+    build_lock: tokio::sync::Mutex<()>,
+    max_age: Duration,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Self { entries: tokio::sync::Mutex::new(HashMap::new()) }
+        Self::with_max_age(MAX_AGE)
     }
 }
 
 impl Cache {
+    pub fn with_max_age(max_age: Duration) -> Self {
+        Self { entries: std::sync::Mutex::new(HashMap::new()), build_lock: tokio::sync::Mutex::new(()), max_age }
+    }
+
     /// A fresh snapshot path for `shell_bin`, building it if needed; `None`
     /// means "use v2's argv" (build failed recently, or unsupported).
-    pub async fn get(&self, kind: Kind, shell_bin: &str, v2_prefix: &str, env: &HashMap<String, String>, never_export: &[&str], dir: &Path) -> Option<PathBuf> {
+    ///
+    /// An rc change (fingerprint) rebuilds before returning. An entry that
+    /// is only older than `max_age` is served as is while one background
+    /// rebuild runs: builds take ~0.5 s (p90 0.8 s), and the file is
+    /// replaced atomically, so running commands never see a partial one.
+    pub async fn get(&'static self, kind: Kind, shell_bin: &str, v2_prefix: &str, env: &HashMap<String, String>, never_export: &[&str], dir: &Path) -> Option<PathBuf> {
         let home = appv3_core::home::home_dir_opt()?;
-        let fp = fingerprint(&kind.rc_files(&home, env));
-        // Held across the build so concurrent calls wait for one build.
-        let mut entries = self.entries.lock().await;
-        if let Some(e) = entries.get(shell_bin) {
-            if e.fingerprint == fp && e.built.elapsed() < MAX_AGE && (!e.ok || e.path.is_file()) {
-                return e.ok.then(|| e.path.clone());
+        let rc = kind.rc_files(&home, env);
+        let fp = fingerprint(&rc);
+        match self.lookup(shell_bin, fp, true) {
+            Lookup::Fresh(p) => return p,
+            Lookup::Aged(p) => {
+                let (bin, prefix, env, dir) = (shell_bin.to_string(), v2_prefix.to_string(), env.clone(), dir.to_path_buf());
+                let never: Vec<String> = never_export.iter().map(|s| s.to_string()).collect();
+                tokio::spawn(async move {
+                    let _b = self.build_lock.lock().await;
+                    let never: Vec<&str> = never.iter().map(String::as_str).collect();
+                    let entry = build_entry(kind, &bin, &prefix, &env, &never, &dir, fingerprint(&rc)).await;
+                    self.entries.lock().unwrap().insert(bin, entry);
+                });
+                return p;
             }
+            Lookup::Missing => {}
         }
-        let name = crate::shell::shell_name_of(shell_bin);
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        shell_bin.hash(&mut h);
-        let path = dir.join(format!("{name}-{:016x}.sh", h.finish()));
-        let t = Instant::now();
-        let ok = match build(kind, shell_bin, v2_prefix, env, never_export, &path).await {
-            Ok(()) => {
-                tracing::info!("shell_snapshot_built shell={} ms={}", name, t.elapsed().as_millis());
-                true
-            }
-            Err(e) => {
-                tracing::warn!("shell_snapshot_failed shell={} error={} (falling back to sourcing rc files per call)", name, e);
-                false
-            }
-        };
-        entries.insert(shell_bin.to_string(), Entry { path: path.clone(), fingerprint: fp, built: Instant::now(), ok });
-        ok.then_some(path)
+        let _b = self.build_lock.lock().await;
+        // Another call may have built it while this one waited.
+        if let Lookup::Fresh(p) = self.lookup(shell_bin, fp, false) {
+            return p;
+        }
+        let entry = build_entry(kind, shell_bin, v2_prefix, env, never_export, dir, fp).await;
+        let path = entry.ok.then(|| entry.path.clone());
+        self.entries.lock().unwrap().insert(shell_bin.to_string(), entry);
+        path
     }
+
+    /// `claim_refresh` marks an aged entry as refreshing and reports it as
+    /// [`Lookup::Aged`] once; later lookups serve it as fresh until rebuilt.
+    fn lookup(&self, shell_bin: &str, fp: u64, claim_refresh: bool) -> Lookup {
+        let mut entries = self.entries.lock().unwrap();
+        let Some(e) = entries.get_mut(shell_bin).filter(|e| e.fingerprint == fp && (!e.ok || e.path.is_file())) else {
+            return Lookup::Missing;
+        };
+        let current = e.ok.then(|| e.path.clone());
+        if e.built.elapsed() < self.max_age || e.refreshing {
+            return Lookup::Fresh(current);
+        }
+        if !claim_refresh {
+            return Lookup::Missing;
+        }
+        e.refreshing = true;
+        Lookup::Aged(current)
+    }
+}
+
+enum Lookup {
+    Fresh(Option<PathBuf>),
+    Aged(Option<PathBuf>),
+    Missing,
+}
+
+async fn build_entry(kind: Kind, shell_bin: &str, v2_prefix: &str, env: &HashMap<String, String>, never_export: &[&str], dir: &Path, fp: u64) -> Entry {
+    let name = crate::shell::shell_name_of(shell_bin);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    shell_bin.hash(&mut h);
+    let path = dir.join(format!("{name}-{:016x}.sh", h.finish()));
+    let t = Instant::now();
+    let ok = match build(kind, shell_bin, v2_prefix, env, never_export, &path).await {
+        Ok(()) => {
+            tracing::info!("shell_snapshot_built shell={} ms={}", name, t.elapsed().as_millis());
+            true
+        }
+        Err(e) => {
+            tracing::warn!("shell_snapshot_failed shell={} error={} (falling back to sourcing rc files per call)", name, e);
+            false
+        }
+    };
+    Entry { path, fingerprint: fp, built: Instant::now(), ok, refreshing: false }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Past `max_age` (rc files can source others we don't fingerprint) the
+    /// current snapshot is served at once and rebuilt in the background.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aged_snapshot_is_served_while_it_rebuilds() {
+        let Some(bin) = appv3_core::which::which("bash") else { return };
+        let bin = bin.to_string_lossy().into_owned();
+        let home = tempfile::tempdir().unwrap();
+        let env: HashMap<String, String> = [("HOME", home.path().to_str().unwrap()), ("PATH", "/usr/bin:/bin")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let dir = home.path().join("snap");
+        let cache: &'static Cache = Box::leak(Box::new(Cache::with_max_age(Duration::ZERO)));
+        // A slow rc: each build takes at least half a second.
+        let prefix = "sleep 0.5;";
+        let first = cache.get(Kind::Bash, &bin, prefix, &env, &[], &dir).await.expect("first build");
+        let built_at = std::fs::metadata(&first).unwrap().modified().unwrap();
+        let t = Instant::now();
+        let again = cache.get(Kind::Bash, &bin, prefix, &env, &[], &dir).await;
+        let third = cache.get(Kind::Bash, &bin, prefix, &env, &[], &dir).await;
+        assert!(t.elapsed() < Duration::from_millis(300), "a stale snapshot blocked the call for {:?}", t.elapsed());
+        assert_eq!(again.as_deref(), Some(first.as_path()));
+        assert_eq!(third.as_deref(), Some(first.as_path()));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::metadata(&first).unwrap().modified().unwrap() == built_at && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_ne!(std::fs::metadata(&first).unwrap().modified().unwrap(), built_at, "the background rebuild never replaced the snapshot");
+    }
 
     #[test]
     fn render_filters_volatile_and_fixed() {

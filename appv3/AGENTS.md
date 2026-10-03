@@ -2,15 +2,16 @@
 
 `appv3/` is the native `openagentd` backend. It ships as the CLI release
 binary and as the desktop sidecar (`desktop/sidecar-bundle/bin/openagentd`).
-It serves the same HTTP/SSE/WebSocket API as the end-of-life Python backend
-in `app/` and shares its database and config files. `REPORT.md` records the
-deliberate differences from v2.
+It reads the database and config files of the end-of-life Python backend in
+`app/`. Its HTTP/SSE/WebSocket API started as v2's and now differs where
+`REPORT.md` says.
 
 ## Crate map
 
 - `core`: settings, XDG paths, auth policy (`auth.rs`), path safety
   (`security.rs`), errors, platform plumbing (`which`, `home`, `proctree`).
-- `db`: SQLite pool, v2-compatible queries, and the replayed Alembic chain.
+- `db`: SQLite pool, queries (reading v2-era rows too), and the replayed
+  Alembic chain.
 - `api`: axum routes, middleware (auth, Origin/Host guard, CORS, panic → 500),
   startup/shutdown.
 - `agent`: turn loop, hooks, sessions, SSE broadcaster and stream store,

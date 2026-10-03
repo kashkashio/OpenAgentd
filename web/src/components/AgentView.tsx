@@ -15,7 +15,7 @@
  * `AgentPane` for split/unified modes.
  */
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useDeferredValue, useMemo, memo } from 'react'
 import OctobotMascot from '@/assets/brand/octobot-agentd-source.png'
 
 import { MarkdownBlock } from '@/utils/markdown'
@@ -25,7 +25,7 @@ import { ToolCall } from './ToolCall'
 import { MCPAppResult } from './MCPAppResult'
 import { TimelineScrubber } from './AgentView/TimelineScrubber'
 import { CompactionDivider } from './CompactionDivider'
-import { AssistantTurn } from './AssistantTurnFooter'
+import { AssistantTurn, type AssistantTurnProps } from './AssistantTurnFooter'
 import { SparkSpinner } from '@/components/ui/spark-spinner'
 import { PendingMessageQueue } from './PendingMessageQueue'
 import { appendCurrentTurns, getVisibleTurnWindow, partitionTurns, promptModels } from '@/utils/turns'
@@ -41,14 +41,17 @@ import { UserBubble } from './AgentView/UserBubble'
 import { ErrorCard } from './AgentView/ErrorCard'
 import { isDirectUserBlock, PROMPT_JUMP_MARGIN, previousPromptTurn, promptElements, promptJumpTarget, turnIndexOfBlock } from './AgentView/prompt-nav'
 import { FileRefContext, type FileRefOpener } from './FileRefLink'
+import { copyText, useChatMenu } from './ChatContextMenu'
 import { EmptyState } from '@/components/ui/empty-state'
 import { useAutoFollowScroll } from '@/hooks/useAutoFollowScroll'
 import { TranscriptFind } from './AgentView/TranscriptFind'
 import { collectTranscriptFindMatches, isTranscriptFindableBlock } from './AgentView/transcript-find'
-import { applyTranscriptFindHighlight, clearTranscriptFindHighlight } from './AgentView/transcript-find-highlight'
+import { clearTranscriptFind, paintTranscriptFind } from './AgentView/transcript-find-highlight'
 
 const INITIAL_RENDERED_TURNS = 80
 const TURN_RENDER_STEP = 80
+/** Older pages a reload may fetch on its own to reach a prompt (100 rows each). */
+const AUTO_PROMPT_SEEK_PAGES = 2
 /** How long a prompt jump is treated as still in flight. */
 const PROMPT_JUMP_MS = 700
 
@@ -80,6 +83,9 @@ function contentTop(root: HTMLElement, el: HTMLElement): number {
 }
 
 function blockElement(root: HTMLElement, id: string): HTMLElement | undefined {
+  // Block ids are uuids/hex, safe inside a quoted attribute selector; anything
+  // else takes the scan instead of needing CSS.escape.
+  if (/^[\w-]+$/.test(id)) return root.querySelector<HTMLElement>(`[data-block-id="${id}"]`) ?? undefined
   return Array.from(root.querySelectorAll<HTMLElement>('[data-block-id]')).find((el) => el.dataset.blockId === id)
 }
 
@@ -185,6 +191,19 @@ function latestQuotaWait(blocks: ContentBlock[]): QuotaWait | null {
     if (wait) return wait
   }
   return null
+}
+
+/**
+ * Bring a find match to the middle of the transcript. A range has no
+ * ``scrollIntoView``: its element is brought into view first, so a match in a
+ * horizontally scrolled code block is revealed, then the match itself is
+ * centred (the element can be far taller than the viewport).
+ */
+function scrollRangeToCenter(root: HTMLElement, range: Range) {
+  range.startContainer.parentElement?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  const rect = range.getBoundingClientRect()
+  const rootRect = root.getBoundingClientRect()
+  root.scrollTop += rect.top + rect.height / 2 - (rootRect.top + root.clientHeight / 2)
 }
 
 function formatQuotaCountdown(resetsAt: number, now = Date.now()): string {
@@ -391,15 +410,30 @@ const BlockRenderer = memo(function BlockRenderer({ block, isStreaming, sessionI
         )
       }
       return (
-        <div className="oa-assistant-text">
-          <MarkdownBlock content={block.content} sessionId={sessionId} isStreaming={isStreaming} />
-        </div>
+        <AssistantText content={block.content} sessionId={sessionId} isStreaming={isStreaming} />
       )
     }
     default:
       return null
   }
 })
+
+/** An assistant message, with Copy response / Copy as Markdown on its menu. */
+function AssistantText({ content, sessionId, isStreaming }: { content: string; sessionId?: string; isStreaming: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chatMenu = useChatMenu('Actions for response', () => [
+    // As rendered: no Markdown syntax.
+    { label: 'Copy response', run: () => copyText((ref.current?.innerText || ref.current?.textContent || content).trim()) },
+    { label: 'Copy as Markdown', run: () => copyText(content) },
+  ])
+  return (
+    // ``oa-assistant-text`` gives replies the Claude-style type (index.css).
+    <div ref={ref} className="oa-assistant-text" onContextMenu={chatMenu.onContextMenu} onKeyDown={chatMenu.onKeyDown}>
+      <MarkdownBlock content={content} sessionId={sessionId} isStreaming={isStreaming} />
+      {chatMenu.menu}
+    </div>
+  )
+}
 
 export function AgentView({
   blocks,
@@ -441,10 +475,14 @@ export function AgentView({
   // `[...blocks, ...liveTail]` copy is never needed here — nothing reads full
   // merged content, only counts and the last block).
   const liveTail = useMemo(() => liveBlockTail(blocks, currentBlocks), [blocks, currentBlocks])
-  const searchableBlocks = useMemo(() => [...blocks, ...liveTail], [blocks, liveTail])
+  // Matching walks the whole transcript, so it trails the keystroke that asked
+  // for it: the find field updates at once, the matches when React has time.
+  const deferredFindQuery = useDeferredValue(findQuery)
+  // Merged only while find is open: the copy costs a whole-transcript walk
+  // on every streamed token.
   const findMatches = useMemo(
-    () => (findOpen ? collectTranscriptFindMatches(searchableBlocks, findQuery) : []),
-    [findOpen, findQuery, searchableBlocks],
+    () => (findOpen ? collectTranscriptFindMatches([...blocks, ...liveTail], deferredFindQuery) : []),
+    [blocks, deferredFindQuery, findOpen, liveTail],
   )
   const clampedFindIndex = findMatches.length === 0
     ? 0
@@ -488,7 +526,10 @@ export function AgentView({
   // fills it, no prompt is loaded at all, and reader mode folds the run into
   // a short view that may not scroll, so nothing ever asks for older pages.
   // Fetch back to the nearest prompt once per session so the run shows what
-  // it answers.
+  // it answers. The detailed transcript renders that run in full, so it
+  // scrolls and loads older pages on its own. The seek is capped well below
+  // the manual jump's budget: every page it lands renders at once, as one
+  // turn, before the reader asked for any of it.
   const hasMoreHistory = useAgentStore((s) => s.hasMore)
   const hasLoadedPrompt = useMemo(
     () => turnItems.some((item) => item.kind === 'user' && isDirectUserBlock(item.block)),
@@ -497,21 +538,47 @@ export function AgentView({
   const promptSeekedForRef = useRef<string | null>(null)
   const hasTurns = turnItems.length > 0
   useEffect(() => {
-    if (!hasMoreHistory || hasLoadedPrompt || !hasTurns) return
+    if (!readerTranscript || !hasMoreHistory || hasLoadedPrompt || !hasTurns) return
     const state = useAgentStore.getState()
     // A page already on its way lands new turns, which runs this again.
     if (state._loadingOlder || promptSeekedForRef.current === (sessionId ?? '')) return
     promptSeekedForRef.current = sessionId ?? ''
-    void state.loadOlderUntilPrompt().catch(() => false)
-  }, [hasLoadedPrompt, hasMoreHistory, hasTurns, sessionId, turnItems])
+    void state.loadOlderUntilPrompt(AUTO_PROMPT_SEEK_PAGES).catch(() => false)
+  }, [hasLoadedPrompt, hasMoreHistory, hasTurns, readerTranscript, sessionId, turnItems])
   const finalizedMCPAppResources = useMemo(() => latestMCPAppResources(blocks), [blocks])
+  // Rebuilt per token from the live blocks, but keyed on its contents so the
+  // Set (and every renderer holding it) only changes when an app's latest
+  // result does. Block ids never contain a newline.
+  const latestMCPAppKey = [...latestMCPAppResourceBlockIdsFromParts(finalizedMCPAppResources, currentBlocks)].join('\n')
   const latestMCPAppBlockIds = useMemo(
-    () => latestMCPAppResourceBlockIdsFromParts(finalizedMCPAppResources, currentBlocks),
-    [currentBlocks, finalizedMCPAppResources],
+    () => new Set(latestMCPAppKey ? latestMCPAppKey.split('\n') : []),
+    [latestMCPAppKey],
   )
+  // One renderer for every turn, so a finished turn's memo holds while the
+  // live one streams. Inline in the turns' ``.map`` it was a new closure per
+  // turn per render, which the React Compiler cannot cache either.
+  const renderTurnBlock = useCallback<AssistantTurnProps['renderBlock']>(({ block, isStreaming }) => (
+    <div
+      data-block-id={block.id}
+      data-find-block={isTranscriptFindableBlock(block.type) ? block.id : undefined}
+    >
+      <BlockRenderer
+        block={block}
+        isStreaming={isStreaming}
+        sessionId={sessionId}
+        onRetry={block.id === endingErrorId ? errorRetry : undefined}
+        onSwitchModel={block.id === endingErrorId ? errorSwitchModel : undefined}
+        latestMCPAppBlockIds={mcpAppResourceUri(block) ? latestMCPAppBlockIds : undefined}
+        onMentionFileOpen={onMentionFileOpen}
+      />
+    </div>
+  ), [endingErrorId, errorRetry, errorSwitchModel, latestMCPAppBlockIds, onMentionFileOpen, sessionId])
+  // The live tail follows the finalized blocks, so its newest wait wins; only
+  // the (small) tail is rescanned per token.
+  const finalizedQuotaWait = useMemo(() => latestQuotaWait(blocks), [blocks])
   const liveQuotaWait = useMemo(
-    () => latestQuotaWait([...blocks, ...liveTail]),
-    [blocks, liveTail],
+    () => latestQuotaWait(liveTail) ?? finalizedQuotaWait,
+    [finalizedQuotaWait, liveTail],
   )
   const storedQuotaWait = useMemo(() => readStoredQuotaWait(sessionId), [sessionId])
 
@@ -519,8 +586,10 @@ export function AgentView({
   const visibleQuotaWait = liveQuotaWait ?? restoredQuotaWait
 
   const lastBlock = liveTail.length > 0 ? liveTail[liveTail.length - 1] : blocks[blocks.length - 1]
+  // A change key for auto-follow, not the content itself: the streamed fields
+  // only grow, so their lengths move whenever they do.
   const lastContent = lastBlock
-    ? `${lastBlock.content ?? ''}:${lastBlock.toolOutput ?? ''}:${lastBlock.toolResult ?? ''}:${lastBlock.toolArgs ?? ''}`
+    ? `${lastBlock.id}:${lastBlock.content?.length ?? -1}:${lastBlock.toolOutput?.length ?? -1}:${lastBlock.toolResult?.length ?? -1}:${lastBlock.toolArgs?.length ?? -1}`
     : ''
   const isUserMessage = lastBlock ? isDirectUserBlock(lastBlock) : false
   const isEmpty = !isWorking &&
@@ -568,12 +637,12 @@ export function AgentView({
       if (useTranscriptFollowStore.getState().unseen !== null) useTranscriptFollowStore.setState({ unseen: null })
       return
     }
-    followAnchorRef.current ??= searchableBlocks[searchableBlocks.length - 1]?.id ?? ''
-    const counted = countBlocksAfter(searchableBlocks, followAnchorRef.current)
+    followAnchorRef.current ??= (liveTail[liveTail.length - 1] ?? blocks[blocks.length - 1])?.id ?? ''
+    const counted = countBlocksAfter(blocks, followAnchorRef.current, liveTail)
     // A reconcile can swap the anchor's id; keep the last count then.
     const unseen = counted ?? useTranscriptFollowStore.getState().unseen ?? 0
     if (useTranscriptFollowStore.getState().unseen !== unseen) useTranscriptFollowStore.setState({ unseen })
-  }, [jumpToLatestInComposer, searchableBlocks, showScrollBtn])
+  }, [blocks, jumpToLatestInComposer, liveTail, showScrollBtn])
   useEffect(() => {
     if (!jumpToLatestInComposer) return
     useTranscriptFollowStore.setState({ jumpToLatest: () => scrollToBottom('smooth') })
@@ -799,26 +868,35 @@ export function AgentView({
     const root = scrollRef.current
     if (!root) return
     if (!findOpen) {
-      clearTranscriptFindHighlight(root)
+      clearTranscriptFind()
       return
     }
-    let observer: MutationObserver | null = null
     const paint = (scrollActive: boolean) => {
-      observer?.disconnect()
-      const active = applyTranscriptFindHighlight(root, findQuery, clampedFindIndex)
+      const active = paintTranscriptFind(root, deferredFindQuery, clampedFindIndex)
       if (scrollActive && active) {
         attachedRef.current = false
-        active.scrollIntoView({ block: 'center' })
+        scrollRangeToCenter(root, active)
       }
-      observer?.observe(root, { subtree: true, childList: true, characterData: true })
     }
-    observer = new MutationObserver(() => paint(false))
+    // Painting never touches the DOM, so this only sees React's own updates
+    // (a streamed token, a fold opening). Those move text under the painted
+    // ranges; repaint once per frame, however many arrived.
+    let frame: number | null = null
+    const observer = new MutationObserver(() => {
+      if (frame !== null) return
+      frame = requestAnimationFrame(() => {
+        frame = null
+        paint(false)
+      })
+    })
+    observer.observe(root, { subtree: true, childList: true, characterData: true })
     paint(true)
     return () => {
-      observer?.disconnect()
-      clearTranscriptFindHighlight(root)
+      observer.disconnect()
+      if (frame !== null) cancelAnimationFrame(frame)
+      clearTranscriptFind()
     }
-  }, [attachedRef, clampedFindIndex, findOpen, findQuery, scrollRef])
+  }, [attachedRef, clampedFindIndex, deferredFindQuery, findOpen, scrollRef])
 
   return (
     <FileRefContext.Provider value={fileRefOpener ?? null}>
@@ -835,7 +913,10 @@ export function AgentView({
       />
     )}
     <div className="group/transcript relative flex min-h-0 flex-1 flex-col">
-    <div ref={scrollRef} onWheel={cancelPromptJump} onTouchMove={cancelPromptJump} className="oa-chat-scroll flex-1 overflow-y-auto">
+    {/* Vertical only: ``overflow-y: auto`` alone turns ``overflow-x`` to auto, and
+        one over-wide row then let the whole transcript pan sideways on touch.
+        Code, tables and diagrams scroll inside their own boxes. */}
+    <div ref={scrollRef} onWheel={cancelPromptJump} onTouchMove={cancelPromptJump} className="oa-chat-scroll flex-1 overflow-x-hidden overflow-y-auto">
       <div ref={contentRef} className="mx-auto max-w-3xl px-3 py-5 sm:px-4 sm:py-6">
         {isEmpty && (
            emptyState ?? (
@@ -907,31 +988,19 @@ export function AgentView({
                      key={`turn-${item.blocks[0]?.id ?? item.startIndex}`}
                      blocks={item.blocks}
                      startIndex={item.startIndex}
-                     finalizedCount={blocks.length}
+                     // Only the trailing turn can hold the last or a streaming
+                     // block; a finished turn gets constants so its memo holds
+                     // as the transcript grows.
+                     finalizedCount={isTrailingTurn ? blocks.length : 0}
                      isWorking={isWorking}
                      isTurnOpen={isTurnOpen}
                      isTrailingTurn={isTrailingTurn}
-                      totalBlocks={totalLen}
+                      totalBlocks={isTrailingTurn ? totalLen : 0}
                       size="roomy"
                      reader={readerTranscript}
                      startedAt={turnStartedAt}
                      findHitBlockIds={readerTranscript ? findHitBlockIds : undefined}
-                      renderBlock={({ block, isStreaming }) => (
-                       <div
-                         data-block-id={block.id}
-                         data-find-block={isTranscriptFindableBlock(block.type) ? block.id : undefined}
-                       >
-                         <BlockRenderer
-                           block={block}
-                           isStreaming={isStreaming}
-                           sessionId={sessionId}
-                           onRetry={block.id === endingErrorId ? errorRetry : undefined}
-                           onSwitchModel={block.id === endingErrorId ? errorSwitchModel : undefined}
-                           latestMCPAppBlockIds={mcpAppResourceUri(block) ? latestMCPAppBlockIds : undefined}
-                           onMentionFileOpen={onMentionFileOpen}
-                         />
-                       </div>
-                     )}
+                      renderBlock={renderTurnBlock}
                    />
                  )
                 })}

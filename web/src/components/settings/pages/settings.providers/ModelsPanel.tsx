@@ -26,6 +26,13 @@ type IndexedModel = {
   cost?: ModelCostInfo
 }
 
+/**
+ * Rows mounted before "Show all". Each row carries three tooltips and its
+ * own hooks, and a provider like OpenRouter lists 300+ models (400 rows took
+ * ~95 ms to expand); the scroller shows about ten at a time.
+ */
+const MODEL_ROWS_SHOWN = 50
+
 export function ModelsPanel({
   providerId,
   models,
@@ -87,6 +94,15 @@ export function ModelsPanel({
 
   const visibleCount = allVisible ? indexed.length : visibleSet.size
 
+  // A new filter starts capped again.
+  const [showAll, setShowAll] = useState(false)
+  const [showAllFor, setShowAllFor] = useState(search)
+  if (showAllFor !== search) {
+    setShowAllFor(search)
+    setShowAll(false)
+  }
+  const shown = showAll ? visible : visible.slice(0, MODEL_ROWS_SHOWN)
+
   const toggleVisibleModel = (modelId: string) => {
     const next = new Set(visibleSet)
     if (next.has(modelId)) next.delete(modelId)
@@ -145,7 +161,7 @@ export function ModelsPanel({
                 No matching models.
               </li>
             ) : (
-              visible.map(({ qualifiedId, modelId, cost }) => (
+              shown.map(({ qualifiedId, modelId, cost }) => (
                 <ModelRow
                   key={qualifiedId}
                   qualifiedId={qualifiedId}
@@ -156,6 +172,17 @@ export function ModelsPanel({
                   onCopy={handleCopy}
                 />
               ))
+            )}
+            {shown.length < visible.length && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => setShowAll(true)}
+                  className="w-full rounded-xs px-2 py-1.5 text-center text-xs md:text-[10px] text-(--color-text-muted) hover:bg-(--bg-key) hover:text-(--color-text) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--focus-ring)/40"
+                >
+                  Show all {visible.length} {search.trim() ? 'matches' : 'models'}
+                </button>
+              </li>
             )}
           </ul>
         </div>

@@ -14,6 +14,7 @@ mock.module('lucide-react', () => new Proxy({}, { get: () => () => null }))
 
 import { QuestionCard } from '@/components/AskUser/QuestionCard'
 import { clearQuestionDrafts } from '@/components/AskUser/draft-cache'
+import { normalizeQuestions } from '@/stores/useAgentStore/sse-reducer'
 import type { PendingQuestion } from '@/api/types'
 
 afterEach(() => {
@@ -31,7 +32,6 @@ function question(overrides: Partial<PendingQuestion> = {}): PendingQuestion {
         question: 'Which package manager?',
         header: 'Package manager',
         multiple: false,
-        custom: true,
         options: [
           { label: 'pnpm', description: 'Fast', recommended: true },
           { label: 'bun', description: 'Faster', recommended: false },
@@ -48,7 +48,6 @@ const TWO_QUESTIONS: PendingQuestion = question({
       question: 'Which package manager?',
       header: 'Package manager',
       multiple: false,
-      custom: false,
       options: [
         { label: 'pnpm', description: null, recommended: true },
         { label: 'bun', description: null, recommended: false },
@@ -58,7 +57,6 @@ const TWO_QUESTIONS: PendingQuestion = question({
       question: 'Which checks should run?',
       header: 'Checks',
       multiple: true,
-      custom: false,
       options: [
         { label: 'lint', description: null, recommended: true },
         { label: 'test', description: null, recommended: true },
@@ -214,10 +212,23 @@ describe('QuestionCard', () => {
     }
   })
 
-  it('does not offer free text when the question disallows it', () => {
-    renderCard({ question: TWO_QUESTIONS })
+  // Questions stored before free text was unconditional still say
+  // ``custom: false``; the user can type an answer to those too.
+  it('offers free text on every question, even one stored with custom false', () => {
+    const questions = normalizeQuestions([
+      { question: 'Which package manager?', header: 'Package manager', multiple: false, custom: false, options: [{ label: 'pnpm' }, { label: 'bun' }] },
+      { question: 'Which checks?', header: 'Checks', multiple: true, custom: false, options: [{ label: 'lint' }, { label: 'test' }] },
+    ])
+    const { onSubmit } = renderCard({ question: question({ questions }) })
 
-    expect(screen.queryByRole('radio', { name: /type your own answer/i })).toBeNull()
+    fireEvent.click(screen.getByRole('radio', { name: /type your own answer/i }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'yarn' } })
+    fireEvent.click(screen.getByRole('button', { name: /next question/i }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /type your own answer/i }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'typecheck' } })
+    fireEvent.click(screen.getByRole('button', { name: /send answer/i }))
+
+    expect(onSubmit).toHaveBeenCalledWith([['yarn'], ['typecheck']])
   })
 
   it('skips a question whose custom answer was left blank', () => {
@@ -337,7 +348,6 @@ describe('QuestionCard', () => {
             question: 'Sign in at [our portal](https://evil.example) first?',
             header: 'Sign in',
             multiple: false,
-            custom: false,
             options: [{ label: 'ok', description: null, recommended: false }],
           },
         ],

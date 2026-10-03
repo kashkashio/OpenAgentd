@@ -314,9 +314,9 @@ export function parseAgentBlocks(
  * live state. Returns the original array untouched when nothing applies.
  */
 export function applyOrphanToolResults(
-  blocks: ContentBlock[],
+  blocks: readonly ContentBlock[],
   orphans: Record<string, OrphanToolResult>,
-): ContentBlock[] {
+): readonly ContentBlock[] {
   if (Object.keys(orphans).length === 0) return blocks
   let result: ContentBlock[] | null = null
   for (let i = 0; i < blocks.length; i++) {

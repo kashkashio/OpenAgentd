@@ -31,7 +31,7 @@ mock.module('lucide-react', () => ({
   Copy: Icon, Download: Icon, ExternalLink: Icon, File: Icon, FileDiff: Icon, FileText: Icon,
   Folder: Icon, FolderOpen: Icon, GitCommitHorizontal: Icon, GitCompare: Icon, Loader2: Icon,
   Maximize2: Icon, Minimize2: Icon, Plus: Icon,
-  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Undo2: Icon, X: Icon,
+  Pencil: Icon, RefreshCw: Icon, RotateCcw: Icon, Search: Icon, TerminalSquare: Icon, Eraser: Icon, Undo2: Icon, X: Icon,
 }))
 mock.module('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => false }))
 mock.module('@/hooks/use-platform', () => ({
@@ -144,6 +144,25 @@ describe('WorkspacePanel terminal tabs', () => {
     await pressCtrlW()
     expect(screen.queryByRole('dialog', { name: 'Close terminal?' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Close Terminal 1' })).toBeNull()
+  })
+
+  it('asks before the close button stops a running command', async () => {
+    await renderPanel(1)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close Terminal 1' })).toBeTruthy())
+    const [session] = useTerminalStore.getState().sessionsForContext(WORKSPACE)
+    act(() => {
+      useTerminalStore.setState((state) => ({
+        sessions: { ...state.sessions, [session.id]: { ...state.sessions[session.id], status: 'connected', busy: true } },
+      }))
+    })
+
+    await act(async () => { screen.getByRole('button', { name: 'Close Terminal 1' }).click() })
+    expect(await screen.findByRole('dialog', { name: 'Close terminal?' })).toBeTruthy()
+    expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(1)
+
+    await act(async () => { screen.getByRole('button', { name: 'Close terminal' }).click() })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Close Terminal 1' })).toBeNull())
+    expect(useTerminalStore.getState().sessionsForContext(WORKSPACE)).toHaveLength(0)
   })
 
   it('remount re-adopts live sessions from the store as tabs', async () => {
