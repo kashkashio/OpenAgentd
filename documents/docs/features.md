@@ -14,7 +14,7 @@ release that introduced it (where known). When you ship something new, **add it 
 > double-clickable app that runs an agent on your machine, with a
 > real UI to watch every step. Open source (Apache 2.0). 16 providers. Your keys.
 
-**Latest release:** v3.7.0 · October 3, 2026 · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v3.7.0)
+**Latest release:** v3.7.100 · October 3, 2026 · [release notes](https://github.com/kashkashio/OpenAgentd/releases/tag/v3.7.100)
 
 ---
 

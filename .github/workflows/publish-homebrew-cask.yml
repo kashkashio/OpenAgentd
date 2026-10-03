@@ -39,7 +39,8 @@ jobs:
   update-cask:
     name: Update homebrew-tap cask
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Publishes to lthoangg/homebrew-tap: only from the upstream repo, never from forks.
+    if: github.repository == 'lthoangg/openagentd' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
 
     steps:
       - name: Resolve latest release with a desktop .dmg

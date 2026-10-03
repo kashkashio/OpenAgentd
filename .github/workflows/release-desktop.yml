@@ -433,7 +433,11 @@ jobs:
           find _artifacts -type f -exec cp {} _release/ \;
           ls -la _release
 
+      # Only when the build produced updater signatures. This fork ships
+      # with auto-update off (createUpdaterArtifacts: false, no signing key),
+      # so there is no manifest to publish.
       - name: Generate latest.json (Tauri updater manifest)
+        if: hashFiles('_release/*.sig') != ''
         run: |
           python3 scripts/make_updater_manifest.py \
             --version "${{ needs.prepare.outputs.version }}" \
@@ -487,6 +491,7 @@ jobs:
       # still point at the immutable ``v{X.Y.Z}`` release above,
       # so old clients keep working and downloads are cacheable.
       - name: Update rolling latest-desktop release
+        if: hashFiles('_release/latest.json') != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
