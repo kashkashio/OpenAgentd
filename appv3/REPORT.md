@@ -477,6 +477,20 @@ explicitly.
   - The `sqlite_master` row order of indexes that Alembic batch copies
     recreate can differ. v2 recreates them in Python set (object-id) order,
     so its own order is not stable either. The index set is the same.
+  - After the replay, v3 adds `ix_session_messages_usage` on
+    `session_messages (session_id, kind, json_extract(extra,
+    '$.usage.cost.estimated_usd'), json_extract(extra, '$.usage.output'))`
+    (`migrations::V3_INDEXES`, `CREATE INDEX IF NOT EXISTS` on every open).
+    It is outside the Alembic chain: the stamp stays at `00000022`, so a v2
+    build still opens the file and only sees an extra index. History loads
+    sum usage from it instead of parsing every row's `extra` (249 → 19 ms on
+    a 16,000-row session), and the per-model-call queued-message probe seeks
+    on `(session_id, kind)` instead of scanning the session (1.8 ms → 15 µs).
+  - On an open that changes no schema, `PRAGMA optimize` and the WAL
+    checkpoint run in the background instead of before the server binds, so
+    a WAL left by a crash no longer delays the handshake (213 MB WAL:
+    381 → 71 ms to handshake). Opens that create or upgrade still run them
+    inline, and shutdown runs them as before.
 - **YAML dumping:** `crates/core/src/pyyaml/dump.rs` ports PyYAML's
   SafeRepresenter, Serializer and Emitter. Every YAML file v3 writes is
   byte-identical to v2's `yaml.safe_dump(..., sort_keys=False)`, including

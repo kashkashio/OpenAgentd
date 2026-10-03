@@ -15,6 +15,25 @@ async fn fresh() -> (tempfile::TempDir, appv3_db::DbPool) {
     (dir, pool)
 }
 
+/// v3's own indexes go on without a revision: a v2 build must still find
+/// the file at the head it knows.
+#[tokio::test]
+async fn v2_head_database_gains_v3_indexes_without_a_new_revision() {
+    use sqlx::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v2.db");
+    {
+        let mut conn = sqlx::SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", path.display())).await.unwrap();
+        appv3_db::migrations::upgrade(&mut conn).await.unwrap();
+    }
+    let pool = create_pool(&path).await.unwrap();
+    let index: Option<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'ix_session_messages_usage'").fetch_optional(&pool).await.unwrap();
+    assert_eq!(index.as_deref(), Some("ix_session_messages_usage"));
+    let head: String = sqlx::query_scalar("SELECT version_num FROM alembic_version").fetch_one(&pool).await.unwrap();
+    assert_eq!(head, ALEMBIC_HEAD);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_saves_get_distinct_positions() {
     // A queued user message and the agent's reply can be written at the
@@ -52,6 +71,32 @@ async fn interrupt_marks_the_last_assistant_row_by_position() {
     };
     assert_eq!(interrupted(last.id.clone()).await, Some(serde_json::json!(true)));
     assert_eq!(interrupted(earlier.id.clone()).await, None);
+}
+
+/// The checkpointer saves through `save_message_id`; the stored row must be
+/// the one `save_message` writes.
+#[tokio::test]
+async fn save_message_id_stores_what_save_message_stores() {
+    let (_d, pool) = fresh().await;
+    let s = create_session(&pool, NewSession { workspace: "/tmp/ws".into(), ..Default::default() }).await.unwrap();
+    let note = || {
+        let mut m = NewMessage::user("ctx");
+        m.extra = Some(serde_json::json!({"hidden_from_user": true, "hidden_from_summary": true}).as_object().unwrap().clone());
+        m
+    };
+    let by_row = save_message(&pool, &s.id, note()).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let id = save_message_id(&mut conn, &s.id, note()).await.unwrap();
+    drop(conn);
+    let by_id = get_message(&pool, &id).await.unwrap().unwrap();
+    assert_eq!((by_id.kind.as_str(), by_id.pinned, by_id.extra.clone()), (by_row.kind.as_str(), by_row.pinned, by_row.extra.clone()));
+    assert_eq!(by_id.seq, by_row.seq + appv3_db::SEQ_STEP);
+
+    let before = get_session(&pool, &s.id).await.unwrap().unwrap().history_structure_revision;
+    let mut conn = pool.acquire().await.unwrap();
+    save_message_id(&mut conn, &s.id, NewMessage { is_summary: true, ..NewMessage::user("summary") }).await.unwrap();
+    drop(conn);
+    assert_eq!(get_session(&pool, &s.id).await.unwrap().unwrap().history_structure_revision, before + 1);
 }
 
 #[tokio::test]

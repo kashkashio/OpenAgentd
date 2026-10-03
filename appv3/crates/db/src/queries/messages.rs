@@ -41,8 +41,8 @@ impl NewMessage {
     }
 }
 
-pub async fn next_seq(pool: &DbPool, session_id: &str) -> Result<i64> {
-    let max: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ?").bind(db_id(session_id)).fetch_one(pool).await?;
+pub async fn next_seq<'e, E: sqlx::SqliteExecutor<'e>>(ex: E, session_id: &str) -> Result<i64> {
+    let max: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM session_messages WHERE session_id = ?").bind(db_id(session_id)).fetch_one(ex).await?;
     Ok(max.unwrap_or(0) + SEQ_STEP)
 }
 
@@ -56,14 +56,23 @@ pub fn seq_between(prev: i64, next: i64) -> i64 {
     }
 }
 
-pub async fn get_message(pool: &DbPool, id: &str) -> Result<Option<SessionMessage>> {
-    Ok(sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE id = ?").bind(db_id(id)).fetch_optional(pool).await?)
+pub async fn get_message<'e, E: sqlx::SqliteExecutor<'e>>(ex: E, id: &str) -> Result<Option<SessionMessage>> {
+    Ok(sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE id = ?").bind(db_id(id)).fetch_optional(ex).await?)
 }
 
-/// v2 `save_message`: derives `kind`/`pinned`, allocates `seq`, bumps the
-/// structural revision for summaries.
-pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> Result<SessionMessage> {
-    let sid = db_id(session_id);
+/// The values `save_message` inserts, derived like v2.
+struct InsertRow {
+    id: String,
+    sid: String,
+    msg: NewMessage,
+    tool_calls: String,
+    extra: String,
+    created: String,
+    kind: String,
+    pinned: bool,
+}
+
+fn insert_row(session_id: &str, mut msg: NewMessage) -> InsertRow {
     let extra_hidden = msg.extra.as_ref().and_then(|e| e.get("hidden_from_user")).map(|v| !v.is_null() && v != &Value::Bool(false)).unwrap_or(false);
     let row_kind = msg.kind.clone().unwrap_or_else(|| {
         if msg.is_summary {
@@ -77,43 +86,66 @@ pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> R
     let pinned = msg
         .pinned
         .unwrap_or_else(|| row_kind == kind::NOTE && msg.extra.as_ref().and_then(|e| e.get("hidden_from_summary")).map(|v| v.as_bool().unwrap_or(!v.is_null())).unwrap_or(false));
-    let id = new_id();
-    let extra = msg.extra.filter(|e| !e.is_empty()).map(Value::Object);
-    let tool_calls = msg.tool_calls.filter(|t| !t.is_null());
+    let extra = msg.extra.take().filter(|e| !e.is_empty()).map(Value::Object);
+    let tool_calls = msg.tool_calls.take().filter(|t| !t.is_null());
     let created = msg.created_at.as_deref().and_then(crate::codec::db_dt).unwrap_or_else(now_db);
-    // `seq` is allocated inside the INSERT: SQLite takes the write lock for
-    // the whole statement, so concurrent saves (a queued message while the
-    // agent writes its reply) cannot read the same MAX(seq).
-    let row = sqlx::query_as::<_, SessionMessage>(
-        r#"INSERT INTO session_messages
+    InsertRow { id: new_id(), sid: db_id(session_id), tool_calls: json_db(tool_calls.as_ref()), extra: json_db(extra.as_ref()), created, kind: row_kind, pinned, msg }
+}
+
+// `seq` is allocated inside the INSERT: SQLite takes the write lock for the
+// whole statement, so concurrent saves (a queued message while the agent
+// writes its reply) cannot read the same MAX(seq).
+const INSERT_MESSAGE: &str = r#"INSERT INTO session_messages
            (id, session_id, role, content, reasoning_content, tool_calls,
             tool_call_id, name, extra, created_at, seq, kind, pinned)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                    COALESCE(?, (SELECT COALESCE(MAX(seq), 0) + ? FROM session_messages WHERE session_id = ?)),
-                   ?, ?)
-           RETURNING *"#,
-    )
-    .bind(&id)
-    .bind(&sid)
-    .bind(&msg.role)
-    .bind(&msg.content)
-    .bind(&msg.reasoning_content)
-    .bind(json_db(tool_calls.as_ref()))
-    .bind(&msg.tool_call_id)
-    .bind(&msg.name)
-    .bind(json_db(extra.as_ref()))
-    .bind(&created)
-    .bind(msg.seq)
-    .bind(SEQ_STEP)
-    .bind(&sid)
-    .bind(&row_kind)
-    .bind(pinned)
-    .fetch_one(pool)
-    .await?;
-    if row_kind == kind::SUMMARY {
-        bump_history_revision(pool, &sid, true).await?;
+                   ?, ?)"#;
+
+fn bind_insert<'q, O>(
+    q: sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>>,
+    r: &'q InsertRow,
+) -> sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>> {
+    q.bind(&r.id)
+        .bind(&r.sid)
+        .bind(&r.msg.role)
+        .bind(&r.msg.content)
+        .bind(&r.msg.reasoning_content)
+        .bind(&r.tool_calls)
+        .bind(&r.msg.tool_call_id)
+        .bind(&r.msg.name)
+        .bind(&r.extra)
+        .bind(&r.created)
+        .bind(r.msg.seq)
+        .bind(SEQ_STEP)
+        .bind(&r.sid)
+        .bind(&r.kind)
+        .bind(r.pinned)
+}
+
+/// v2 `save_message`: derives `kind`/`pinned`, allocates `seq`, bumps the
+/// structural revision for summaries.
+pub async fn save_message(pool: &DbPool, session_id: &str, msg: NewMessage) -> Result<SessionMessage> {
+    let r = insert_row(session_id, msg);
+    let sql = format!("{INSERT_MESSAGE} RETURNING *");
+    let row = bind_insert(sqlx::query_as::<_, SessionMessage>(&sql), &r).fetch_one(pool).await?;
+    if r.kind == kind::SUMMARY {
+        bump_history_revision(pool, &r.sid, true).await?;
     }
     Ok(row)
+}
+
+/// [`save_message`] returning only the new row's id, on one connection (so a
+/// batch can share a transaction). The stored row, whole tool results and
+/// image parts included, is not read back.
+pub async fn save_message_id(conn: &mut sqlx::SqliteConnection, session_id: &str, msg: NewMessage) -> Result<String> {
+    let r = insert_row(session_id, msg);
+    let sql = format!("{INSERT_MESSAGE} RETURNING id");
+    let (id,): (String,) = bind_insert(sqlx::query_as(&sql), &r).fetch_one(&mut *conn).await?;
+    if r.kind == kind::SUMMARY {
+        bump_history_revision(&mut *conn, &r.sid, true).await?;
+    }
+    Ok(id)
 }
 
 /// Update a row's content/extra in place (placeholder rewrites, usage).
@@ -232,6 +264,24 @@ impl LlmWindow {
 
 const USER_VISIBLE: &str = "kind NOT IN ('note', 'reverted')";
 
+/// Usage totals over `session_id IN (<marks>)`, read from the indexed
+/// `json_extract` values of `ix_session_messages_usage`.
+fn usage_totals_sql(marks: &str) -> String {
+    format!(
+        "SELECT session_id, \
+                CAST(COALESCE(SUM(json_extract(extra, '$.usage.cost.estimated_usd')), 0) AS REAL), \
+                CAST(COALESCE(SUM(json_extract(extra, '$.usage.output')), 0) AS REAL) \
+         FROM session_messages WHERE session_id IN ({marks}) AND {USER_VISIBLE} GROUP BY session_id"
+    )
+}
+
+/// Probed before every model call; answered from an index, not by scanning
+/// the session.
+const HAS_QUEUED_SQL: &str = "SELECT EXISTS (SELECT 1 FROM session_messages WHERE session_id = ? AND role = 'user' AND kind = 'queued')";
+
+/// Queued rows in transcript order (listing and promotion).
+const QUEUED_ROWS_SQL: &str = "SELECT * FROM session_messages WHERE session_id = ? AND kind = 'queued' ORDER BY seq ASC, id ASC";
+
 /// Newest-first page, returned chronological. `(rows, has_more, boundary)`.
 pub async fn history_page(pool: &DbPool, session_id: &str, before: Option<(i64, Option<String>)>) -> Result<(Vec<SessionMessage>, bool, Option<SessionMessage>)> {
     let sid = db_id(session_id);
@@ -273,13 +323,7 @@ pub async fn history_since(pool: &DbPool, session_id: &str, since_id: &str, limi
 
 /// `(estimated_cost_usd, completion_tokens)` over user-visible rows.
 pub async fn session_usage_totals(pool: &DbPool, session_id: &str) -> Result<(f64, i64)> {
-    let sql = format!(
-        "SELECT CAST(COALESCE(SUM(json_extract(extra, '$.usage.cost.estimated_usd')), 0) AS REAL), \
-                CAST(COALESCE(SUM(json_extract(extra, '$.usage.output')), 0) AS REAL) \
-         FROM session_messages WHERE session_id = ? AND {USER_VISIBLE}"
-    );
-    let (cost, out): (f64, f64) = sqlx::query_as(&sql).bind(db_id(session_id)).fetch_one(pool).await?;
-    Ok((appv3_core::pymath::py_round(cost, 8), out as i64))
+    Ok(session_usage_totals_many(pool, &[session_id]).await?.remove(session_id).unwrap_or((0.0, 0)))
 }
 
 /// [`session_usage_totals`] for several sessions in one scan, keyed by the
@@ -291,12 +335,7 @@ pub async fn session_usage_totals_many(pool: &DbPool, session_ids: &[&str]) -> R
     }
     let by_db: std::collections::HashMap<String, &str> = session_ids.iter().map(|id| (db_id(id), *id)).collect();
     let marks = vec!["?"; by_db.len()].join(", ");
-    let sql = format!(
-        "SELECT session_id, \
-                CAST(COALESCE(SUM(json_extract(extra, '$.usage.cost.estimated_usd')), 0) AS REAL), \
-                CAST(COALESCE(SUM(json_extract(extra, '$.usage.output')), 0) AS REAL) \
-         FROM session_messages WHERE session_id IN ({marks}) AND {USER_VISIBLE} GROUP BY session_id"
-    );
+    let sql = usage_totals_sql(&marks);
     let mut q = sqlx::query_as::<_, (String, f64, f64)>(&sql);
     for id in by_db.keys() {
         q = q.bind(id);
@@ -457,9 +496,7 @@ pub async fn save_queued_user_message(pool: &DbPool, session_id: &str, content: 
 
 /// True when the session has any queued user rows awaiting promotion.
 pub async fn has_queued_user_messages(pool: &DbPool, session_id: &str) -> Result<bool> {
-    let n: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM session_messages WHERE session_id = ? AND role = 'user' AND kind = 'queued'").bind(db_id(session_id)).fetch_one(pool).await?;
-    Ok(n > 0)
+    Ok(sqlx::query_scalar(HAS_QUEUED_SQL).bind(db_id(session_id)).fetch_one(pool).await?)
 }
 
 /// Whether `row` belongs to another message (its @-mention context or an
@@ -583,10 +620,7 @@ pub async fn cancel_queued_user_message(pool: &DbPool, session_id: &str, message
 
 /// Queued rows of a session (for the UI queue display / activation).
 pub async fn list_queued_messages(pool: &DbPool, session_id: &str) -> Result<Vec<SessionMessage>> {
-    Ok(sqlx::query_as::<_, SessionMessage>("SELECT * FROM session_messages WHERE session_id = ? AND kind = 'queued' ORDER BY seq ASC, id ASC")
-        .bind(db_id(session_id))
-        .fetch_all(pool)
-        .await?)
+    Ok(sqlx::query_as::<_, SessionMessage>(QUEUED_ROWS_SQL).bind(db_id(session_id)).fetch_all(pool).await?)
 }
 
 /// The newest assistant row by `(seq, id)` gets `extra.interrupted = true`.
@@ -645,4 +679,52 @@ pub async fn find_tool_message(pool: &DbPool, session_id: &str, tool_call_id: &s
         .bind(tool_call_id)
         .fetch_optional(pool)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn plan(pool: &DbPool, sql: &str, binds: usize) -> String {
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut q = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain);
+        for _ in 0..binds {
+            q = q.bind("s");
+        }
+        q.fetch_all(pool).await.unwrap().into_iter().map(|r| r.3).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Tool results and image parts live in `extra`; summing usage from the
+    /// table parsed every one of them on each history load.
+    #[tokio::test]
+    async fn usage_totals_use_the_usage_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::create_pool(dir.path().join("t.db")).await.unwrap();
+        for marks in ["?", "?, ?"] {
+            let p = plan(&pool, &usage_totals_sql(marks), marks.matches('?').count()).await;
+            assert!(p.contains("INDEX ix_session_messages_usage"), "{p}");
+        }
+    }
+
+    /// Scanning the session for queued rows cost O(session) per model call.
+    #[tokio::test]
+    async fn queued_queries_use_the_queued_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::create_pool(dir.path().join("t.db")).await.unwrap();
+        // The probe may seek either index on `kind`; both skip the session.
+        let p = plan(&pool, HAS_QUEUED_SQL, 1).await;
+        assert!(p.contains("ix_session_messages_queued") || p.contains("kind=?"), "{p}");
+        let p = plan(&pool, QUEUED_ROWS_SQL, 1).await;
+        assert!(p.contains("ix_session_messages_queued") && !p.contains("TEMP B-TREE"), "{p}");
+    }
+
+    /// v3's extra indexes must not take the history page off `(seq, id)`.
+    #[tokio::test]
+    async fn history_page_keeps_the_seq_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::create_pool(dir.path().join("t.db")).await.unwrap();
+        let sql = format!("SELECT * FROM session_messages WHERE session_id = ? AND {USER_VISIBLE} ORDER BY seq DESC, id DESC LIMIT ?");
+        let p = plan(&pool, &sql, 2).await;
+        assert!(p.contains("ix_session_messages_session_seq_id") && !p.contains("TEMP B-TREE"), "{p}");
+    }
 }
