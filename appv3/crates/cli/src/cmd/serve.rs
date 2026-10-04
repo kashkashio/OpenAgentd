@@ -131,6 +131,9 @@ pub fn serve(args: &ServeArgs) -> anyhow::Result<()> {
         tracing::info!("server_listening host={} port={}", host, port);
         // A preview must never proxy back to this API from loopback.
         appv3_preview::block_port(port);
+        // Previews follow the server: reachable from other machines only
+        // when the API itself is, and only with an access key.
+        appv3_preview::set_lan(has_auth && !appv3_core::auth::is_local_host_name(&host));
         if handshake {
             emit_handshake(port, token.as_deref(), handshake_file.as_deref());
         }

@@ -9,6 +9,7 @@ import type { PreviewTarget } from '@/api/preview'
 import type { DesignFeedback } from '@/lib/design-feedback'
 import { buildDesignFeedback } from '@/components/Preview/preview-comments'
 import { useReturnedFeedbackStore } from '@/stores/useReturnedFeedbackStore'
+import { setServerCapabilities } from '@/lib/server-capabilities'
 
 const WS = '/Users/me/project'
 const ORIGIN = 'http://127.0.0.1:52011'
@@ -48,6 +49,7 @@ afterEach(() => {
   cleanup()
   globalThis.fetch = originalFetch
   delete (window as { __OAD_API_BASE_URL__?: string }).__OAD_API_BASE_URL__
+  setServerCapabilities([])
 })
 
 async function renderView(target: PreviewTarget = { kind: 'url', url: 'http://localhost:5173/pricing' }, onSendComments = mock((_text: unknown) => {})) {
@@ -316,6 +318,31 @@ describe('PreviewTabView', () => {
     const { iframe } = await renderView({ kind: 'file', path: 'designs/landing.html' })
     expect(previewBodies[0]).toEqual({ workspace: WS, path: 'designs/landing.html' })
     expect(iframe.getAttribute('src')).toBe(`${ORIGIN}/designs/landing.html`)
+  })
+
+  it('previews from another machine when the server grants remote access', async () => {
+    ;(window as { __OAD_API_BASE_URL__?: string }).__OAD_API_BASE_URL__ = 'http://192.168.1.20:4082'
+    setServerCapabilities(['preview.remote'])
+    await renderView()
+    expect(screen.queryByText('Preview needs the backend on this computer')).toBeNull()
+    await waitFor(() => expect(previewBodies).toHaveLength(1))
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(`${ORIGIN}/pricing`)
+  })
+
+  it('opens a remote server\'s local dev server in the browser through the preview', async () => {
+    ;(window as { __OAD_API_BASE_URL__?: string }).__OAD_API_BASE_URL__ = 'http://192.168.1.20:4082'
+    setServerCapabilities(['preview.remote'])
+    const opened: string[] = []
+    const realOpen = window.open
+    window.open = ((url?: string | URL) => { opened.push(String(url)); return null }) as typeof window.open
+    try {
+      await renderView()
+      await waitFor(() => expect(previewBodies).toHaveLength(1))
+      fireEvent.click(await screen.findByRole('button', { name: 'Open in browser' }))
+      await waitFor(() => expect(opened).toEqual([`${ORIGIN}/pricing`]))
+    } finally {
+      window.open = realOpen
+    }
   })
 
   it('explains that previews need a local backend', async () => {

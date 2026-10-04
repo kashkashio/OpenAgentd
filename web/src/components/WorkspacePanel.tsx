@@ -51,7 +51,8 @@ import { useGitPanelStore, DEFAULT_WORKSPACE_STATE } from '@/stores/useGitPanelS
 import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useUIStore } from '@/stores/useUIStore'
 import type { SessionPlan, TodoItem, WorkspaceFileInfo } from '@/api/types'
-import { type PreviewTarget, closePreview, isLocalBackend, lastPreviewUrl } from '@/api/preview'
+import { DEFAULT_PREVIEW_URL, type PreviewTarget, closePreview, lastPreviewUrl } from '@/api/preview'
+import { usePreviewsAvailable } from '@/hooks/use-previews-available'
 import { EASINGS } from '@/lib/motion'
 import {
   type ChangedFileStatus,
@@ -100,7 +101,6 @@ export type { ChangedFileStatus, ChangedFileInfo, DiffFileSection }
 
 const EMPTY_TODOS: TodoItem[] = []
 /** Dev server a new preview tab opens when the workspace has no last URL. */
-const DEFAULT_PREVIEW_URL = 'http://localhost:5173'
 /** Stable empty ref: with no center element the width falls back to the viewport. */
 const NO_CENTER: React.RefObject<HTMLElement | null> = { current: null }
 /** A closed dock parks (hidden, inert) once its close tween (0.22 s) is done. */
@@ -437,7 +437,7 @@ export function WorkspacePanel({
     if (commit) openCommitTab(commit)
   }
 
-  const previewsAvailable = isLocalBackend()
+  const previewsAvailable = usePreviewsAvailable()
   const openNewPreview = useCallback(() => {
     openPreviewTab({ kind: 'url', url: lastPreviewUrl(workspace) ?? DEFAULT_PREVIEW_URL })
   }, [openPreviewTab, workspace])

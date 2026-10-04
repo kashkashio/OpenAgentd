@@ -8,11 +8,12 @@ use crate::manager::Entry;
 use crate::target::{Backend, UrlTarget};
 use crate::{AGENT_PATH, CONSOLE_PATH, INSPECTOR_JS, INSPECTOR_PATH, RESERVED_PREFIX};
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use futures::StreamExt;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::watch;
 
@@ -23,6 +24,8 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 
 /// Only the app (a loopback page or a Tauri webview) may frame a preview,
 /// so a remote site cannot embed it and listen to the inspector's messages.
+/// App origins on other machines are added per preview when the API grants
+/// them (`Entry::frame_ancestors`).
 pub const FRAME_ANCESTORS: &str = "frame-ancestors 'self' http://localhost:* http://127.0.0.1:* tauri: http://tauri.localhost https://tauri.localhost";
 
 pub(crate) fn add_frame_ancestors(headers: &mut HeaderMap) {
@@ -31,7 +34,7 @@ pub(crate) fn add_frame_ancestors(headers: &mut HeaderMap) {
 
 pub(crate) async fn serve(listener: tokio::net::TcpListener, entry: Arc<Entry>, mut stop: watch::Receiver<bool>) {
     let app = Router::new().fallback(handle).with_state(entry.clone());
-    let res = axum::serve(listener, app)
+    let res = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
             let _ = stop.wait_for(|v| *v).await;
         })
@@ -45,18 +48,61 @@ pub(crate) fn plain(status: StatusCode, body: &str) -> Response {
     (status, [(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], body.to_string()).into_response()
 }
 
-/// DNS-rebinding guard: only the listener's own loopback names.
+/// DNS-rebinding guard: the listener's loopback names, or an IP literal
+/// (another machine reaching it by address). Rebinding needs a domain name,
+/// so IP literals cannot be used for it.
 pub(crate) fn host_allowed(host: Option<&str>, port: u16) -> bool {
     let Some(host) = host else { return false };
     let host = host.trim().to_ascii_lowercase();
-    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+    if host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}") {
+        return true;
+    }
+    let Some(name) = host.strip_suffix(&format!(":{port}")) else { return false };
+    let name = name.strip_prefix('[').and_then(|n| n.strip_suffix(']')).unwrap_or(name);
+    name.parse::<IpAddr>().is_ok()
+}
+
+/// Swap the static `frame-ancestors` for this preview's, which also lists
+/// app origins granted on other machines.
+fn widen_frame_ancestors(entry: &Entry, headers: &mut HeaderMap) {
+    let extended = entry.frame_ancestors();
+    if extended == FRAME_ANCESTORS {
+        return;
+    }
+    let Ok(v) = HeaderValue::from_str(&extended) else { return };
+    let kept: Vec<HeaderValue> = headers.get_all(header::CONTENT_SECURITY_POLICY).iter().filter(|h| h.as_bytes() != FRAME_ANCESTORS.as_bytes()).cloned().collect();
+    if kept.len() == headers.get_all(header::CONTENT_SECURITY_POLICY).iter().count() {
+        return;
+    }
+    headers.remove(header::CONTENT_SECURITY_POLICY);
+    for h in kept {
+        headers.append(header::CONTENT_SECURITY_POLICY, h);
+    }
+    headers.append(header::CONTENT_SECURITY_POLICY, v);
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 pub(crate) fn is_ws_upgrade(headers: &HeaderMap) -> bool {
     headers.get(header::UPGRADE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
-async fn handle(State(entry): State<Arc<Entry>>, req: Request) -> Response {
+async fn handle(State(entry): State<Arc<Entry>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request) -> Response {
+    // Other machines need a grant from the authenticated API; this covers
+    // pages, WebSockets and the inspector's agent and console routes.
+    if !entry.peer_allowed(peer.ip(), now_secs()) {
+        tracing::warn!("preview_peer_refused id={} peer={}", entry.id, peer.ip());
+        return plain(StatusCode::FORBIDDEN, "This computer has no access to this preview. Open it from OpenAgentd first.");
+    }
+    let mut resp = route(&entry, req).await;
+    widen_frame_ancestors(&entry, resp.headers_mut());
+    resp
+}
+
+async fn route(entry: &Arc<Entry>, req: Request) -> Response {
+    let entry = entry.clone();
     let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).map(str::to_string);
     if !host_allowed(host.as_deref(), entry.port) {
         tracing::warn!("preview_foreign_host id={} host={:?}", entry.id, host);
@@ -135,9 +181,16 @@ async fn agent_endpoint(entry: &Arc<Entry>, req: Request) -> Response {
     }
 }
 
-fn client() -> &'static reqwest::Client {
-    static C: OnceLock<reqwest::Client> = OnceLock::new();
-    C.get_or_init(|| {
+fn client(target: &UrlTarget) -> &'static reqwest::Client {
+    static LOCAL: OnceLock<reqwest::Client> = OnceLock::new();
+    static EXTERNAL: OnceLock<reqwest::Client> = OnceLock::new();
+    if target.external {
+        // Real sites: normal certificate checks and system proxy settings.
+        return EXTERNAL.get_or_init(|| {
+            reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(std::time::Duration::from_secs(10)).build().expect("preview http client")
+        });
+    }
+    LOCAL.get_or_init(|| {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             // Loopback dev servers commonly use self-signed certificates.
@@ -199,11 +252,30 @@ pub(crate) fn strip_cookie_domain(cookie: &str) -> String {
     cookie.split(';').map(str::trim).filter(|a| !a.to_ascii_lowercase().starts_with("domain=")).collect::<Vec<_>>().join("; ")
 }
 
+/// An https site's cookies served on the http preview origin: `Secure`
+/// would make the browser drop them, and `SameSite=None` requires `Secure`.
+pub(crate) fn unsecure_cookie(cookie: &str) -> String {
+    strip_cookie_domain(cookie)
+        .split("; ")
+        .filter(|a| !a.eq_ignore_ascii_case("secure") && !a.eq_ignore_ascii_case("partitioned"))
+        .map(|a| if a.eq_ignore_ascii_case("samesite=none") { "SameSite=Lax" } else { a })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Response headers an external site sends that would stop the preview
+/// working on its own http origin: CSP blocks the injected inspector, HSTS
+/// would pin the preview host to https.
+const EXTERNAL_DROPPED: [&str; 3] = ["content-security-policy", "content-security-policy-report-only", "strict-transport-security"];
+
 /// Response headers sent back to the frame.
 pub(crate) fn downstream_response_headers(upstream: &HeaderMap, target: &UrlTarget, proxy_origin: &str) -> HeaderMap {
     let mut out = HeaderMap::new();
     for (k, v) in upstream {
         if is_hop_by_hop(k) || k.as_str() == "x-frame-options" {
+            continue;
+        }
+        if target.external && EXTERNAL_DROPPED.contains(&k.as_str()) {
             continue;
         }
         if k == header::CONTENT_SECURITY_POLICY {
@@ -216,7 +288,14 @@ pub(crate) fn downstream_response_headers(upstream: &HeaderMap, target: &UrlTarg
         }
         if k == header::LOCATION {
             let raw = v.to_str().unwrap_or("");
-            let rewritten = target.origin_aliases().iter().find_map(|o| raw.strip_prefix(o.as_str()).map(|rest| format!("{proxy_origin}{rest}")));
+            let protocol_relative = format!("//{}", target.authority());
+            let rewritten = target
+                .origin_aliases()
+                .iter()
+                .find_map(|o| raw.strip_prefix(o.as_str()).filter(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#'])).map(|rest| format!("{proxy_origin}{rest}")))
+                .or_else(|| {
+                    raw.strip_prefix(protocol_relative.as_str()).filter(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#'])).map(|rest| format!("{proxy_origin}{rest}"))
+                });
             match rewritten.and_then(|r| HeaderValue::from_str(&r).ok()) {
                 Some(v) => out.append(k.clone(), v),
                 None => out.append(k.clone(), v.clone()),
@@ -224,7 +303,9 @@ pub(crate) fn downstream_response_headers(upstream: &HeaderMap, target: &UrlTarg
             continue;
         }
         if k == header::SET_COOKIE {
-            if let Ok(v) = HeaderValue::from_str(&strip_cookie_domain(v.to_str().unwrap_or(""))) {
+            let raw = v.to_str().unwrap_or("");
+            let cookie = if target.external { unsecure_cookie(raw) } else { strip_cookie_domain(raw) };
+            if let Ok(v) = HeaderValue::from_str(&cookie) {
                 out.append(k.clone(), v);
             }
             continue;
@@ -237,6 +318,67 @@ pub(crate) fn downstream_response_headers(upstream: &HeaderMap, target: &UrlTarg
 
 pub(crate) fn is_html(headers: &HeaderMap) -> bool {
     headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
+}
+
+/// Text an external site may write its own absolute URLs into.
+fn is_rewritable_text(headers: &HeaderMap) -> bool {
+    let Some(ct) = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) else { return false };
+    let ct = ct.trim_start().to_ascii_lowercase();
+    ["text/html", "text/css", "text/javascript", "application/javascript", "application/x-javascript", "application/json", "application/manifest+json", "image/svg+xml"]
+        .iter()
+        .any(|t| ct.starts_with(t))
+}
+
+/// The body arrived compressed (the upstream ignored `identity`); it must
+/// pass through untouched.
+fn is_encoded(headers: &HeaderMap) -> bool {
+    headers.get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(|v| !v.trim().is_empty() && !v.trim().eq_ignore_ascii_case("identity"))
+}
+
+fn replace_all(haystack: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    if from.is_empty() || haystack.len() < from.len() {
+        return haystack.to_vec();
+    }
+    let mut out = Vec::with_capacity(haystack.len());
+    let mut i = 0;
+    while i < haystack.len() {
+        if haystack[i..].starts_with(from) {
+            out.extend_from_slice(to);
+            i += from.len();
+        } else {
+            out.push(haystack[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Point an external site's absolute links at the preview, so navigation
+/// and same-site requests stay on the proxy (and the agent keeps the page).
+/// Covers `https://host`, `http://host`, explicit default ports,
+/// protocol-relative `//host` and JSON-escaped `https:\/\/host`.
+pub(crate) fn rewrite_site_urls(body: &[u8], target: &UrlTarget, proxy_origin: &str) -> Vec<u8> {
+    let proxy_authority = proxy_origin.split_once("://").map(|(_, a)| a).unwrap_or(proxy_origin);
+    let mut out = body.to_vec();
+    let mut origins = target.origin_aliases();
+    for scheme in ["http", "https"] {
+        for o in target.origin_aliases() {
+            if let Some((_, rest)) = o.split_once("://") {
+                let alt = format!("{scheme}://{rest}");
+                if !origins.contains(&alt) {
+                    origins.push(alt);
+                }
+            }
+        }
+    }
+    // Longest first, so `https://host:443` is not half-replaced by `https://host`.
+    origins.sort_by_key(|o| std::cmp::Reverse(o.len()));
+    for o in &origins {
+        out = replace_all(&out, o.as_bytes(), proxy_origin.as_bytes());
+        out = replace_all(&out, o.replace('/', "\\/").as_bytes(), proxy_origin.replace('/', "\\/").as_bytes());
+    }
+    out = replace_all(&out, format!("//{}", target.authority()).as_bytes(), format!("//{proxy_authority}").as_bytes());
+    out
 }
 
 fn wants_html(headers: &HeaderMap) -> bool {
@@ -266,7 +408,7 @@ async fn forward(target: &UrlTarget, host: &str, req: Request) -> Response {
         return plain(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large.");
     };
     let headers = upstream_request_headers(&parts.headers, target, &proxy_origin);
-    let mut rb = client().request(parts.method.clone(), &url).headers(headers);
+    let mut rb = client(target).request(parts.method.clone(), &url).headers(headers);
     if !body.is_empty() {
         rb = rb.body(body);
     }
@@ -282,7 +424,10 @@ async fn forward(target: &UrlTarget, host: &str, req: Request) -> Response {
     };
     let status = resp.status();
     let mut headers = downstream_response_headers(resp.headers(), target, &proxy_origin);
-    let injectable = parts.method != Method::HEAD && is_html(resp.headers()) && status != StatusCode::NO_CONTENT && status != StatusCode::NOT_MODIFIED;
+    let has_body = parts.method != Method::HEAD && status != StatusCode::NO_CONTENT && status != StatusCode::NOT_MODIFIED;
+    let html = is_html(resp.headers());
+    let rewrite = target.external && is_rewritable_text(resp.headers());
+    let injectable = has_body && !is_encoded(resp.headers()) && (html || rewrite);
     if !injectable {
         let mut out = Response::new(Body::from_stream(resp.bytes_stream()));
         *out.status_mut() = status;
@@ -308,7 +453,11 @@ async fn forward(target: &UrlTarget, host: &str, req: Request) -> Response {
             Err(e) => return plain(StatusCode::BAD_GATEWAY, &format!("Upstream response failed: {e}")),
         }
     }
-    let mut out = Response::new(Body::from(inject(&buf)));
+    if rewrite {
+        buf = rewrite_site_urls(&buf, target, &proxy_origin);
+    }
+    let body = if html { inject(&buf) } else { buf };
+    let mut out = Response::new(Body::from(body));
     *out.status_mut() = status;
     *out.headers_mut() = headers;
     out
@@ -327,10 +476,62 @@ mod tests {
     fn host_guard() {
         assert!(host_allowed(Some("127.0.0.1:4100"), 4100));
         assert!(host_allowed(Some("LOCALHOST:4100"), 4100));
+        assert!(host_allowed(Some("192.168.50.79:4100"), 4100));
+        assert!(host_allowed(Some("[fd00::1]:4100"), 4100));
         assert!(!host_allowed(Some("127.0.0.1:4101"), 4100));
         assert!(!host_allowed(Some("evil.example:4100"), 4100));
+        assert!(!host_allowed(Some("192.168.50.79.nip.io:4100"), 4100));
         assert!(!host_allowed(Some("127.0.0.1"), 4100));
         assert!(!host_allowed(None, 4100));
+    }
+
+    fn external() -> UrlTarget {
+        parse_url_target("https://develop.example.com").unwrap().0
+    }
+
+    #[test]
+    fn external_sites_keep_their_cookies_and_lose_csp_and_hsts() {
+        let mut h = HeaderMap::new();
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("script-src 'nonce-x'"));
+        h.insert("content-security-policy-report-only", HeaderValue::from_static("default-src 'self'"));
+        h.insert(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=63072000"));
+        h.append(header::SET_COOKIE, HeaderValue::from_static("sid=1; Domain=.example.com; Path=/; Secure; HttpOnly; SameSite=None"));
+        h.insert(header::LOCATION, HeaderValue::from_static("https://develop.example.com/login?next=/"));
+        let out = downstream_response_headers(&h, &external(), "http://192.168.50.79:4100");
+        let csp: Vec<_> = out.get_all(header::CONTENT_SECURITY_POLICY).iter().collect();
+        assert_eq!(csp, vec![FRAME_ANCESTORS]);
+        assert!(out.get("content-security-policy-report-only").is_none());
+        assert!(out.get(header::STRICT_TRANSPORT_SECURITY).is_none());
+        assert_eq!(out[header::SET_COOKIE], "sid=1; Path=/; HttpOnly; SameSite=Lax");
+        assert_eq!(out[header::LOCATION], "http://192.168.50.79:4100/login?next=/");
+    }
+
+    #[test]
+    fn external_redirects_to_other_sites_and_lookalike_hosts_are_left_alone() {
+        let mut h = HeaderMap::new();
+        h.insert(header::LOCATION, HeaderValue::from_static("https://develop.example.com.evil.net/"));
+        let out = downstream_response_headers(&h, &external(), "http://192.168.50.79:4100");
+        assert_eq!(out[header::LOCATION], "https://develop.example.com.evil.net/");
+    }
+
+    #[test]
+    fn rewrites_an_external_sites_absolute_urls() {
+        let body = br#"<a href="https://develop.example.com/a">a</a><img src="//develop.example.com/i.png"><script>x="https:\/\/develop.example.com\/api";y="https://develop.example.com:443/b"</script><a href="https://other.com/">o</a>"#;
+        let out = String::from_utf8(rewrite_site_urls(body, &external(), "http://192.168.50.79:4100")).unwrap();
+        assert_eq!(
+            out,
+            r#"<a href="http://192.168.50.79:4100/a">a</a><img src="//192.168.50.79:4100/i.png"><script>x="http:\/\/192.168.50.79:4100\/api";y="http://192.168.50.79:4100/b"</script><a href="https://other.com/">o</a>"#
+        );
+    }
+
+    #[test]
+    fn compressed_bodies_are_not_rewritten() {
+        let mut h = HeaderMap::new();
+        assert!(!is_encoded(&h));
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("identity"));
+        assert!(!is_encoded(&h));
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert!(is_encoded(&h));
     }
 
     #[test]

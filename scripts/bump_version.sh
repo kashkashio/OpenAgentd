@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Repository whose releases the changelog links to (this fork by default).
+RELEASE_REPO=${OPENAGENTD_RELEASE_REPO:-kashkashio/OpenAgentd}
+
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
@@ -96,8 +99,8 @@ replace_exact_line documents/docs/features.md \
     "updated: $(sed -n 's/^updated: //p' documents/docs/features.md | head -n 1)" \
     "updated: $release_date_iso"
 replace_exact_line documents/docs/features.md \
-    "**Latest release:** v$(sed -n 's/^\*\*Latest release:\*\* v\([^ ]*\) .*$/\1/p' documents/docs/features.md | head -n 1) · $(sed -n 's/^\*\*Latest release:\*\* v[^·]* · \([^[]*\) \[release notes\].*$/\1/p' documents/docs/features.md | head -n 1) [release notes](https://github.com/lthoangg/openagentd/releases/tag/v$(sed -n 's/^\*\*Latest release:\*\* v\([^ ]*\) .*$/\1/p' documents/docs/features.md | head -n 1))" \
-    "**Latest release:** v$version · $release_date_human · [release notes](https://github.com/lthoangg/openagentd/releases/tag/v$version)"
+    "**Latest release:** v$(sed -n 's/^\*\*Latest release:\*\* v\([^ ]*\) .*$/\1/p' documents/docs/features.md | head -n 1) · $(sed -n 's/^\*\*Latest release:\*\* v[^·]* · \([^[]*\) \[release notes\].*$/\1/p' documents/docs/features.md | head -n 1) [release notes](https://github.com/$RELEASE_REPO/releases/tag/v$(sed -n 's/^\*\*Latest release:\*\* v\([^ ]*\) .*$/\1/p' documents/docs/features.md | head -n 1))" \
+    "**Latest release:** v$version · $release_date_human · [release notes](https://github.com/$RELEASE_REPO/releases/tag/v$version)"
 
 # ``cargo update --workspace`` refreshes only the workspace member's own entry
 # in Cargo.lock, which is all a version bump needs. ``cargo generate-lockfile``

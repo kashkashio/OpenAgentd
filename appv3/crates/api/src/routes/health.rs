@@ -18,8 +18,18 @@ pub fn router() -> Router<AppState> {
 /// that replace polling, and the plugin status API.
 pub const CAPABILITIES: &[&str] = &["events.workspace_files_changed", "events.config_changed", "events.mcp_status_changed", "api.plugins"];
 
+/// [`CAPABILITIES`] plus `preview.remote` when previews accept other
+/// machines (the server is LAN-exposed with an access key).
+pub fn capabilities() -> Vec<&'static str> {
+    let mut caps = CAPABILITIES.to_vec();
+    if appv3_preview::global().lan_enabled() {
+        caps.push("preview.remote");
+    }
+    caps
+}
+
 async fn live() -> Response {
-    json(j!({"status": "ok", "version": VERSION, "capabilities": CAPABILITIES}))
+    json(j!({"status": "ok", "version": VERSION, "capabilities": capabilities()}))
 }
 
 async fn ready(State(st): State<AppState>) -> Result<Response, ApiError> {
@@ -39,7 +49,7 @@ async fn ready(State(st): State<AppState>) -> Result<Response, ApiError> {
         "status": if db_ok { "ok" } else { "degraded" },
         "version": VERSION,
         "checks": {"db": if db_ok { "ok" } else { "fail" }, "agent": agent},
-        "capabilities": CAPABILITIES,
+        "capabilities": capabilities(),
     });
     if !db_ok {
         return Err(ApiError::with_detail(503, body));

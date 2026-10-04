@@ -2,6 +2,7 @@
  * OpenAgentd API client — misc endpoints: health, agent status, URL helpers.
  */
 
+import { setServerCapabilities } from '@/lib/server-capabilities'
 import { apiBaseUrl } from '../base-url'
 import { parseDetailOrThrow } from './_shared'
 import { listSessionAgents } from './agent'
@@ -20,7 +21,9 @@ export interface HealthResponse {
 export async function health(): Promise<HealthResponse> {
   const res = await fetch(`${apiBaseUrl()}/health/ready`)
   if (!res.ok) await parseDetailOrThrow(res, 'health')
-  return res.json()
+  const data = (await res.json()) as HealthResponse
+  setServerCapabilities((data as { capabilities?: string[] }).capabilities)
+  return data
 }
 
 // ── Plugins (v3 only: `capabilities` includes "api.plugins") ────────────────

@@ -29,6 +29,9 @@ export interface PreviewInfo {
   console_errors: number
 }
 
+/** What a new preview opens before the workspace remembers a URL. */
+export const DEFAULT_PREVIEW_URL = 'http://localhost:5173'
+
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 
 export function isLoopbackHost(host: string): boolean {

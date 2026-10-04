@@ -5,7 +5,9 @@ use crate::console::{ConsoleBuffer, ConsoleEntry};
 use crate::target::Backend;
 use appv3_tools::denied::DeniedPaths;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fmt;
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -15,6 +17,9 @@ use tokio::sync::watch;
 pub const MAX_PREVIEWS: usize = 8;
 /// A preview with no open connection closes after this long.
 pub const IDLE_SECS: u64 = 30 * 60;
+/// How long another machine keeps access after its last authenticated
+/// `/api/preview` call for the preview.
+pub const GRANT_SECS: u64 = 12 * 60 * 60;
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct PreviewInfo {
@@ -62,6 +67,12 @@ pub struct Entry {
     /// Commands from the agent to the page open in the Preview tab.
     pub agent: AgentChannel,
     stop: watch::Sender<bool>,
+    /// Non-loopback machines allowed to load the preview, with the unix
+    /// time their access ends. Granted by the authenticated API.
+    grants: Mutex<HashMap<IpAddr, u64>>,
+    /// App origins (beyond loopback and Tauri) allowed to frame the preview,
+    /// e.g. the app served from another machine's address.
+    framers: Mutex<Vec<String>>,
 }
 
 /// Marks a request or WebSocket as in flight; the preview is not idle while
@@ -77,11 +88,50 @@ impl Drop for ActiveGuard {
 
 impl Entry {
     pub fn info(&self) -> PreviewInfo {
+        self.info_for(None)
+    }
+
+    /// Info with `origin` on `host` (the address the caller reached the
+    /// server at), or `127.0.0.1` for a loopback caller.
+    pub fn info_for(&self, host: Option<&str>) -> PreviewInfo {
         let (kind, target) = match &self.backend {
             Backend::Upstream(t) => ("url", t.origin()),
             Backend::Static(root) => ("file", root.display().to_string()),
         };
-        PreviewInfo { id: self.id.clone(), workspace: self.workspace.clone(), kind, target, port: self.port, origin: format!("http://127.0.0.1:{}", self.port) }
+        let host = host.filter(|h| !h.is_empty()).unwrap_or("127.0.0.1");
+        PreviewInfo { id: self.id.clone(), workspace: self.workspace.clone(), kind, target, port: self.port, origin: format!("http://{host}:{}", self.port) }
+    }
+
+    /// Let `peer` (another machine) load this preview until `now + GRANT_SECS`,
+    /// and let `framer` (the app origin it uses) embed it.
+    pub fn grant(&self, peer: IpAddr, framer: Option<&str>, now: u64) {
+        let peer = peer.to_canonical();
+        if peer.is_loopback() {
+            return;
+        }
+        self.grants.lock().unwrap_or_else(|e| e.into_inner()).insert(peer, now + GRANT_SECS);
+        if let Some(origin) = framer.and_then(normalize_origin) {
+            let mut f = self.framers.lock().unwrap_or_else(|e| e.into_inner());
+            if !f.contains(&origin) {
+                f.push(origin);
+            }
+        }
+    }
+
+    /// Loopback callers always; other machines only with a live grant.
+    pub fn peer_allowed(&self, peer: IpAddr, now: u64) -> bool {
+        let peer = peer.to_canonical();
+        peer.is_loopback() || self.grants.lock().unwrap_or_else(|e| e.into_inner()).get(&peer).is_some_and(|until| *until > now)
+    }
+
+    /// The `frame-ancestors` directive for this preview's responses.
+    pub fn frame_ancestors(&self) -> String {
+        let f = self.framers.lock().unwrap_or_else(|e| e.into_inner());
+        if f.is_empty() {
+            crate::proxy::FRAME_ANCESTORS.to_string()
+        } else {
+            format!("{} {}", crate::proxy::FRAME_ANCESTORS, f.join(" "))
+        }
     }
 
     fn touch(&self) {
@@ -122,11 +172,25 @@ impl Entry {
     }
 }
 
+/// `scheme://host[:port]` from an untrusted `Origin` header, or `None`. The
+/// result goes into a CSP header, so nothing else may pass.
+fn normalize_origin(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    let origin = url.origin().ascii_serialization();
+    (!origin.contains([' ', ';', ','])).then_some(origin)
+}
+
 #[derive(Default)]
 pub struct Manager {
     entries: Mutex<Vec<Arc<Entry>>>,
     blocked_ports: Mutex<Vec<u16>>,
     reaper_started: AtomicBool,
+    /// Listeners accept other machines (the server is LAN-exposed with an
+    /// access key); otherwise they bind loopback only.
+    lan: AtomicBool,
 }
 
 static GLOBAL: OnceLock<Manager> = OnceLock::new();
@@ -146,6 +210,16 @@ impl Manager {
         self.entries.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Bind new listeners on all interfaces (`true`) or loopback only.
+    /// Existing listeners keep their binding.
+    pub fn set_lan(&self, lan: bool) {
+        self.lan.store(lan, Ordering::SeqCst);
+    }
+
+    pub fn lan_enabled(&self) -> bool {
+        self.lan.load(Ordering::SeqCst)
+    }
+
     pub fn block_port(&self, port: u16) {
         let mut b = self.blocked_ports.lock().unwrap_or_else(|e| e.into_inner());
         if !b.contains(&port) {
@@ -155,6 +229,11 @@ impl Manager {
 
     fn check_target(&self, backend: &Backend) -> Result<(), PreviewError> {
         let Backend::Upstream(t) = backend else { return Ok(()) };
+        // The API and the other previews live on this machine's loopback;
+        // an external site on the same port number is someone else's.
+        if t.external {
+            return Ok(());
+        }
         let blocked = self.blocked_ports.lock().unwrap_or_else(|e| e.into_inner()).contains(&t.port);
         if blocked {
             return Err(PreviewError::Invalid(format!("Port {} is the OpenAgentd API and cannot be previewed.", t.port)));
@@ -178,7 +257,7 @@ impl Manager {
             e.touch();
             return Ok(e.info());
         }
-        let listener = bind(preferred_port).await?;
+        let listener = bind(preferred_port, self.lan_enabled()).await?;
         let port = listener.local_addr().map_err(|e| PreviewError::Bind(e.to_string()))?.port();
         let denied = match &backend {
             Backend::Static(root) => Some(DeniedPaths::new(root, None)),
@@ -196,6 +275,8 @@ impl Manager {
             console: Mutex::new(ConsoleBuffer::default()),
             agent: AgentChannel::default(),
             stop,
+            grants: Mutex::new(HashMap::new()),
+            framers: Mutex::new(Vec::new()),
         });
         {
             let mut entries = self.lock();
@@ -270,13 +351,14 @@ impl Manager {
     }
 }
 
-async fn bind(preferred: Option<u16>) -> Result<tokio::net::TcpListener, PreviewError> {
+async fn bind(preferred: Option<u16>, lan: bool) -> Result<tokio::net::TcpListener, PreviewError> {
+    let addr = if lan { "0.0.0.0" } else { "127.0.0.1" };
     if let Some(p) = preferred.filter(|p| *p > 1024) {
-        if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", p)).await {
+        if let Ok(l) = tokio::net::TcpListener::bind((addr, p)).await {
             return Ok(l);
         }
     }
-    tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| PreviewError::Bind(format!("Could not start the preview listener: {e}")))
+    tokio::net::TcpListener::bind((addr, 0)).await.map_err(|e| PreviewError::Bind(format!("Could not start the preview listener: {e}")))
 }
 
 /// A static backend for `root`, which must be an existing directory.
@@ -346,6 +428,38 @@ mod tests {
         m.ensure_inner("/w", upstream("http://localhost:9999"), None, false).await.unwrap();
         assert!(m.get(&first.id).is_none());
         assert_eq!(m.list(None).len(), MAX_PREVIEWS);
+        m.shutdown();
+    }
+
+    #[tokio::test]
+    async fn grants_other_machines_and_their_app_origins() {
+        let m = leak();
+        let a = m.ensure_inner("/w", upstream("http://localhost:5173"), None, false).await.unwrap();
+        let e = m.get(&a.id).unwrap();
+        let peer: IpAddr = "192.168.1.20".parse().unwrap();
+        assert!(e.peer_allowed("127.0.0.1".parse().unwrap(), 0));
+        assert!(e.peer_allowed("::ffff:127.0.0.1".parse().unwrap(), 0));
+        assert!(!e.peer_allowed(peer, 0));
+        e.grant(peer, Some("http://192.168.1.10:5173"), 100);
+        assert!(e.peer_allowed(peer, 100));
+        assert!(e.peer_allowed("::ffff:192.168.1.20".parse().unwrap(), 100));
+        assert!(!e.peer_allowed(peer, 100 + GRANT_SECS));
+        assert!(!e.peer_allowed("192.168.1.21".parse().unwrap(), 100));
+        assert_eq!(e.frame_ancestors(), format!("{} http://192.168.1.10:5173", crate::proxy::FRAME_ANCESTORS));
+        // A crafted Origin cannot inject CSP.
+        e.grant(peer, Some("http://x.example; script-src *"), 100);
+        e.grant(peer, Some("javascript:alert(1)"), 100);
+        assert_eq!(e.frame_ancestors(), format!("{} http://192.168.1.10:5173", crate::proxy::FRAME_ANCESTORS));
+        assert_eq!(e.info_for(Some("192.168.1.10")).origin, format!("http://192.168.1.10:{}", a.port));
+        m.shutdown();
+    }
+
+    #[tokio::test]
+    async fn external_sites_are_not_blocked_by_the_api_port() {
+        let m = leak();
+        m.block_port(443);
+        assert!(m.ensure_inner("/w", upstream("https://develop.example.com"), None, false).await.is_ok());
+        assert!(m.ensure_inner("/w", upstream("https://localhost:443"), None, false).await.is_err());
         m.shutdown();
     }
 

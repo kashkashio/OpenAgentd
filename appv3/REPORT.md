@@ -968,4 +968,22 @@ action. Its definition lives in `crates/agent/src/tools/preview.rs`, not in
 the v2 tool contract; `GET /agents` lists it for coding workspaces. Design
 feedback travels inside the user message as a `<design-feedback>` block
 that the web UI renders as a card; the wire format is unchanged.
-Not done: `wss://` relays, LAN or mobile access, and headless capture.
+Local fork (`v3.7.100`): LAN access and external sites.
+- When the server listens beyond loopback **and** has an access key
+  (`serve.rs` → `appv3_preview::set_lan`), listeners bind `0.0.0.0`. A
+  non-loopback peer is served only with a grant (`Entry::grant`, 12 h),
+  recorded when that machine calls the authenticated `/api/preview`; the
+  check covers pages, WebSockets and `/__openagentd/*`. `Host` may also be an
+  IP literal (rebinding needs a domain name). The returned `origin` uses the
+  IP the caller reached the API on, and the caller's app `Origin` is added to
+  that preview's `frame-ancestors` (validated, so it cannot inject CSP).
+  `/health` advertises `preview.remote` so the web client shows previews.
+- External http/https targets are accepted except link-local, multicast and
+  broadcast addresses. They use a strictly verifying HTTP client, drop the
+  site's CSP/CSP-Report-Only/HSTS, keep `Secure`/`SameSite=None` cookies
+  (downgraded for the http origin), rewrite `Location` and absolute same-site
+  URLs in text bodies to the proxy, and relay `wss://`. Compressed bodies are
+  never injected or rewritten. The API-port check applies only to loopback
+  targets.
+
+Not done: headless capture.

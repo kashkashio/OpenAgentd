@@ -449,9 +449,14 @@ async fn preview_routes(c: &Client, root: &std::path::Path) {
     let (_, again) = open(json!({"workspace": ws, "path": "designs/landing.html"})).await;
     assert_eq!(again["id"], p["id"], "the same workspace reuses its listener");
 
+    // External sites are previewed through the proxy (local fork).
+    let (st, ext) = open(json!({"workspace": ws, "url": "https://example.com/pricing"})).await;
+    assert_eq!(st, StatusCode::OK, "{ext}");
+    assert_eq!((ext["target"].clone(), ext["path"].clone()), (json!("https://example.com"), json!("/pricing")));
+
     let api_port = appv3_core::settings().api_port;
     for (body, why) in [
-        (json!({"workspace": ws, "url": "http://example.com"}), "non-loopback"),
+        (json!({"workspace": ws, "url": "http://169.254.169.254/latest/meta-data"}), "cloud metadata address"),
         (json!({"workspace": ws, "url": format!("http://127.0.0.1:{api_port}")}), "the API itself"),
         (json!({"workspace": ws}), "no target"),
         (json!({"workspace": ws, "url": "http://localhost:5173", "path": "designs/landing.html"}), "two targets"),

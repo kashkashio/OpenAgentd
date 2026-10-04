@@ -37,7 +37,8 @@ import { useElementWidthSelect } from '@/hooks/use-element-width'
 import { settledWidthBesidePanels } from '@/components/ResizableAside'
 import { isFocusStranded, useReturnFocusFromDock, useStrandedFocusGuard } from '@/hooks/use-dock-focus'
 import { dockOverlaysChat } from '@/lib/workbench-layout'
-import { isLocalBackend, lastPreviewUrl } from '@/api/preview'
+import { DEFAULT_PREVIEW_URL, lastPreviewUrl } from '@/api/preview'
+import { usePreviewsAvailable } from '@/hooks/use-previews-available'
 import { OPEN_PREVIEW_EVENT, isPreviewTarget } from '../Preview/preview-events'
 import type { DesignFeedback } from '@/lib/design-feedback'
 import { useReturnedFeedbackStore } from '@/stores/useReturnedFeedbackStore'
@@ -441,7 +442,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
 
   const handleOpenNewPreview = useCallback(() => {
     if (!workspace) return
-    handleOpenPreview({ kind: 'url', url: lastPreviewUrl(workspace) ?? 'http://localhost:5173' })
+    handleOpenPreview({ kind: 'url', url: lastPreviewUrl(workspace) ?? DEFAULT_PREVIEW_URL })
   }, [handleOpenPreview, workspace])
 
   const handleSendPreviewComments = useCallback((feedback: DesignFeedback) => {
@@ -449,14 +450,16 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     inputRef.current?.focus()
   }, [])
 
+  const previewsAvailable = usePreviewsAvailable()
+
   // A feedback chip's x sends its comments back to their Preview tab's list,
   // opening that tab on desktop (it picks them up whenever it next mounts).
   const handleDesignFeedbackRemoved = useCallback((feedback: DesignFeedback) => {
     if (!workspace) return
     useReturnedFeedbackStore.getState().give({ workspace, feedback })
     const target = previewTargetForFeedback(feedback)
-    if (target && !isMobile && isLocalBackend()) handleOpenPreview(target, { focusOnly: true })
-  }, [handleOpenPreview, isMobile, workspace])
+    if (target && !isMobile && previewsAvailable) handleOpenPreview(target, { focusOnly: true })
+  }, [handleOpenPreview, isMobile, previewsAvailable, workspace])
 
   // The `preview` tool card's Open button, and the agent opening a page
   // (desktop only: phones keep the chat on screen).
@@ -468,7 +471,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     window.addEventListener(OPEN_PREVIEW_EVENT, onOpen)
     return () => window.removeEventListener(OPEN_PREVIEW_EVENT, onOpen)
   }, [handleOpenPreview])
-  usePreviewToolAutoOpen({ enabled: !isMobile && Boolean(workspace) && isLocalBackend(), onOpen: handleOpenPreview })
+  usePreviewToolAutoOpen({ enabled: !isMobile && Boolean(workspace) && previewsAvailable, onOpen: handleOpenPreview })
 
   const {
     slashCommands,
@@ -518,7 +521,7 @@ export function AgentChatView({ sessionId, workspace = null, sessionLoading = fa
     handleFindInTranscript,
     handleOpenPlan: plan || planAwaitingReview ? handleOpenPlan : undefined,
     planAwaitingReview,
-    handleOpenPreview: workspace && isLocalBackend() ? handleOpenNewPreview : undefined,
+    handleOpenPreview: workspace && previewsAvailable ? handleOpenNewPreview : undefined,
     setFileViewer,
     setFileOpenKey,
     setWorkspacePanel,

@@ -1,5 +1,6 @@
 //! WebSocket passthrough, mostly for dev-server hot reload (Vite's
-//! `vite-hmr`, Next.js `/_next/webpack-hmr`).
+//! `vite-hmr`, Next.js `/_next/webpack-hmr`), and for external sites'
+//! sockets (`wss://` upstream).
 
 use crate::manager::Entry;
 use crate::proxy::plain;
@@ -19,16 +20,16 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 type Upstream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 pub(crate) async fn proxy(entry: Arc<Entry>, target: &UrlTarget, req: Request) -> Response {
-    if target.scheme != "http" {
-        return plain(StatusCode::BAD_GATEWAY, "The preview cannot relay secure WebSockets (wss) yet.");
-    }
     let (mut parts, _body) = req.into_parts();
     let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
         Ok(u) => u,
         Err(e) => return e.into_response(),
     };
     let path = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    let url = format!("ws://{}{}", target.authority(), path);
+    // An https site's sockets are wss://; the browser side stays ws:// on
+    // the preview's own http origin.
+    let scheme = if target.scheme == "https" { "wss" } else { "ws" };
+    let url = format!("{scheme}://{}{}", target.authority(), path);
     let mut up_req = match url.as_str().into_client_request() {
         Ok(r) => r,
         Err(e) => return plain(StatusCode::BAD_GATEWAY, &format!("Invalid upstream WebSocket URL: {e}")),

@@ -24,7 +24,8 @@ import {
   Smartphone,
   SquareTerminal,
 } from 'lucide-react'
-import { type PreviewInfo, type PreviewTarget, isLocalBackend, openPreview, previewTargetKey } from '@/api/preview'
+import { type PreviewInfo, type PreviewTarget, isLocalBackend, isLoopbackHost, openPreview, previewTargetKey } from '@/api/preview'
+import { usePreviewsAvailable } from '@/hooks/use-previews-available'
 import { Button } from '@/components/ui/button'
 import { Dropdown, DropdownItem } from '@/components/ui/dropdown'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -136,6 +137,15 @@ function originOf(url: string): string | null {
   }
 }
 
+function isLoopbackOrigin(origin: string | null | undefined): boolean {
+  if (!origin) return false
+  try {
+    return isLoopbackHost(new URL(origin).hostname)
+  } catch {
+    return false
+  }
+}
+
 /** Latest mtime of the files next to (and below) a previewed HTML file. */
 function siblingsSignature(files: { path: string; mtime: number }[] | undefined, path: string): number | null {
   if (!files) return null
@@ -151,7 +161,9 @@ function siblingsSignature(files: { path: string; mtime: number }[] | undefined,
 const DESIGN_CHORD = { key: 'C', code: 'KeyC', alt: true } as const
 
 export function PreviewTabView({ workspace, tabId, target, navKey, onPreviewId, onSendComments, onOpenTarget, active = true, onRequestClose }: PreviewTabViewProps) {
-  const local = isLocalBackend()
+  // Previews work here: a local backend, or a server that grants this
+  // machine access (`preview.remote`).
+  const local = usePreviewsAvailable()
   const { os } = usePlatform()
   const designShortcut = os === 'macos' || os === 'ios' ? '⌥C' : 'Alt+C'
   const [info, setInfo] = useState<PreviewInfo | null>(null)
@@ -373,7 +385,10 @@ export function PreviewTabView({ workspace, tabId, target, navKey, onPreviewId, 
   // ── Toolbar actions ──────────────────────────────────────────────────────
   const targetOrigin = target.kind === 'url' ? info?.target ?? originOf(target.url) : null
   const displayUrl = target.kind === 'url' ? `${targetOrigin ?? ''}${path}` : path
-  const pageUrl = target.kind === 'url' ? `${targetOrigin ?? ''}${path}` : info ? `${info.origin}${path}` : null
+  // A dev server on the server's own loopback is unreachable from another
+  // machine; open it through the preview there instead.
+  const viaProxy = target.kind === 'url' && !isLocalBackend() && info !== null && isLoopbackOrigin(targetOrigin)
+  const pageUrl = target.kind === 'url' && !viaProxy ? `${targetOrigin ?? ''}${path}` : info ? `${info.origin}${path}` : null
 
   const navigateTo = (nextPath: string) => {
     if (readyRef.current) post({ type: 'navigate', path: nextPath })

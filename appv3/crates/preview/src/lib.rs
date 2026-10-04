@@ -1,6 +1,8 @@
 //! Built-in web preview.
 //!
-//! Each preview gets its own loopback listener (`127.0.0.1:<port>`), so the
+//! Each preview gets its own listener (`127.0.0.1:<port>`, or all interfaces
+//! when the server is LAN-exposed with an access key; other machines then
+//! need a grant from the authenticated API), so the
 //! previewed page runs on an origin separate from the app: it cannot read
 //! the app's DOM, storage, or access key, and cannot call `/api`. The
 //! listener either proxies a local dev server or serves a workspace
@@ -33,6 +35,12 @@ pub(crate) const INSPECTOR_JS: &str = include_str!("../assets/inspector.js");
 /// Record a port the API listens on, so no preview can proxy to it.
 pub fn block_port(port: u16) {
     global().block_port(port);
+}
+
+/// Let new preview listeners accept other machines (granted through the
+/// API). Only for a server that is itself LAN-exposed with an access key.
+pub fn set_lan(lan: bool) {
+    global().set_lan(lan);
 }
 
 /// Stop every preview listener (server shutdown).

@@ -20,7 +20,7 @@ import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, Copy, Check, Globe } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { isLocalBackend } from '@/api/preview'
+import { usePreviewsAvailable } from '@/hooks/use-previews-available'
 import { ToolResult } from '../ToolResult'
 import { AskUser } from '../AskUser'
 import { PlanReviewCard } from '../PlanReview/PlanReviewCard'
@@ -247,9 +247,10 @@ export const ToolCall = memo(function ToolCall({ name, args, done, liveOutput, r
     () => usesDiffView && args && !isFailedResult(result) ? getDiffStats(name, args, result) : null,
     [usesDiffView, name, args, result],
   )
+  const previewsAvailable = usePreviewsAvailable()
   const previewTarget = useMemo(
-    () => (name === PREVIEW_TOOL && done && isPreviewOpenSuccess(result) && isLocalBackend() ? previewTargetFromArgs(args) : null),
-    [name, done, result, args],
+    () => (name === PREVIEW_TOOL && done && isPreviewOpenSuccess(result) && previewsAvailable ? previewTargetFromArgs(args) : null),
+    [name, done, result, args, previewsAvailable],
   )
   // Pending-state header comes from getToolDisplay's no-args branch
   // (e.g. ``recall`` → "Checking memory…"). Tools without a custom pending header return

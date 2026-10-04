@@ -2,7 +2,7 @@
 title: Features
 description: Canonical, version-cited catalogue of shipped user-visible OpenAgentd features.
 status: stable
-updated: 2026-10-03
+updated: 2026-10-04
 ---
 
 # Features
@@ -14,7 +14,7 @@ release that introduced it (where known). When you ship something new, **add it 
 > double-clickable app that runs an agent on your machine, with a
 > real UI to watch every step. Open source (Apache 2.0). 16 providers. Your keys.
 
-**Latest release:** v3.7.100 · October 3, 2026 · [release notes](https://github.com/kashkashio/OpenAgentd/releases/tag/v3.7.100)
+**Latest release:** v3.7.101 · October 4, 2026 · [release notes](https://github.com/kashkashio/OpenAgentd/releases/tag/v3.7.101)
 
 ---
 
@@ -943,9 +943,17 @@ agent against it.
     restoring the message (undo, edit, history) brings the chip back. The card
     also shows after a reload, with or without text before it `[v3.6.0]`.
     While the agent uses the page, the toolbar shows **Agent**.
-    Tabs keep their page and comments while another tab is open. Previews
-    need the backend on the same computer; remote servers and the mobile app
-    show a notice instead.
+    Tabs keep their page and comments while another tab is open.
+    **From another computer** `[v3.7.100]`: when the server listens on the
+    network with an access key, opening a preview grants that computer access
+    to it (other machines get 403), and the preview address uses the server's
+    network IP. Otherwise remote servers and the mobile app show a notice.
+    **External sites** `[v3.7.100]` (e.g. a staging deployment) run through the
+    preview proxy so the agent can drive them: their CSP and HSTS are dropped,
+    `Secure` cookies are kept on the http preview origin, and links to the
+    site's own domain are rewritten to stay on the proxy. Links to other
+    domains (a separate login or API subdomain) leave the proxy or hit CORS,
+    and pages that set CSP in a `<meta>` tag may block the inspector.
 - **Keyboard and touch access** `[v3.0.0]` — right-click menus (dock rows,
   terminal tabs, sidebar sessions and workspaces, scheduled tasks, provider
   models) take keyboard focus when they open. Arrow keys, Home and End move
@@ -1405,7 +1413,8 @@ MCP.
   form, submitting it and taking a snapshot, stopping at the first step that
   fails `[v3.5.0]`. Session settings list `preview` among the agent's tools
   in coding workspaces `[v3.5.0]`.
-  Only loopback URLs are accepted, never the OpenAgentd API port. Everything
+  Local dev servers and external http/https sites can be opened (never the
+  OpenAgentd API port or link-local/metadata addresses) `[v3.7.100]`. Everything
   works only while the page is open in the Preview tab; there is no headless
   browser and no screenshots.
 - **`ask_user` — durable suspend and resume** `[v1.131.0, v2.1.0]` — in

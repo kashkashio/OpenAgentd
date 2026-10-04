@@ -300,7 +300,7 @@ impl Tool for PreviewTool {
     fn definition(&self) -> Value {
         let mut properties = json!({
             "action": {"type": "string", "enum": ["open", "logs", "chain", "snapshot", "click", "fill", "press", "scroll", "navigate", "wait", "inspect"], "description": "'open' shows a page in the Preview tab; 'logs' reads its console; 'chain' runs several page actions; the rest act on the open page."},
-            "url": {"type": "string", "default": null, "description": "Local dev server URL (localhost, 127.0.0.1, or ::1). For page actions and logs, picks which preview to use; defaults to the one the user has open."},
+            "url": {"type": "string", "default": null, "description": "Local dev server URL (localhost:3000) or external http/https site. For page actions and logs, picks which preview to use; defaults to the one the user has open."},
             "path": {"type": "string", "default": null, "description": "Workspace-relative HTML file to open instead of a URL (or, for page actions and logs, to pick that file preview)."},
             "level": {"type": "string", "enum": ["error", "all"], "default": "all", "description": "[logs] 'error' returns only errors."},
             "limit": {"type": "integer", "default": DEFAULT_LIMIT, "minimum": 1, "maximum": MAX_LIMIT, "description": "[logs] Most entries to return per preview."},
@@ -324,7 +324,7 @@ impl Tool for PreviewTool {
             "type": "function",
             "function": {
                 "name": PREVIEW_TOOL,
-                "description": "Show a local web page in the user's built-in Preview tab, read its browser console, and use the page. action='open' opens a running local dev server (url, loopback only, e.g. http://localhost:5173/pricing) or an HTML file in the workspace (path); start the dev server with shell first. action='logs' returns recent console errors, warnings, and logs, newest first. Page actions run in the user's open Preview tab: 'snapshot' returns a text outline of the page with refs (e1, e2, …) on links, buttons, and fields; 'click', 'fill' (value), 'press' (key), 'scroll', and 'inspect' (selector, source file, styles, HTML) take a ref from the latest snapshot or a CSS selector; 'navigate' takes to (a path, or back, forward, reload); 'wait' waits for text or a selector (gone=true waits for it to disappear). action='chain' runs up to 20 page actions (steps) in order in one call, e.g. fill, fill, click, then snapshot to see the result; it stops at the first step that fails. Take a new snapshot after the page changes; refs from older snapshots go stale. Everything works only while the user has the page open in the Preview tab; there is no headless browser and no screenshots. Ask before submitting forms that change real data.",
+                "description": "Show a web page in the user's built-in Preview tab, read its browser console, and use the page. action='open' opens a running local dev server (url, e.g. http://localhost:5173/pricing; start it with shell first), an external http/https site such as a staging deployment (url, e.g. https://staging.example.com/login), or an HTML file in the workspace (path). External sites run through the preview proxy, so links to other domains may leave it and some sites may not work. action='logs' returns recent console errors, warnings, and logs, newest first. Page actions run in the user's open Preview tab: 'snapshot' returns a text outline of the page with refs (e1, e2, …) on links, buttons, and fields; 'click', 'fill' (value), 'press' (key), 'scroll', and 'inspect' (selector, source file, styles, HTML) take a ref from the latest snapshot or a CSS selector; 'navigate' takes to (a path, or back, forward, reload); 'wait' waits for text or a selector (gone=true waits for it to disappear). action='chain' runs up to 20 page actions (steps) in order in one call, e.g. fill, fill, click, then snapshot to see the result; it stops at the first step that fails. Take a new snapshot after the page changes; refs from older snapshots go stale. Everything works only while the user has the page open in the Preview tab; there is no headless browser and no screenshots. Ask before submitting forms that change real data.",
                 "parameters": {
                     "type": "object",
                     "properties": properties,
@@ -664,7 +664,7 @@ mod tests {
         assert!(text(t.run(&c, json!({"action": "logs"})).await).starts_with("No preview is open"));
         let opened = text(t.run(&c, json!({"action": "open", "path": "landing.html"})).await);
         assert!(opened.contains("Opening landing.html in the user's Preview tab"), "{opened}");
-        assert!(t.run(&c, json!({"action": "open", "url": "http://example.com"})).await.is_err());
+        assert!(t.run(&c, json!({"action": "open", "url": "http://169.254.169.254/"})).await.is_err());
         assert!(t.run(&c, json!({"action": "open", "path": "../x.html"})).await.is_err());
 
         let ws = crate::manager::validate_workspace(&dir.path().to_string_lossy(), true).unwrap();
