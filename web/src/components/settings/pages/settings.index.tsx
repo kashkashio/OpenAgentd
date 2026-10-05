@@ -18,6 +18,7 @@ import {
 import { AppBackendDialog } from '@/components/AppBackendDialog'
 import { THEME_OPTIONS } from '@/components/ThemeToggle'
 import { SettingsSection } from '@/components/settings/SettingsSection'
+import { ClaudeCodeImportSection } from '@/components/settings/ClaudeCodeImportSection'
 import { useVisibleSettingsSections } from '@/components/settings/useVisibleSections'
 import { ICON_SIZE } from '@/components/settings/tokens'
 import { Button } from '@/components/ui/button'
@@ -285,6 +286,8 @@ export function SettingsHubPage() {
         </div>
 
         <AppearanceSection />
+
+        <ClaudeCodeImportSection />
 
         <SettingsSection title="Backend connection">
           <div className="flex flex-wrap items-start gap-3">

@@ -191,6 +191,14 @@ explicitly.
   the `claude` CLI (`crates/agent/src/claude_code.rs`) instead of the agent
   loop. No DB column, SSE event or existing YAML format changed; v2 ignores
   the new file and would reject `claude-code:*` models.
+- **v3-only: Claude Code import** (`agent/src/claude_code_import.rs`,
+  `openagentd import claude-code`, `POST /api/import/claude-code`). Rows are
+  written with the normal `save_message` path and marked
+  `extra.claude_code_import`; original image/document blocks live in
+  `extra.claude_code_content`, which history responses strip
+  (`db::api::DISPLAY_STRIPPED_EXTRA_FIELDS`). Sessions keep Claude's ids;
+  sub-agent ids are UUIDv5 of parent and file. No schema change.
+
 - **Performance changes to the wire format** (v3 only; v2 parity is no
   longer a goal):
   - *History pages* (`GET /api/agent/{sid}/history`,

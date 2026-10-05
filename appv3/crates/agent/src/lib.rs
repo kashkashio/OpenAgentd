@@ -6,6 +6,7 @@ pub mod agent;
 pub mod broadcaster;
 pub mod checkpointer;
 pub mod claude_code;
+pub mod claude_code_import;
 pub mod errors;
 pub mod events;
 pub mod history;

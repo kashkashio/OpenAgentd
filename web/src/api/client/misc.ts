@@ -82,3 +82,35 @@ export async function agentStatus(workspace?: string | null, sessionId?: string 
     return null
   }
 }
+
+// ── Claude Code import (local fork) ─────────────────────────────────────────
+
+export interface ClaudeCodeImportSession {
+  id: string
+  title: string
+  workspace: string
+  /** `new`, `updated`, `unchanged`, `skipped` (OpenAgentd's own) or `error`. */
+  status: string
+  messages: number
+  subagents: number
+  detail: string | null
+}
+
+export interface ClaudeCodeImportReport {
+  dry_run: boolean
+  sessions: ClaudeCodeImportSession[]
+  messages: number
+  subagents: number
+  workspaces: number
+}
+
+/** Import (or with `dry_run`, preview) the server's Claude Code sessions. */
+export async function importClaudeCode(options: { dry_run: boolean; workflows?: boolean }): Promise<ClaudeCodeImportReport> {
+  const res = await fetch(`${apiBaseUrl()}/import/claude-code`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dry_run: options.dry_run, workflows: options.workflows ?? false }),
+  })
+  if (!res.ok) await parseDetailOrThrow(res, 'importClaudeCode')
+  return res.json()
+}

@@ -10,7 +10,7 @@ mod paths;
 mod ui;
 
 use clap::{CommandFactory, Parser};
-use cli::{Cli, Command, ServerCmd, TransferCmd};
+use cli::{Cli, Command, ImportCmd, ServerCmd, TransferCmd};
 use std::process::ExitCode;
 
 fn dispatch(command: Command) -> anyhow::Result<ExitCode> {
@@ -32,6 +32,9 @@ fn dispatch(command: Command) -> anyhow::Result<ExitCode> {
             TransferCmd::Migrate(a) => cmd::transfer::migrate(&a),
             TransferCmd::Export(a) => cmd::transfer::export(&a),
             TransferCmd::Import(a) => cmd::transfer::import(&a),
+        }),
+        Command::Import(i) => done(match i {
+            ImportCmd::ClaudeCode(a) => cmd::import::claude_code(&a),
         }),
         Command::Lsp(l) => done(cmd::lsp::lsp(&l)),
         Command::Upgrade => cmd::upgrade::upgrade(),

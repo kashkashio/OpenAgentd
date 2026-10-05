@@ -37,6 +37,9 @@ pub enum Command {
     /// Import, export, or migrate agent configuration
     #[command(subcommand)]
     Transfer(TransferCmd),
+    /// Import conversations from other tools into OpenAgentd
+    #[command(subcommand)]
+    Import(ImportCmd),
     /// Inspect or install managed language servers
     #[command(subcommand)]
     Lsp(LspCmd),
@@ -196,6 +199,36 @@ pub enum TransferCmd {
     ///
     /// Existing files are kept unless --force is given.
     Import(ImportArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ImportCmd {
+    /// Import Claude Code sessions (~/.claude/projects) with their workspaces
+    ///
+    /// Each conversation keeps Claude's session id, so a claude-code model
+    /// continues it. Safe to re-run: new lines are added, and sessions
+    /// OpenAgentd created itself are left alone.
+    ClaudeCode(ClaudeCodeImportArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ClaudeCodeImportArgs {
+    /// Transcript root (default: ~/.claude/projects)
+    #[arg(long, value_name = "DIR")]
+    pub from: Option<PathBuf>,
+    /// Only projects whose folder name contains this (e.g. a repo name)
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+    /// Skip sub-agent transcripts
+    #[arg(long)]
+    pub no_subagents: bool,
+    /// Also import workflow runs (often thousands of agents per session,
+    /// which makes that session slow to open)
+    #[arg(long)]
+    pub workflows: bool,
+    /// Show what would be imported without writing anything
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]

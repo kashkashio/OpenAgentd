@@ -275,3 +275,39 @@ pub async fn set_workspace_session_models(pool: &DbPool, workspace: &str, model:
     }
     Ok(changed)
 }
+
+/// Set a session's `created_at` / `updated_at` (an importer keeping the
+/// original conversation's times). Values are ISO or stored-format times.
+pub async fn set_session_times(pool: &DbPool, id: &str, created_at: Option<&str>, updated_at: Option<&str>) -> Result<()> {
+    let sid = db_id(id);
+    if let Some(c) = created_at.and_then(crate::codec::db_dt) {
+        sqlx::query("UPDATE chat_sessions SET created_at = ? WHERE id = ?").bind(c).bind(&sid).execute(pool).await?;
+    }
+    if let Some(u) = updated_at.and_then(crate::codec::db_dt) {
+        sqlx::query("UPDATE chat_sessions SET updated_at = ? WHERE id = ?").bind(u).bind(&sid).execute(pool).await?;
+    }
+    Ok(())
+}
+
+/// What a session already holds from a Claude Code import: all its rows,
+/// the rows the importer wrote (`extra.claude_code_import`), and the newest
+/// imported row's `created_at`.
+pub struct ClaudeImportState {
+    pub rows: i64,
+    pub imported_rows: i64,
+    pub last_imported_at: Option<String>,
+}
+
+pub async fn claude_import_state(pool: &DbPool, id: &str) -> Result<ClaudeImportState> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS n, \
+         COALESCE(SUM(CASE WHEN json_extract(extra, '$.claude_code_import') = 1 THEN 1 ELSE 0 END), 0) AS imported, \
+         MAX(CASE WHEN json_extract(extra, '$.claude_code_import') = 1 THEN created_at END) AS last_at \
+         FROM session_messages WHERE session_id = ?",
+    )
+    .bind(db_id(id))
+    .fetch_one(pool)
+    .await?;
+    use sqlx::Row;
+    Ok(ClaudeImportState { rows: row.try_get("n")?, imported_rows: row.try_get("imported")?, last_imported_at: row.try_get("last_at")? })
+}

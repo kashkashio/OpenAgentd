@@ -56,7 +56,7 @@ pub fn session_response(s: &ChatSession, o: &SessionOverlay) -> Map<String, Valu
 }
 
 const INTERNAL_ATTACHMENT_FIELDS: [&str; 3] = ["converted_text", "path", "workspace_path"];
-const DISPLAY_STRIPPED_EXTRA_FIELDS: [&str; 1] = ["parts"];
+const DISPLAY_STRIPPED_EXTRA_FIELDS: [&str; 2] = ["parts", "claude_code_content"];
 
 /// `MessageResponse` via `_message_response` (strips `extra.parts`, internal
 /// attachment fields, and continuation reasoning).
@@ -117,7 +117,7 @@ impl<'a> DisplayExtra<'a> {
         let Some(text) = raw else { return pass(None) };
         // Rows without these keys go out untouched; stored keys are plain
         // ASCII, so a substring check is a safe filter.
-        if !["\"parts\"", "\"attachments\"", "\"is_continuation\""].iter().any(|k| text.contains(k)) {
+        if !["\"parts\"", "\"attachments\"", "\"is_continuation\"", "\"claude_code_content\""].iter().any(|k| text.contains(k)) {
             return pass(raw_col(raw).map(Json::Raw));
         }
         let Some(mut extra) = crate::codec::json_col(raw) else { return pass(None) };
@@ -314,6 +314,13 @@ mod tests {
         assert_eq!(m["extra"], json!({"usage": {"total_tokens": 3}, "model": "m"}));
         assert_eq!(m["is_summary"], json!(true));
         assert_eq!(m["reasoning_content"], json!("think"));
+    }
+
+    #[test]
+    fn message_response_keeps_imported_originals_out_of_history() {
+        let mut r = row("tool");
+        r.extra = Some(r#"{"claude_code":true,"claude_code_content":[{"type":"image","source":{"data":"AAAA"}}]}"#.into());
+        assert_eq!(message_response(&r)["extra"], json!({"claude_code": true}));
     }
 
     #[test]

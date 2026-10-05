@@ -2,7 +2,7 @@
 title: Features
 description: Canonical, version-cited catalogue of shipped user-visible OpenAgentd features.
 status: stable
-updated: 2026-10-04
+updated: 2026-10-05
 ---
 
 # Features
@@ -14,7 +14,7 @@ release that introduced it (where known). When you ship something new, **add it 
 > double-clickable app that runs an agent on your machine, with a
 > real UI to watch every step. Open source (Apache 2.0). 16 providers. Your keys.
 
-**Latest release:** v3.7.101 · October 4, 2026 · [release notes](https://github.com/kashkashio/OpenAgentd/releases/tag/v3.7.101)
+**Latest release:** v3.7.102 · October 5, 2026 · [release notes](https://github.com/kashkashio/OpenAgentd/releases/tag/v3.7.102)
 
 ---
 
@@ -1282,6 +1282,15 @@ agnostic by design.
   model the CLI ran, so an alias shows its version. Each reply's footer says how
   the CLI authenticated: **Claude login**, or **API key** (highlighted) when
   Claude Code's own configuration supplied one.
+- **Import from Claude Code** `[v3.7.101]` — `openagentd import claude-code`
+  (or **Settings → Import from Claude Code**) brings the server's Claude Code
+  sessions (`~/.claude/projects`) into OpenAgentd with their workspaces,
+  titles, timestamps, models and token usage. Each keeps Claude's session id,
+  so continuing it on a `claude-code:` model resumes the same conversation.
+  Sub-agents become child sessions; workflow runs (often thousands of agents)
+  only with `--workflows`. Images and documents are stored in full (shown as
+  placeholders). Re-running adds new messages and never touches sessions
+  OpenAgentd created itself. `--dry-run` previews; `--project` filters.
 - **Per-workspace default model** `[v3.3.1]` — **Workspace settings…** in a
   workspace's sidebar menu sets the model (and thinking level) new sessions in
   that workspace start on, stored in the project at
