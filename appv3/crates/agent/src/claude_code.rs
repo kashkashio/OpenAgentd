@@ -520,16 +520,29 @@ async fn run_once(ctx: &TurnContext<'_>, bin: &PathBuf, alias: &str, claude_sess
                 store().push_event(&ctx.session_id, &events::usage(&usage, json!({"agent": ctx.agent_name, "model": ctx.model})), false);
             }
             match error {
-                Some(e) => Err(AgentError::Other(e)),
+                Some(e) => Err(AgentError::Other(with_login_hint(e))),
                 None => Ok(Attempt::Done),
             }
         }
         None => {
             let code = status.and_then(|s| s.code()).map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
             let detail = if stderr.is_empty() { format!("Claude Code exited ({code}) without a result.") } else { stderr };
-            Err(AgentError::Other(detail))
+            Err(AgentError::Other(with_login_hint(detail)))
         }
     }
+}
+
+/// The CLI's own login (not the desktop app's or an IDE extension's) is
+/// what a server-run turn uses; say how to fix it when it is missing.
+pub(crate) fn with_login_hint(error: String) -> String {
+    let lower = error.to_ascii_lowercase();
+    let login = ["not logged in", "oauth", "failed to authenticate", "/login", "invalid api key", "authentication"].iter().any(|k| lower.contains(k));
+    if !login {
+        return error;
+    }
+    format!(
+        "{error}\n\nThe `claude` CLI on the OpenAgentd server is not signed in (the Claude desktop app and IDE extensions keep their own logins). On that machine, run `claude auth login` in a terminal, check with `claude auth status`, then retry."
+    )
 }
 
 async fn save(ctx: &TurnContext<'_>, msg: NewMessage) -> Result<(), AgentError> {
@@ -577,6 +590,13 @@ mod tests {
         let tail = p.finish();
         let Action::Save(row) = &tail[0] else { panic!() };
         assert_eq!(row.extra.as_ref().unwrap()["model"], json!("claude-code:claude-opus-5-5"));
+    }
+
+    #[test]
+    fn login_failures_say_how_to_sign_in() {
+        let e = with_login_hint("Failed to authenticate: OAuth session expired and could not be refreshed".into());
+        assert!(e.contains("claude auth login"), "{e}");
+        assert_eq!(with_login_hint("Rate limited".into()), "Rate limited");
     }
 
     #[test]
