@@ -1275,7 +1275,9 @@ agnostic by design.
   transcript; later turns resume the same Claude conversation, and Stop ends
   the CLI process. Claude Code's own tools and permission rules apply, not
   OpenAgentd's; the permission mode is set per workspace (default
-  `acceptEdits`). Attachments are not forwarded, and switching an existing
+  `acceptEdits`). Attached files are listed in the prompt with their paths on
+  the server, and Claude Code reads them (PDFs, images, text) with its own
+  Read tool. Switching an existing
   session to Claude Code starts it without the earlier context. The provider
   shows as configured when `claude` is on `PATH`, in a standard install
   location, or set with `OPENAGENTD_CLAUDE_BIN`. The server uses the `claude`

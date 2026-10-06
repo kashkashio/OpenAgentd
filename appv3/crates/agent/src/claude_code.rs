@@ -386,17 +386,40 @@ fn row_is_claude_code(row: &db::SessionMessage) -> bool {
 
 /// The prompt for this turn (the latest user message) and whether Claude
 /// already holds this conversation.
+/// Files the user attached to a message (`extra.attachments`, saved under
+/// the session's `uploads/`), as a note the CLI can act on: Claude Code reads
+/// PDFs, images and text with its own Read tool, given absolute paths.
+fn attachments_note(extra: Option<&str>) -> Option<String> {
+    let extra: Value = serde_json::from_str(extra?).ok()?;
+    let lines: Vec<String> = extra["attachments"]
+        .as_array()?
+        .iter()
+        .filter_map(|a| {
+            let path = a["path"].as_str().or_else(|| a["workspace_path"].as_str())?;
+            let name = a["original_name"].as_str().or_else(|| a["filename"].as_str()).unwrap_or("file");
+            let kind = a["media_type"].as_str().map(|m| format!(", {m}")).unwrap_or_default();
+            Some(format!("- {path} ({name}{kind})"))
+        })
+        .collect();
+    (!lines.is_empty()).then(|| format!("Attached files (read them with the Read tool):\n{}", lines.join("\n")))
+}
+
+/// The prompt for this turn (the latest user message, plus any files it
+/// attached) and whether Claude already holds this conversation.
 async fn turn_input(pool: &DbPool, session_id: &str) -> Result<(String, bool), AgentError> {
     let rows = db::llm_window_rows(pool, session_id, true).await.map_err(|e| AgentError::Other(e.to_string()))?;
     let resume = rows.iter().any(row_is_claude_code);
-    let prompt = rows
-        .iter()
-        .rev()
-        .find(|r| r.role == "user" && r.kind != "note")
-        .or_else(|| rows.iter().rev().find(|r| r.role == "user"))
-        .and_then(|r| r.content.clone())
-        .filter(|c| !c.trim().is_empty())
-        .ok_or_else(|| AgentError::Other("Nothing to send to Claude Code.".into()))?;
+    let latest = rows.iter().rev().find(|r| r.role == "user" && r.kind != "note").or_else(|| rows.iter().rev().find(|r| r.role == "user"));
+    let text = latest.and_then(|r| r.content.clone()).unwrap_or_default();
+    let note = latest.and_then(|r| attachments_note(r.extra.as_deref()));
+    let prompt = match note {
+        Some(n) if text.trim().is_empty() => n,
+        Some(n) => format!("{text}\n\n{n}"),
+        None => text,
+    };
+    if prompt.trim().is_empty() {
+        return Err(AgentError::Other("Nothing to send to Claude Code.".into()));
+    }
     Ok((prompt, resume))
 }
 
@@ -590,6 +613,14 @@ mod tests {
         let tail = p.finish();
         let Action::Save(row) = &tail[0] else { panic!() };
         assert_eq!(row.extra.as_ref().unwrap()["model"], json!("claude-code:claude-opus-5-5"));
+    }
+
+    #[test]
+    fn attached_files_are_named_for_the_cli() {
+        let extra = r#"{"attachments":[{"filename":"spec.pdf","path":"/w/uploads/spec.pdf","original_name":"BO1 Spec.pdf","media_type":"application/pdf"}]}"#;
+        assert_eq!(attachments_note(Some(extra)).as_deref(), Some("Attached files (read them with the Read tool):\n- /w/uploads/spec.pdf (BO1 Spec.pdf, application/pdf)"));
+        assert_eq!(attachments_note(Some(r#"{"model":"x"}"#)), None);
+        assert_eq!(attachments_note(None), None);
     }
 
     #[test]
