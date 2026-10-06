@@ -1278,7 +1278,10 @@ agnostic by design.
   `acceptEdits`). Attachments are not forwarded, and switching an existing
   session to Claude Code starts it without the earlier context. The provider
   shows as configured when `claude` is on `PATH`, in a standard install
-  location, or set with `OPENAGENTD_CLAUDE_BIN`. Replies record the exact
+  location, or set with `OPENAGENTD_CLAUDE_BIN`. The server uses the `claude`
+  CLI's own login (not the desktop app's or an IDE extension's); when it is
+  signed out, the error offers **Sign in to Claude Code**, which runs
+  `claude auth login` in a new dock terminal on the server. Replies record the exact
   model the CLI ran, so an alias shows its version. Each reply's footer says how
   the CLI authenticated: **Claude login**, or **API key** (highlighted) when
   Claude Code's own configuration supplied one.

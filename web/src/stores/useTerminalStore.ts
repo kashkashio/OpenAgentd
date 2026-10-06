@@ -99,6 +99,8 @@ interface TerminalStore {
   /** Tear down socket + renderer and forget the session entirely. */
   close: (id: string) => void
   sendInput: (id: string, data: string) => void
+  /** Type `data` once the session is connected (input sent earlier is dropped). */
+  runWhenConnected: (id: string, data: string) => void
   sendResize: (id: string, rows: number, cols: number) => void
   /** Visible ↔ hidden — attached sessions are exempt from idle reaping. */
   setAttached: (id: string, attached: boolean) => void
@@ -307,6 +309,31 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     if (!rt?.socket) return
     rt.lastActivityAt = Date.now()
     rt.socket.sendInput(rt.inputTransform(data))
+  },
+
+  runWhenConnected: (id, data) => {
+    if (get().sessions[id]?.status === 'connected') {
+      get().sendInput(id, data)
+      return
+    }
+    // Wait for the socket; give up if the session fails, closes, or never connects.
+    let done = false
+    const finish = () => {
+      done = true
+      unsubscribe()
+      clearTimeout(timer)
+    }
+    const unsubscribe = useTerminalStore.subscribe((state) => {
+      if (done) return
+      const status = state.sessions[id]?.status
+      if (status === 'connected') {
+        finish()
+        get().sendInput(id, data)
+      } else if (!status || status === 'error' || status === 'exited') {
+        finish()
+      }
+    })
+    const timer = setTimeout(finish, 20_000)
   },
 
   sendResize: (id, rows, cols) => {

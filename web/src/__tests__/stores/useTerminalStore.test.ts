@@ -96,6 +96,26 @@ beforeEach(() => {
 })
 
 describe('useTerminalStore', () => {
+  it('runWhenConnected() types only once the socket is up', async () => {
+    const s = useTerminalStore.getState()
+    const id = s.open({ workspace: '/tmp/ws' }, '/tmp/ws')
+    s.runWhenConnected(id, 'claude auth login\r')
+    expect(lastSocket).toBeNull()
+    await flush()
+    expect(lastSocket!.sendInput).toHaveBeenCalledWith('claude auth login\r')
+    expect(lastSocket!.sendInput).toHaveBeenCalledTimes(1)
+  })
+
+  it('runWhenConnected() sends nothing when the connection fails', async () => {
+    connectShouldFail = true
+    const s = useTerminalStore.getState()
+    const id = s.open({ workspace: '/tmp/ws' }, '/tmp/ws')
+    s.runWhenConnected(id, 'claude auth login\r')
+    await flush()
+    expect(useTerminalStore.getState().sessions[id]?.status).toBe('error')
+    expect(lastSocket).toBeNull()
+  })
+
   it('open() registers a connecting session, then connects', async () => {
     const id = useTerminalStore.getState().open({ workspace: '/tmp/ws' }, '/tmp/ws')
     expect(useTerminalStore.getState().sessions[id]?.status).toBe('connecting')

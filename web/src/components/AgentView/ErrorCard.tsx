@@ -1,5 +1,7 @@
-import { AlertCircle, RotateCcw, Sparkles } from 'lucide-react'
+import { AlertCircle, LogIn, RotateCcw, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { isClaudeCodeLoginError, startClaudeCodeLogin } from '@/lib/claude-code-login'
+import { useAgentStore } from '@/stores/useAgentStore'
 
 /**
  * A failure in the transcript. Only the failure a finished turn ended with
@@ -14,6 +16,10 @@ export function ErrorCard({ title, message, onRetry, onSwitchModel }: {
   /** Pick another model; it applies from the next message, so Retry after. */
   onSwitchModel?: () => void
 }) {
+  const workspace = useAgentStore((s) => s._workspace)
+  const sessionModel = useAgentStore((s) => s.sessionModel)
+  // The server's `claude` CLI is logged out: offer to sign it in right here.
+  const onSignIn = workspace && isClaudeCodeLoginError(message, sessionModel) ? () => startClaudeCodeLogin(workspace) : undefined
   return (
     <div className="my-2 rounded-md border border-(--color-error)/30 bg-(--color-error-subtle) px-3 py-2 text-xs">
       <div className="flex items-start gap-1.5 text-(--color-error)">
@@ -23,12 +29,18 @@ export function ErrorCard({ title, message, onRetry, onSwitchModel }: {
           : <p className="leading-relaxed break-words">{message}</p>}
       </div>
       {title && <p className="mt-1 text-(--color-error)/90 leading-relaxed break-words">{message}</p>}
-      {(onRetry || onSwitchModel) && (
+      {(onRetry || onSwitchModel || onSignIn) && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {onRetry && (
             <Button size="xs" onClick={onRetry}>
               <RotateCcw aria-hidden="true" />
               Retry
+            </Button>
+          )}
+          {onSignIn && (
+            <Button size="xs" variant="subtle" onClick={onSignIn}>
+              <LogIn aria-hidden="true" />
+              Sign in to Claude Code
             </Button>
           )}
           {onSwitchModel && (
