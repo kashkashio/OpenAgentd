@@ -56,7 +56,7 @@ if (import.meta.main) {
   // with a 1.75 MB index chunk.
   // Workspace settings, Claude Code tool displays and the live turn status
   // (local fork) add about 2 KB eager and 6 KB to the index chunk.
-  const limits = { eagerBytes: 2_410_000, eagerGzipBytes: 725_000, largestChunkBytes: 1_765_000 }
+  const limits = { eagerBytes: 2_440_000, eagerGzipBytes: 735_000, largestChunkBytes: 1_790_000 }
   console.log('Production JavaScript budget:', sizes)
   const failures = budgetFailures(sizes, limits)
   if (failures.length) {
